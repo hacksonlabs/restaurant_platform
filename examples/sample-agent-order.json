@@ -1,0 +1,66 @@
+{
+  "restaurant_id": "rest_lb_steakhouse",
+  "agent_id": "agent_phantom",
+  "external_order_reference": "phantom-api-demo-2001",
+  "customer": {
+    "name": "Jordan Rivera",
+    "email": "jordan@phantom.example",
+    "phone": "408-555-0142",
+    "teamName": "Product Team"
+  },
+  "fulfillment_type": "catering",
+  "requested_fulfillment_time": "2099-05-02T22:00:00.000Z",
+  "headcount": 10,
+  "budget_constraints": {
+    "max_total_cents": 150000
+  },
+  "payment_policy": "required_before_submit",
+  "items": [
+    {
+      "item_id": "item_ribeye",
+      "quantity": 4,
+      "modifiers": [
+        {
+          "modifier_group_id": "mg_temp",
+          "modifier_id": "mod_medium_rare",
+          "quantity": 1
+        },
+        {
+          "modifier_group_id": "mg_side",
+          "modifier_id": "mod_truffle_fries",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "item_id": "item_filet",
+      "quantity": 4,
+      "modifiers": [
+        {
+          "modifier_group_id": "mg_temp",
+          "modifier_id": "mod_medium",
+          "quantity": 1
+        },
+        {
+          "modifier_group_id": "mg_side",
+          "modifier_id": "mod_mashed",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "item_id": "item_caesar",
+      "quantity": 2,
+      "modifiers": []
+    }
+  ],
+  "dietary_constraints": ["nut_free"],
+  "packaging_instructions": "Please keep sauces separate and label steak temperatures.",
+  "substitution_policy": "require_approval",
+  "approval_requirements": {
+    "manager_approval_required": true
+  },
+  "metadata": {
+    "source": "curl_demo"
+  }
+}
