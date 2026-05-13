@@ -51,8 +51,8 @@ Repository-backed runtime paths verified:
 
 ### Deliberate behavior
 
-- Standalone `/validate` and `/quote` requests remain pre-submit checks against canonical order payloads.
-- Persistent validation/quote lifecycle storage is guaranteed on the order submission path, which is the canonical order creation flow.
+- Standalone `/validate` and `/quote` requests remain pre-submit checks against submitted order payloads.
+- Persistent validation/quote lifecycle storage is guaranteed on the order submission path, which is the primary order creation flow.
 
 ## Smoke Verification
 

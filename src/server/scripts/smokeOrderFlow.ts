@@ -58,6 +58,7 @@ async function main() {
   const samplePath = path.resolve(process.cwd(), "examples/sample-agent-order.json");
   const sample = JSON.parse(await fs.readFile(samplePath, "utf8"));
   sample.external_order_reference = `smoke-${Date.now()}`;
+  sample.requested_fulfillment_time = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
   sample.metadata = { ...(sample.metadata ?? {}), source: "smoke_script" };
 
   const agentHeaders = {
@@ -85,19 +86,23 @@ async function main() {
     `${baseUrl}/api/agent/restaurants/${restaurant.id}/orders/submit`,
     { method: "POST", headers: agentHeaders, body: JSON.stringify(sample) },
   );
+  let submittedToPosViaApproval = false;
   if (order.status === "needs_approval") {
     await requestJson(
       `${baseUrl}/api/restaurants/${restaurant.id}/orders/${order.id}/approve`,
       { method: "POST" },
       adminSession,
     );
+    submittedToPosViaApproval = true;
   }
 
-  await requestJson(
-    `${baseUrl}/api/restaurants/${restaurant.id}/orders/${order.id}/submit-to-pos`,
-    { method: "POST" },
-    adminSession,
-  );
+  if (!submittedToPosViaApproval) {
+    await requestJson(
+      `${baseUrl}/api/restaurants/${restaurant.id}/orders/${order.id}/submit-to-pos`,
+      { method: "POST" },
+      adminSession,
+    );
+  }
 
   const orderDetail = await requestJson<{
     order: { id: string; status: string };

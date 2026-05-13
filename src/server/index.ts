@@ -2,12 +2,9 @@ import cors from "cors";
 import express from "express";
 import { createApiRouter } from "./api/router";
 import { getEnv } from "./config/env";
-import { createPostgresPool } from "./db/postgres";
 import { assertSupabaseReady } from "./db/supabase";
-import { InMemoryPlatformRepository } from "./repositories/platformRepository";
-import { SupabasePlatformRepository } from "./repositories/supabasePlatformRepository";
-import { PlatformService } from "./services/platformService";
-import { POSAdapterRegistry } from "./pos/registry";
+import { attachRequestContext } from "./middleware/requestContext";
+import { createPlatformService } from "./runtime";
 
 async function main() {
   const env = getEnv();
@@ -16,16 +13,14 @@ async function main() {
     await assertSupabaseReady(env);
   }
 
-  const repository = env.demoMode
-    ? new InMemoryPlatformRepository(env.demoPhantomApiKey)
-    : new SupabasePlatformRepository(createPostgresPool(env));
-  const service = new PlatformService(repository, new POSAdapterRegistry(env.posMode, env));
+  const service = await createPlatformService(env);
 
   const app = express();
 
   app.use(cors());
   app.use(express.json());
-  app.use("/api", createApiRouter(service, env));
+  app.use(attachRequestContext);
+  app.use("/api", createApiRouter(service));
 
   app.listen(env.port, () => {
     const modeLabel = env.demoMode ? "demo/in-memory" : "supabase";

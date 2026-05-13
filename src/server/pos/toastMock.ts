@@ -7,6 +7,7 @@ import type {
   POSContext,
   POSDiagnosticsResult,
   POSOrderStatusResult,
+  POSPaymentSessionResult,
   POSSubmissionResult,
   MenuSyncResult,
   OrderQuoteResult,
@@ -68,6 +69,31 @@ export class ToastAdapterMock implements POSAdapter {
       feesCents,
       totalCents: subtotalCents + taxCents + feesCents,
       message: "Mock Toast quote generated.",
+    };
+  }
+
+  async startPayment(
+    order: CanonicalOrderIntent,
+    quote: OrderQuoteResult,
+    paymentSession: { successUrl: string; cancelUrl: string },
+  ): Promise<POSPaymentSessionResult> {
+    const redirectUrl = new URL(paymentSession.successUrl);
+    redirectUrl.searchParams.set("provider", "phantom");
+    redirectUrl.searchParams.set("payment_provider", "toast_mock");
+
+    return {
+      ok: true,
+      status: "redirect_required",
+      redirectUrl: redirectUrl.toString(),
+      paymentReference: `toast_pay_${order.external_order_reference}`,
+      totalCents: quote.totalCents,
+      currency: "USD",
+      message: "Mock restaurant-owned payment redirect created.",
+      raw: {
+        paymentStatus: "pending",
+        checkoutFlow: "redirect",
+        cancelUrl: paymentSession.cancelUrl,
+      },
     };
   }
 

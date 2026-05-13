@@ -11,6 +11,13 @@ create table if not exists restaurants (
   name text not null,
   location text not null,
   timezone text not null,
+  image_url text,
+  cuisine_type text,
+  description text,
+  rating double precision,
+  delivery_fee integer,
+  minimum_order integer,
+  supports_catering boolean not null default false,
   pos_provider text not null references pos_providers(id),
   agent_ordering_enabled boolean not null default false,
   default_approval_mode text not null check (default_approval_mode in ('auto', 'manual_review', 'threshold_review')),
@@ -21,6 +28,14 @@ create table if not exists restaurants (
   updated_at timestamptz not null default now()
 );
 
+alter table restaurants add column if not exists image_url text;
+alter table restaurants add column if not exists cuisine_type text;
+alter table restaurants add column if not exists description text;
+alter table restaurants add column if not exists rating double precision;
+alter table restaurants add column if not exists delivery_fee integer;
+alter table restaurants add column if not exists minimum_order integer;
+alter table restaurants add column if not exists supports_catering boolean not null default false;
+
 create table if not exists restaurant_locations (
   id text primary key,
   restaurant_id text not null references restaurants(id) on delete cascade,
@@ -28,8 +43,13 @@ create table if not exists restaurant_locations (
   address1 text not null,
   city text not null,
   state text not null,
-  postal_code text not null
+  postal_code text not null,
+  latitude double precision,
+  longitude double precision
 );
+
+alter table restaurant_locations add column if not exists latitude double precision;
+alter table restaurant_locations add column if not exists longitude double precision;
 
 create table if not exists pos_connections (
   id text primary key,
@@ -68,12 +88,15 @@ create table if not exists canonical_menu_items (
   category text not null,
   name text not null,
   description text not null default '',
+  image_url text,
   price_cents integer not null check (price_cents >= 0),
   availability text not null check (availability in ('available', 'unavailable')),
   mapping_status text not null check (mapping_status in ('mapped', 'needs_review')),
   modifier_group_ids text[] not null default '{}'::text[],
   pos_ref jsonb not null default '{}'::jsonb
 );
+
+alter table canonical_menu_items add column if not exists image_url text;
 
 create table if not exists pos_menu_mappings (
   id text primary key,
@@ -99,9 +122,41 @@ create table if not exists agent_api_keys (
   label text not null,
   key_prefix text not null,
   key_hash text not null unique,
+  scopes text[] not null default array['restaurants:read','menus:read','orders:validate','orders:quote','orders:submit','orders:status']::text[],
   last_used_at timestamptz,
   created_at timestamptz not null default now(),
-  rotated_at timestamptz
+  rotated_at timestamptz,
+  revoked_at timestamptz
+);
+
+create table if not exists operator_users (
+  id text primary key,
+  email text not null unique,
+  full_name text not null,
+  password_hash text,
+  supabase_user_id uuid unique,
+  created_at timestamptz not null default now(),
+  last_login_at timestamptz
+);
+
+create table if not exists operator_memberships (
+  id text primary key,
+  operator_user_id text not null references operator_users(id) on delete cascade,
+  restaurant_id text not null references restaurants(id) on delete cascade,
+  location_id text references restaurant_locations(id) on delete set null,
+  role text not null check (role in ('owner', 'manager', 'staff', 'viewer')),
+  created_at timestamptz not null default now(),
+  unique (operator_user_id, restaurant_id, location_id)
+);
+
+create table if not exists operator_sessions (
+  id text primary key,
+  operator_user_id text not null references operator_users(id) on delete cascade,
+  session_token_hash text not null unique,
+  selected_restaurant_id text not null references restaurants(id) on delete cascade,
+  selected_location_id text references restaurant_locations(id) on delete set null,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
 );
 
 create table if not exists restaurant_agent_permissions (
@@ -183,7 +238,8 @@ create table if not exists order_quotes (
   fees_cents integer not null,
   total_cents integer not null,
   currency text not null default 'USD',
-  quoted_at timestamptz not null default now()
+  quoted_at timestamptz not null default now(),
+  idempotency_key text
 );
 
 create table if not exists pos_order_submissions (
@@ -193,6 +249,8 @@ create table if not exists pos_order_submissions (
   status text not null check (status in ('pending', 'submitted', 'accepted', 'failed')),
   external_order_id text,
   response jsonb not null default '{}'::jsonb,
+  payload_snapshot jsonb not null default '{}'::jsonb,
+  attempt_count integer not null default 1,
   submitted_at timestamptz not null default now()
 );
 
@@ -228,4 +286,44 @@ create table if not exists audit_logs (
   target_id text not null,
   summary text not null,
   created_at timestamptz not null default now()
+);
+
+create table if not exists api_idempotency_records (
+  id text primary key,
+  scope text not null check (scope in ('validate', 'quote', 'submit')),
+  restaurant_id text not null references restaurants(id) on delete cascade,
+  agent_id text not null references agents(id) on delete cascade,
+  idempotency_key text not null,
+  request_hash text not null,
+  status text not null check (status in ('pending', 'completed', 'failed')),
+  order_id text references agent_orders(id) on delete set null,
+  response jsonb,
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (scope, restaurant_id, agent_id, idempotency_key)
+);
+
+create table if not exists order_retry_attempts (
+  id text primary key,
+  order_id text references agent_orders(id) on delete cascade,
+  stage text not null check (stage in ('quote', 'pos_submit', 'status_poll')),
+  attempt_number integer not null,
+  status text not null check (status in ('pending', 'succeeded', 'failed')),
+  error_message text,
+  payload_snapshot jsonb,
+  response_snapshot jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists event_ingestion_records (
+  id text primary key,
+  provider text not null references pos_providers(id),
+  event_type text not null,
+  external_event_id text,
+  order_id text references agent_orders(id) on delete set null,
+  status text not null check (status in ('received', 'processed', 'failed', 'ignored')),
+  payload jsonb not null,
+  created_at timestamptz not null default now(),
+  processed_at timestamptz
 );

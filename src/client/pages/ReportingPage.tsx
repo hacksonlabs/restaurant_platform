@@ -1,4 +1,5 @@
 import { api } from "../lib/api";
+import { useTenant } from "../auth/AuthContext";
 import { money } from "../lib/format";
 import { Card, DataTable, PageHeader, StatCard } from "../components/ui";
 import { useResource } from "./useResource";
@@ -81,7 +82,8 @@ function LineTrendChart(props: {
 }
 
 export function ReportingPage() {
-  const { data, loading, error } = useResource(() => api.reporting("rest_lb_steakhouse"), []);
+  const { selectedRestaurantId } = useTenant();
+  const { data, loading, error } = useResource(`reporting:${selectedRestaurantId}`, () => api.reporting(selectedRestaurantId!), [selectedRestaurantId]);
 
   if (loading) return <div className="panel-state">Loading reporting…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;

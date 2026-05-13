@@ -1,26 +1,62 @@
 import { api } from "../lib/api";
-import { money } from "../lib/format";
-import { Badge, Card, DataTable, PageHeader } from "../components/ui";
+import { useTenant } from "../auth/AuthContext";
+import { dateTimeOrFallback, money } from "../lib/format";
+import { Badge, Button, Card, DataTable, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
+import { useState } from "react";
 
 export function MenuPage() {
-  const { data, loading, error } = useResource(() => api.menu("rest_lb_steakhouse"), []);
+  const { selectedRestaurantId, selectedRole } = useTenant();
+  const canManagePos = selectedRole === "owner";
+  const { data, setData, loading, error } = useResource(
+    `menu-page:${selectedRestaurantId}`,
+    async () => {
+      const [menu, posConnection] = await Promise.all([
+        api.menu(selectedRestaurantId!),
+        api.posConnection(selectedRestaurantId!),
+      ]);
+
+      return { menu, posConnection };
+    },
+    [selectedRestaurantId],
+  );
+  const [message, setMessage] = useState("");
 
   if (loading) return <div className="panel-state">Loading menu…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 
+  async function syncMenu() {
+    const result = await api.syncMenu(selectedRestaurantId!);
+    setData({
+      ...data,
+      posConnection: { ...data.posConnection, lastSyncedAt: result.syncedAt },
+    });
+    setMessage(result.message);
+  }
+
   return (
     <div className="page-grid">
-      <PageHeader
-        eyebrow="Menu Sync"
-        title="Canonical Menu & POS Mapping"
-        description="Menu items stay canonical in the platform while POS references are tracked separately for portability."
-      />
+      <div className="menu-header-grid">
+        <PageHeader
+          eyebrow="POS & Menu"
+          title="Menu"
+          description="Review the restaurant menu and keep the POS menu sync up to date."
+        />
 
-      <Card title="Canonical Menu Items">
+        <Card title="POS Overview" className="menu-pos-card" actions={<Button className="button-small" onClick={syncMenu} disabled={!canManagePos}>Sync Menu</Button>}>
+          <div className="detail-grid compact">
+            <div><span>Provider</span><strong>{data.posConnection.provider}</strong></div>
+            <div><span>Last Sync</span><strong>{dateTimeOrFallback(data.posConnection.lastSyncedAt)}</strong></div>
+          </div>
+        </Card>
+      </div>
+
+      {message ? <div className="inline-message success">{message}</div> : null}
+
+      <Card title="Menu Items">
         <DataTable
-          columns={["Item", "Category", "Price", "Availability", "Mapping"]}
-          rows={data.items.map((item: any) => [
+          columns={["Item", "Category", "Price", "Availability"]}
+          rows={data.menu.items.map((item: any) => [
             <div key={item.id}>
               <strong>{item.name}</strong>
               <div className="muted">{item.description}</div>
@@ -28,9 +64,6 @@ export function MenuPage() {
             item.category,
             money(item.priceCents),
             item.availability,
-            <Badge key={item.mappingStatus} tone={item.mappingStatus === "mapped" ? "success" : "warning"}>
-              {item.mappingStatus}
-            </Badge>,
           ])}
         />
       </Card>
@@ -38,7 +71,7 @@ export function MenuPage() {
       <Card title="Modifier Groups">
         <DataTable
           columns={["Group", "Type", "Selection Rules"]}
-          rows={data.modifierGroups.map((group: any) => [
+          rows={data.menu.modifierGroups.map((group: any) => [
             group.name,
             group.selectionType,
             `${group.minSelections} min / ${group.maxSelections ?? "unbounded"} max`,
@@ -46,18 +79,26 @@ export function MenuPage() {
         />
       </Card>
 
-      <Card title="POS Mappings">
+      <Card title="Modifiers">
         <DataTable
-          columns={["Canonical Type", "Canonical ID", "Provider", "Provider Reference", "Status"]}
-          rows={data.mappings.map((mapping: any) => [
-            mapping.canonicalType,
-            mapping.canonicalId,
-            mapping.provider,
-            mapping.providerReference,
-            <Badge key={mapping.id} tone={mapping.status === "mapped" ? "success" : "warning"}>
-              {mapping.status}
-            </Badge>,
-          ])}
+          columns={["Modifier", "Group", "Price", "Availability"]}
+          rows={data.menu.modifiers.map((modifier: any) => {
+            const group = data.menu.modifierGroups.find((entry: any) => entry.id === modifier.modifierGroupId);
+            return [
+              modifier.name,
+              group?.name ?? modifier.modifierGroupId,
+              modifier.priceCents > 0 ? `+${money(modifier.priceCents)}` : money(modifier.priceCents),
+              modifier.isAvailable ? (
+                <Badge key={`${modifier.id}-available`} tone="success">
+                  available
+                </Badge>
+              ) : (
+                <Badge key={`${modifier.id}-unavailable`} tone="warning">
+                  unavailable
+                </Badge>
+              ),
+            ];
+          })}
         />
       </Card>
     </div>

@@ -1,8 +1,12 @@
 import { createDemoSeed, type DemoSeedState } from "./demoData";
 import { createId } from "../utils/ids";
+import { sha256 } from "../utils/crypto";
+import type { OperatorIdentity } from "../auth/supabaseAuth";
 import type {
   Agent,
+  AgentApiScope,
   AgentApiKey,
+  AuthenticatedOperator,
   AgentOrderItemRecord,
   AgentOrderModifierRecord,
   AgentOrderRecord,
@@ -10,7 +14,11 @@ import type {
   CanonicalMenuItem,
   CanonicalModifier,
   CanonicalModifierGroup,
+  EventIngestionRecord,
+  IdempotencyRecord,
+  OperationalDiagnosticsSnapshot,
   OrderQuote,
+  OrderTimelineEvent,
   OrderValidationResult,
   OrderingRule,
   POSConnection,
@@ -20,19 +28,24 @@ import type {
   Restaurant,
   RestaurantAgentPermission,
   RestaurantLocation,
+  RetryAttempt,
   StatusEvent,
   ValidationIssue,
+  OperatorMembership,
+  OperatorUser,
+  OrderDiagnostics,
 } from "../../shared/types";
 
 export interface AgentListEntry {
   permissionId: string;
   agent: Agent;
   permission: RestaurantAgentPermission;
-  apiKey: Pick<AgentApiKey, "id" | "label" | "keyPrefix" | "lastUsedAt" | "createdAt" | "rotatedAt"> | null;
+  apiKey: Pick<AgentApiKey, "id" | "label" | "keyPrefix" | "scopes" | "lastUsedAt" | "createdAt" | "rotatedAt" | "revokedAt"> | null;
 }
 
 export interface OrderDetailRecord {
   order: AgentOrderRecord;
+  groupedOrders?: AgentOrderRecord[];
   items: Array<
     AgentOrderItemRecord & {
       menuItem?: CanonicalMenuItem;
@@ -47,6 +60,10 @@ export interface OrderDetailRecord {
   quotes: OrderQuote[];
   submissions: POSOrderSubmission[];
   statusEvents: StatusEvent[];
+  auditLogs?: AuditLog[];
+  retries?: RetryAttempt[];
+  timeline?: OrderTimelineEvent[];
+  diagnostics?: OrderDiagnostics;
 }
 
 export interface DashboardStats {
@@ -73,7 +90,29 @@ export interface OrderGraphInput {
   auditLog: Omit<AuditLog, "id" | "createdAt">;
 }
 
+export interface ReconcileOperatorOptions {
+  allowSeededDevBootstrap?: boolean;
+  updateLastLoginAt?: boolean;
+  linkIdentity?: boolean;
+}
+
 export interface PlatformRepository {
+  authenticateOperator(email: string, password: string): Promise<AuthenticatedOperator | null>;
+  reconcileOperatorIdentity(
+    identity: OperatorIdentity,
+    options?: ReconcileOperatorOptions,
+  ): Promise<AuthenticatedOperator | null>;
+  getAuthenticatedOperatorBySessionToken(sessionTokenHash: string): Promise<AuthenticatedOperator | null>;
+  createOperatorSession(args: {
+    operatorUserId: string;
+    selectedRestaurantId: string;
+    selectedLocationId?: string;
+    sessionTokenHash: string;
+    expiresAt: string;
+  }): Promise<void>;
+  updateOperatorSessionSelection(sessionTokenHash: string, restaurantId: string, locationId?: string): Promise<void>;
+  deleteOperatorSession(sessionTokenHash: string): Promise<void>;
+  listAccessibleRestaurants(operatorUserId: string): Promise<Array<Restaurant & { memberships: OperatorMembership[] }>>;
   listRestaurants(): Promise<Restaurant[]>;
   getRestaurant(restaurantId: string): Promise<Restaurant | null>;
   updateRestaurant(restaurantId: string, patch: Partial<Restaurant>): Promise<Restaurant>;
@@ -92,6 +131,18 @@ export interface PlatformRepository {
   getAgent(agentId: string): Promise<Agent | null>;
   getPermission(restaurantId: string, agentId: string): Promise<RestaurantAgentPermission | null>;
   updatePermission(permissionId: string, patch: Partial<RestaurantAgentPermission>): Promise<RestaurantAgentPermission>;
+  createAgentApiKey(args: {
+    agentId: string;
+    label: string;
+    keyPrefix: string;
+    keyHash: string;
+    scopes: AgentApiScope[];
+  }): Promise<AgentApiKey>;
+  updateAgentApiKey(
+    keyId: string,
+    patch: Partial<Pick<AgentApiKey, "label" | "keyHash" | "keyPrefix" | "scopes" | "rotatedAt" | "revokedAt" | "lastUsedAt">>,
+  ): Promise<AgentApiKey>;
+  listAgentApiKeys(agentId: string): Promise<AgentApiKey[]>;
   listOrders(restaurantId: string): Promise<AgentOrderRecord[]>;
   getOrderDetail(restaurantId: string, orderId: string): Promise<OrderDetailRecord | null>;
   getOrderById(orderId: string): Promise<AgentOrderRecord | null>;
@@ -110,6 +161,14 @@ export interface PlatformRepository {
   getDashboardStats(restaurantId: string): Promise<DashboardStats>;
   getReporting(restaurantId: string): Promise<ReportingSnapshotRecord>;
   refreshReportingMetrics(restaurantId: string): Promise<void>;
+  getIdempotencyRecord(scope: "validate" | "quote" | "submit", restaurantId: string, agentId: string, idempotencyKey: string): Promise<IdempotencyRecord | null>;
+  createIdempotencyRecord(input: Omit<IdempotencyRecord, "id" | "createdAt" | "updatedAt">): Promise<IdempotencyRecord>;
+  updateIdempotencyRecord(recordId: string, patch: Partial<Pick<IdempotencyRecord, "status" | "response" | "error" | "orderId">>): Promise<IdempotencyRecord>;
+  saveRetryAttempt(attempt: Omit<RetryAttempt, "id" | "createdAt">): Promise<RetryAttempt>;
+  listRetryAttempts(orderId: string): Promise<RetryAttempt[]>;
+  getOperationalDiagnostics(restaurantId: string): Promise<OperationalDiagnosticsSnapshot>;
+  saveEventIngestion(record: Omit<EventIngestionRecord, "id" | "createdAt">): Promise<EventIngestionRecord>;
+  listAuditLogsForOrder(orderId: string): Promise<AuditLog[]>;
 }
 
 function notFound(entity: string, id: string): Error {
@@ -236,7 +295,7 @@ function computeReportingMetricsForState(
           !["rejected", "failed", "cancelled", "completed"].includes(order.status),
       ).length;
       return {
-        id: `metric_${date.replace(/-/g, "_")}`,
+        id: `metric_${restaurantId}_${date.replace(/-/g, "_")}`,
         restaurantId,
         date,
         totalOrders,
@@ -252,11 +311,208 @@ function computeReportingMetricsForState(
     .sort((a, b) => b.date.localeCompare(a.date));
 }
 
+function buildOrderTimeline(detail: {
+  validationResults: OrderValidationResult[];
+  quotes: OrderQuote[];
+  submissions: POSOrderSubmission[];
+  statusEvents: StatusEvent[];
+  retries: RetryAttempt[];
+  auditLogs: AuditLog[];
+}) {
+  return [
+    ...detail.statusEvents.map((event) => ({
+      id: event.id,
+      kind: "status" as const,
+      title: event.status,
+      message: event.message,
+      createdAt: event.createdAt,
+      status: event.status,
+    })),
+    ...detail.validationResults.map((result) => ({
+      id: result.id,
+      kind: "validation" as const,
+      title: result.valid ? "Validation passed" : "Validation failed",
+      message: `${result.issues.length} issues recorded.`,
+      createdAt: result.checkedAt,
+      status: result.valid ? "valid" : "invalid",
+      details: { issues: result.issues, idempotencyKey: result.idempotencyKey },
+    })),
+    ...detail.quotes.map((quote) => ({
+      id: quote.id,
+      kind: "quote" as const,
+      title: "Quote generated",
+      message: `Quoted total ${quote.totalCents} ${quote.currency}.`,
+      createdAt: quote.quotedAt,
+      details: { idempotencyKey: quote.idempotencyKey, totalCents: quote.totalCents },
+    })),
+    ...detail.submissions.map((submission) => ({
+      id: submission.id,
+      kind: "submission" as const,
+      title: `POS submit ${submission.status}`,
+      message: submission.externalOrderId ?? "Submission recorded.",
+      createdAt: submission.submittedAt,
+      status: submission.status,
+      details: {
+        externalOrderId: submission.externalOrderId,
+        attemptCount: submission.attemptCount,
+        payloadSnapshot: submission.payloadSnapshot,
+        response: submission.response,
+      },
+    })),
+    ...detail.retries.map((attempt) => ({
+      id: attempt.id,
+      kind: "retry" as const,
+      title: `${attempt.stage} retry ${attempt.status}`,
+      message: attempt.errorMessage ?? "Retry attempt recorded.",
+      createdAt: attempt.createdAt,
+      status: attempt.status,
+      details: {
+        attemptNumber: attempt.attemptNumber,
+        payloadSnapshot: attempt.payloadSnapshot,
+        responseSnapshot: attempt.responseSnapshot,
+      },
+    })),
+    ...detail.auditLogs.map((log) => ({
+      id: log.id,
+      kind: "audit" as const,
+      title: log.action,
+      message: log.summary,
+      createdAt: log.createdAt,
+      details: { actorType: log.actorType, actorId: log.actorId },
+    })),
+  ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+const SEEDED_DEV_OPERATOR_EMAIL = "dev@rest.com";
+const SEEDED_DEV_OPERATOR_ID = "op_dev_rest";
+const SEEDED_DEV_MEMBERSHIP_ID = "membership_lb_owner";
+const SEEDED_DEV_RESTAURANT_ID = "rest_lb_steakhouse";
+const SEEDED_DEV_LOCATION_ID = "loc_lb_main";
+
 export class InMemoryPlatformRepository implements PlatformRepository {
   state: DemoSeedState;
 
   constructor(demoPhantomApiKey: string) {
     this.state = createDemoSeed(demoPhantomApiKey);
+  }
+
+  async authenticateOperator(email: string, password: string) {
+    const user = this.state.operatorUsers.find(
+      (entry) => entry.email.toLowerCase() === email.toLowerCase() && password === "password",
+    );
+    if (!user) return null;
+    const memberships = this.state.operatorMemberships.filter((entry) => entry.operatorUserId === user.id);
+    const selectedMembership = memberships[0];
+    if (!selectedMembership) return null;
+    return { user, memberships, selectedMembership };
+  }
+
+  async reconcileOperatorIdentity(
+    identity: OperatorIdentity,
+    options?: ReconcileOperatorOptions,
+  ) {
+    const normalizedEmail = identity.email.toLowerCase();
+    let user =
+      this.state.operatorUsers.find((entry) => entry.supabaseUserId === identity.id) ??
+      this.state.operatorUsers.find((entry) => entry.email.toLowerCase() === normalizedEmail);
+
+    if (!user && options?.allowSeededDevBootstrap && normalizedEmail === SEEDED_DEV_OPERATOR_EMAIL) {
+      const restaurant = this.state.restaurants.find((entry) => entry.id === SEEDED_DEV_RESTAURANT_ID);
+      if (!restaurant) return null;
+      const location =
+        this.state.locations.find((entry) => entry.restaurantId === SEEDED_DEV_RESTAURANT_ID)?.id ?? SEEDED_DEV_LOCATION_ID;
+      user = {
+        id: SEEDED_DEV_OPERATOR_ID,
+        email: identity.email,
+        fullName: identity.fullName ?? "Restaurant Dev Operator",
+        supabaseUserId: identity.id,
+        createdAt: new Date().toISOString(),
+        lastLoginAt: options?.updateLastLoginAt ? new Date().toISOString() : undefined,
+      };
+      this.state.operatorUsers.unshift(user);
+      this.state.operatorMemberships.unshift({
+        id: SEEDED_DEV_MEMBERSHIP_ID,
+        operatorUserId: user.id,
+        restaurantId: SEEDED_DEV_RESTAURANT_ID,
+        locationId: location,
+        role: "owner",
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    if (!user) return null;
+
+    if (options?.linkIdentity !== false && user.supabaseUserId && user.supabaseUserId !== identity.id) {
+      throw new Error("Operator account is already linked to a different Supabase Auth user.");
+    }
+
+    user.email = identity.email;
+    user.fullName = identity.fullName ?? user.fullName;
+    if (options?.linkIdentity !== false) {
+      user.supabaseUserId = identity.id;
+    }
+    if (options?.updateLastLoginAt) {
+      user.lastLoginAt = new Date().toISOString();
+    }
+
+    const memberships = this.state.operatorMemberships.filter((entry) => entry.operatorUserId === user.id);
+    const selectedMembership = memberships[0];
+    if (!selectedMembership) return null;
+    return { user, memberships, selectedMembership };
+  }
+
+  async getAuthenticatedOperatorBySessionToken(sessionTokenHash: string) {
+    const session = this.state.operatorSessions.find(
+      (entry) => sha256(`${entry.id}:${entry.operatorUserId}`) === sessionTokenHash || sessionTokenHash === entry.id,
+    );
+    if (!session || new Date(session.expiresAt).getTime() <= Date.now()) return null;
+    const user = this.state.operatorUsers.find((entry) => entry.id === session.operatorUserId);
+    if (!user) return null;
+    const memberships = this.state.operatorMemberships.filter((entry) => entry.operatorUserId === user.id);
+    const selectedMembership =
+      memberships.find((entry) => entry.restaurantId === session.selectedRestaurantId && entry.locationId === session.selectedLocationId) ??
+      memberships.find((entry) => entry.restaurantId === session.selectedRestaurantId) ??
+      memberships[0];
+    if (!selectedMembership) return null;
+    return { user, memberships, selectedMembership };
+  }
+
+  async createOperatorSession(args: {
+    operatorUserId: string;
+    selectedRestaurantId: string;
+    selectedLocationId?: string;
+    sessionTokenHash: string;
+    expiresAt: string;
+  }) {
+    this.state.operatorSessions.unshift({
+      id: args.sessionTokenHash,
+      operatorUserId: args.operatorUserId,
+      selectedRestaurantId: args.selectedRestaurantId,
+      selectedLocationId: args.selectedLocationId,
+      expiresAt: args.expiresAt,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  async updateOperatorSessionSelection(sessionTokenHash: string, restaurantId: string, locationId?: string) {
+    const session = this.state.operatorSessions.find((entry) => entry.id === sessionTokenHash);
+    if (!session) return;
+    session.selectedRestaurantId = restaurantId;
+    session.selectedLocationId = locationId;
+  }
+
+  async deleteOperatorSession(sessionTokenHash: string) {
+    this.state.operatorSessions = this.state.operatorSessions.filter((entry) => entry.id !== sessionTokenHash);
+  }
+
+  async listAccessibleRestaurants(operatorUserId: string) {
+    const memberships = this.state.operatorMemberships.filter((entry) => entry.operatorUserId === operatorUserId);
+    return this.state.restaurants
+      .filter((restaurant) => memberships.some((membership) => membership.restaurantId === restaurant.id))
+      .map((restaurant) => ({
+        ...restaurant,
+        memberships: memberships.filter((membership) => membership.restaurantId === restaurant.id),
+      }));
   }
 
   async listRestaurants() {
@@ -332,9 +588,11 @@ export class InMemoryPlatformRepository implements PlatformRepository {
                 id: key.id,
                 label: key.label,
                 keyPrefix: key.keyPrefix,
+                scopes: key.scopes,
                 lastUsedAt: key.lastUsedAt,
                 createdAt: key.createdAt,
                 rotatedAt: key.rotatedAt,
+                revokedAt: key.revokedAt,
               }
             : null,
         };
@@ -357,15 +615,74 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     return updated;
   }
 
+  async createAgentApiKey(args: {
+    agentId: string;
+    label: string;
+    keyPrefix: string;
+    keyHash: string;
+    scopes: AgentApiScope[];
+  }) {
+    const key: AgentApiKey = {
+      id: createId("key"),
+      agentId: args.agentId,
+      label: args.label,
+      keyPrefix: args.keyPrefix,
+      keyHash: args.keyHash,
+      scopes: args.scopes,
+      createdAt: new Date().toISOString(),
+    };
+    this.state.agentApiKeys.unshift(key);
+    return key;
+  }
+
+  async updateAgentApiKey(
+    keyId: string,
+    patch: Partial<Pick<AgentApiKey, "label" | "keyHash" | "keyPrefix" | "scopes" | "rotatedAt" | "revokedAt" | "lastUsedAt">>,
+  ) {
+    const index = this.state.agentApiKeys.findIndex((entry) => entry.id === keyId);
+    if (index < 0) throw notFound("Agent API key", keyId);
+    const updated = { ...this.state.agentApiKeys[index], ...patch };
+    this.state.agentApiKeys[index] = updated;
+    return updated;
+  }
+
+  async listAgentApiKeys(agentId: string) {
+    return this.state.agentApiKeys.filter((entry) => entry.agentId === agentId);
+  }
+
+  private decorateOrderAgent(order: AgentOrderRecord) {
+    const metadata =
+      order.orderIntent && typeof order.orderIntent === "object" && order.orderIntent.metadata && typeof order.orderIntent.metadata === "object"
+        ? order.orderIntent.metadata
+        : {};
+    const agent = this.state.agents.find((entry) => entry.id === order.agentId);
+    return {
+      ...order,
+      agentName: agent?.name ?? order.agentName,
+      splitGroupId:
+        typeof metadata.split_group_id === "string" ? metadata.split_group_id : order.splitGroupId,
+      splitGroupIndex:
+        Number.isFinite(Number(metadata.split_group_index))
+          ? Math.round(Number(metadata.split_group_index))
+          : order.splitGroupIndex,
+      splitGroupSize:
+        Number.isFinite(Number(metadata.split_group_size))
+          ? Math.round(Number(metadata.split_group_size))
+          : order.splitGroupSize,
+    };
+  }
+
   async listOrders(restaurantId: string) {
-    return this.state.orders.filter((entry) => entry.restaurantId === restaurantId);
+    return this.state.orders
+      .filter((entry) => entry.restaurantId === restaurantId)
+      .map((entry) => this.decorateOrderAgent(entry));
   }
 
   async getOrderDetail(restaurantId: string, orderId: string) {
     const order = this.state.orders.find((entry) => entry.restaurantId === restaurantId && entry.id === orderId);
     if (!order) return null;
-    return {
-      order,
+    const detail = {
+      order: this.decorateOrderAgent(order),
       items: this.state.orderItems.filter((entry) => entry.orderId === orderId).map((item) => ({
         ...item,
         menuItem: this.state.menuItems.find((menuItem) => menuItem.id === item.menuItemId),
@@ -380,11 +697,26 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       quotes: this.state.quotes.filter((entry) => entry.orderId === orderId),
       submissions: this.state.posSubmissions.filter((entry) => entry.orderId === orderId),
       statusEvents: this.state.statusEvents.filter((entry) => entry.orderId === orderId),
+      auditLogs: this.state.auditLogs.filter((entry) => entry.targetId === orderId || entry.restaurantId === restaurantId).slice(0, 20),
+      retries: this.state.retryAttempts.filter((entry) => entry.orderId === orderId),
+    };
+    return {
+      ...detail,
+      timeline: buildOrderTimeline(detail),
+      diagnostics: {
+        rawOrderIntent: order.orderIntent,
+        latestValidation: detail.validationResults[0],
+        latestQuote: detail.quotes[0],
+        latestSubmission: detail.submissions[0],
+        mappedPayload: undefined,
+        retries: detail.retries,
+      },
     };
   }
 
   async getOrderById(orderId: string) {
-    return this.state.orders.find((entry) => entry.id === orderId) ?? null;
+    const order = this.state.orders.find((entry) => entry.id === orderId) ?? null;
+    return order ? this.decorateOrderAgent(order) : null;
   }
 
   async findOrderIdByReference(reference: string) {
@@ -455,7 +787,8 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async authenticateAgentKey(keyHash: string) {
-    const keyRecord = this.state.agentApiKeys.find((entry) => entry.keyHash === keyHash) ?? null;
+    const keyRecord =
+      this.state.agentApiKeys.find((entry) => entry.keyHash === keyHash && !entry.revokedAt) ?? null;
     if (keyRecord) {
       keyRecord.lastUsedAt = new Date().toISOString();
     }
@@ -504,6 +837,61 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       ...this.state.reportingMetrics.filter((entry) => entry.restaurantId !== restaurantId),
       ...computeReportingMetricsForState(restaurantId, this.state.orders),
     ].sort((a, b) => b.date.localeCompare(a.date));
+  }
+
+  async getIdempotencyRecord(scope: "validate" | "quote" | "submit", restaurantId: string, agentId: string, idempotencyKey: string) {
+    return this.state.idempotencyRecords.find((entry) =>
+      entry.scope === scope &&
+      entry.restaurantId === restaurantId &&
+      entry.agentId === agentId &&
+      entry.idempotencyKey === idempotencyKey,
+    ) ?? null;
+  }
+
+  async createIdempotencyRecord(input: Omit<IdempotencyRecord, "id" | "createdAt" | "updatedAt">) {
+    const record: IdempotencyRecord = { ...input, id: createId("idem"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    this.state.idempotencyRecords.unshift(record);
+    return record;
+  }
+
+  async updateIdempotencyRecord(recordId: string, patch: Partial<Pick<IdempotencyRecord, "status" | "response" | "error" | "orderId">>) {
+    const index = this.state.idempotencyRecords.findIndex((entry) => entry.id === recordId);
+    if (index < 0) throw notFound("Idempotency record", recordId);
+    const updated = { ...this.state.idempotencyRecords[index], ...patch, updatedAt: new Date().toISOString() };
+    this.state.idempotencyRecords[index] = updated;
+    return updated;
+  }
+
+  async saveRetryAttempt(attempt: Omit<RetryAttempt, "id" | "createdAt">) {
+    const created: RetryAttempt = { ...attempt, id: createId("retry"), createdAt: new Date().toISOString() };
+    this.state.retryAttempts.unshift(created);
+    return created;
+  }
+
+  async listRetryAttempts(orderId: string) {
+    return this.state.retryAttempts.filter((entry) => entry.orderId === orderId);
+  }
+
+  async getOperationalDiagnostics(restaurantId: string) {
+    const orders = this.state.orders.filter((entry) => entry.restaurantId === restaurantId);
+    return {
+      failedOrders: orders.filter((entry) => ["failed", "rejected"].includes(entry.status)).map((entry) => ({ orderId: entry.id, status: entry.status, updatedAt: entry.updatedAt })),
+      stuckOrders: orders.filter((entry) => ["needs_approval", "submitting_to_pos"].includes(entry.status)).map((entry) => ({ orderId: entry.id, status: entry.status, updatedAt: entry.updatedAt })),
+      quoteFailures: this.state.retryAttempts.filter((entry) => entry.stage === "quote" && entry.status === "failed").map((entry) => ({ orderId: entry.orderId, count: 1, lastError: entry.errorMessage })),
+      posFailures: this.state.retryAttempts.filter((entry) => entry.stage === "pos_submit" && entry.status === "failed").map((entry) => ({ orderId: entry.orderId, count: 1, lastError: entry.errorMessage })),
+      retryQueue: this.state.retryAttempts.filter((entry) => entry.status === "pending"),
+      mappingIssues: this.state.menuItems.filter((entry) => entry.restaurantId === restaurantId && entry.mappingStatus !== "mapped").map((entry) => ({ menuItemId: entry.id, name: entry.name, mappingStatus: entry.mappingStatus })),
+    };
+  }
+
+  async saveEventIngestion(record: Omit<EventIngestionRecord, "id" | "createdAt">) {
+    const created: EventIngestionRecord = { ...record, id: createId("evt_ingest"), createdAt: new Date().toISOString() };
+    this.state.ingestedEvents.unshift(created);
+    return created;
+  }
+
+  async listAuditLogsForOrder(orderId: string) {
+    return this.state.auditLogs.filter((entry) => entry.targetId === orderId);
   }
 }
 

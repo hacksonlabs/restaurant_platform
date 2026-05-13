@@ -1,12 +1,14 @@
 import { Link } from "react-router-dom";
 import { useState } from "react";
 import { api } from "../lib/api";
+import { useTenant } from "../auth/AuthContext";
 import { dateTimeOrFallback } from "../lib/format";
 import { Badge, Card, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
 export function AgentsPage() {
-  const { data, setData, loading, error } = useResource(() => api.agents("rest_lb_steakhouse"), []);
+  const { selectedRestaurantId } = useTenant();
+  const { data, setData, loading, error } = useResource(`agents:${selectedRestaurantId}`, () => api.agents(selectedRestaurantId!), [selectedRestaurantId]);
   const [message, setMessage] = useState("");
 
   if (loading) return <div className="panel-state">Loading agents…</div>;

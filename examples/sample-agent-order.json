@@ -1,6 +1,6 @@
 {
   "restaurant_id": "rest_lb_steakhouse",
-  "agent_id": "agent_phantom",
+  "agent_id": "agent_coachimhungry",
   "external_order_reference": "phantom-api-demo-2001",
   "customer": {
     "name": "Jordan Rivera",
@@ -9,7 +9,7 @@
     "teamName": "Product Team"
   },
   "fulfillment_type": "catering",
-  "requested_fulfillment_time": "2099-05-02T22:00:00.000Z",
+  "requested_fulfillment_time": "2026-05-02T22:00:00.000Z",
   "headcount": 10,
   "budget_constraints": {
     "max_total_cents": 150000

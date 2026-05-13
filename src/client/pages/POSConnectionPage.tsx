@@ -1,24 +1,27 @@
 import { useState } from "react";
 import { api } from "../lib/api";
+import { useTenant } from "../auth/AuthContext";
 import { dateTimeOrFallback } from "../lib/format";
 import { Badge, Button, Card, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
 export function POSConnectionPage() {
-  const { data, setData, loading, error } = useResource(() => api.posConnection("rest_lb_steakhouse"), []);
+  const { selectedRestaurantId, selectedRole } = useTenant();
+  const canManagePos = selectedRole === "owner";
+  const { data, setData, loading, error } = useResource(`pos-connection:${selectedRestaurantId}`, () => api.posConnection(selectedRestaurantId!), [selectedRestaurantId]);
   const [message, setMessage] = useState("");
 
   if (loading) return <div className="panel-state">Loading POS connection…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 
   async function testConnection() {
-    const result = await api.testPOSConnection("rest_lb_steakhouse");
+    const result = await api.testPOSConnection(selectedRestaurantId!);
     setData({ ...data, status: result.status, lastTestedAt: result.checkedAt });
     setMessage(result.message);
   }
 
   async function syncMenu() {
-    const result = await api.syncMenu("rest_lb_steakhouse");
+    const result = await api.syncMenu(selectedRestaurantId!);
     setData({ ...data, lastSyncedAt: result.syncedAt });
     setMessage(result.message);
   }
@@ -31,10 +34,10 @@ export function POSConnectionPage() {
         description="The adapter layer stays POS-agnostic while Toast is the first concrete implementation."
         actions={
           <div className="page-actions">
-            <Button tone="secondary" onClick={testConnection}>
+            <Button tone="secondary" onClick={testConnection} disabled={!canManagePos}>
               Test Connection
             </Button>
-            <Button onClick={syncMenu}>Sync Menu</Button>
+            <Button onClick={syncMenu} disabled={!canManagePos}>Sync Menu</Button>
           </div>
         }
       />

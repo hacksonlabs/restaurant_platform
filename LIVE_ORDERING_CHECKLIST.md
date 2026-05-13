@@ -31,7 +31,7 @@
 
 ## First Sandbox Order
 
-1. Validate a canonical order through `/api/agent/restaurants/:restaurantId/orders/validate`.
+1. Validate an order through `/api/agent/restaurants/:restaurantId/orders/validate`.
 2. Quote it through `/api/agent/restaurants/:restaurantId/orders/quote`.
 3. Submit it through `/api/agent/restaurants/:restaurantId/orders/submit`.
 4. Approve it through the admin endpoint if needed.

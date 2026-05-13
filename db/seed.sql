@@ -7,11 +7,11 @@ on conflict (id) do update set
   name = excluded.name;
 
 insert into restaurants (
-  id, name, location, timezone, pos_provider, agent_ordering_enabled,
+  id, name, location, timezone, image_url, cuisine_type, description, rating, delivery_fee, minimum_order, supports_catering, pos_provider, agent_ordering_enabled,
   default_approval_mode, contact_email, contact_phone, fulfillment_types_supported,
   created_at, updated_at
 ) values (
-  'rest_lb_steakhouse', 'LB Steakhouse', 'San Jose, CA', 'America/Los_Angeles', 'toast', true,
+  'rest_lb_steakhouse', 'LB Steakhouse', '1533 Ashcroft Way, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/67468/pexels-photo-67468.jpeg', 'Steakhouse', 'Classic steakhouse plates, polished sides, and a strong team-order catering fit.', 4.7, 299, 2500, true, 'toast', true,
   'threshold_review', 'ops@lbsteakhouse.example', '(408) 555-0193',
   array['pickup', 'delivery', 'catering']::text[],
   '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
@@ -20,6 +20,13 @@ on conflict (id) do update set
   name = excluded.name,
   location = excluded.location,
   timezone = excluded.timezone,
+  image_url = excluded.image_url,
+  cuisine_type = excluded.cuisine_type,
+  description = excluded.description,
+  rating = excluded.rating,
+  delivery_fee = excluded.delivery_fee,
+  minimum_order = excluded.minimum_order,
+  supports_catering = excluded.supports_catering,
   pos_provider = excluded.pos_provider,
   agent_ordering_enabled = excluded.agent_ordering_enabled,
   default_approval_mode = excluded.default_approval_mode,
@@ -28,21 +35,23 @@ on conflict (id) do update set
   fulfillment_types_supported = excluded.fulfillment_types_supported,
   updated_at = excluded.updated_at;
 
-insert into restaurant_locations (id, restaurant_id, name, address1, city, state, postal_code) values
-  ('loc_lb_main', 'rest_lb_steakhouse', 'Santana Row', '334 Santana Row', 'San Jose', 'CA', '95128')
+insert into restaurant_locations (id, restaurant_id, name, address1, city, state, postal_code, latitude, longitude) values
+  ('loc_lb_main', 'rest_lb_steakhouse', 'Ashcroft Way Test Kitchen', '1533 Ashcroft Way', 'Sunnyvale', 'CA', '94087', 37.3509, -122.0378)
 on conflict (id) do update set
   restaurant_id = excluded.restaurant_id,
   name = excluded.name,
   address1 = excluded.address1,
   city = excluded.city,
   state = excluded.state,
-  postal_code = excluded.postal_code;
+  postal_code = excluded.postal_code,
+  latitude = excluded.latitude,
+  longitude = excluded.longitude;
 
 insert into pos_connections (
   id, restaurant_id, provider, status, mode, restaurant_guid, location_id, metadata, last_tested_at, last_synced_at
 ) values (
   'posconn_lb_toast', 'rest_lb_steakhouse', 'toast', 'sandbox', 'mock',
-  'toast-rest-guid-lb-steakhouse', 'toast-location-lb-main', '{"source":"demo"}'::jsonb,
+  'toast-rest-guid-lb-steakhouse', 'toast-location-lb-ashcroft', '{"source":"demo"}'::jsonb,
   '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
 )
 on conflict (id) do update set
@@ -86,17 +95,18 @@ on conflict (id) do update set
   is_available = excluded.is_available;
 
 insert into canonical_menu_items (
-  id, restaurant_id, category, name, description, price_cents, availability, mapping_status, modifier_group_ids, pos_ref
+  id, restaurant_id, category, name, description, image_url, price_cents, availability, mapping_status, modifier_group_ids, pos_ref
 ) values
-  ('item_ribeye', 'rest_lb_steakhouse', 'Steaks', '16oz Prime Ribeye', 'Dry-aged ribeye with rosemary butter.', 5600, 'available', 'mapped', array['mg_temp','mg_side','mg_addons']::text[], '{"provider":"toast","externalId":"toast_item_ribeye"}'::jsonb),
-  ('item_filet', 'rest_lb_steakhouse', 'Steaks', '8oz Center Cut Filet', 'Tender filet with sea salt finish.', 4900, 'available', 'mapped', array['mg_temp','mg_side','mg_addons']::text[], '{"provider":"toast","externalId":"toast_item_filet"}'::jsonb),
-  ('item_caesar', 'rest_lb_steakhouse', 'Starters', 'Tableside Caesar', 'Romaine, parmesan, brioche crumb.', 1600, 'available', 'mapped', array[]::text[], '{"provider":"toast","externalId":"toast_item_caesar"}'::jsonb),
-  ('item_butter_cake', 'rest_lb_steakhouse', 'Dessert', 'Butter Cake', 'Warm vanilla butter cake with berries.', 1400, 'available', 'needs_review', array[]::text[], '{"provider":"toast","externalId":"toast_item_butter_cake"}'::jsonb)
+  ('item_ribeye', 'rest_lb_steakhouse', 'Steaks', '16oz Prime Ribeye', 'Dry-aged ribeye with rosemary butter.', 'https://images.pexels.com/photos/675951/pexels-photo-675951.jpeg', 5600, 'available', 'mapped', array['mg_temp','mg_side','mg_addons']::text[], '{"provider":"toast","externalId":"toast_item_ribeye"}'::jsonb),
+  ('item_filet', 'rest_lb_steakhouse', 'Steaks', '8oz Center Cut Filet', 'Tender filet with sea salt finish.', 'https://images.pexels.com/photos/361184/asparagus-steak-veal-steak-veal-361184.jpeg', 4900, 'available', 'mapped', array['mg_temp','mg_side','mg_addons']::text[], '{"provider":"toast","externalId":"toast_item_filet"}'::jsonb),
+  ('item_caesar', 'rest_lb_steakhouse', 'Starters', 'Tableside Caesar', 'Romaine, parmesan, brioche crumb.', 'https://images.pexels.com/photos/2097090/pexels-photo-2097090.jpeg', 1600, 'available', 'mapped', array[]::text[], '{"provider":"toast","externalId":"toast_item_caesar"}'::jsonb),
+  ('item_butter_cake', 'rest_lb_steakhouse', 'Dessert', 'Butter Cake', 'Warm vanilla butter cake with berries.', 'https://images.pexels.com/photos/291528/pexels-photo-291528.jpeg', 1400, 'available', 'needs_review', array[]::text[], '{"provider":"toast","externalId":"toast_item_butter_cake"}'::jsonb)
 on conflict (id) do update set
   restaurant_id = excluded.restaurant_id,
   category = excluded.category,
   name = excluded.name,
   description = excluded.description,
+  image_url = excluded.image_url,
   price_cents = excluded.price_cents,
   availability = excluded.availability,
   mapping_status = excluded.mapping_status,
@@ -135,18 +145,38 @@ on conflict (id) do update set
   description = excluded.description,
   created_at = excluded.created_at;
 
-insert into agent_api_keys (id, agent_id, label, key_prefix, key_hash, last_used_at, created_at) values
-  ('key_phantom_demo', 'agent_phantom', 'Local demo key', 'phantom_', 'e1a638a1ff93bb8d06eb538031f608334b92afce24398e81dd8e22f6374ede9c', '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z')
+insert into agent_api_keys (id, agent_id, label, key_prefix, key_hash, scopes, last_used_at, created_at, revoked_at) values
+  ('key_coachimhungry_demo', 'agent_coachimhungry', 'CoachImHungry local demo key', 'coachimh', 'ec8189130b326472785eae6410197a4d0f89cf806bd430f8b2c933a0668f94ac', array['restaurants:read','menus:read','payments:start','orders:validate','orders:quote','orders:submit','orders:status']::text[], '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z', null)
 on conflict (id) do update set
   agent_id = excluded.agent_id,
   label = excluded.label,
   key_prefix = excluded.key_prefix,
   key_hash = excluded.key_hash,
+  scopes = excluded.scopes,
   last_used_at = excluded.last_used_at,
+  created_at = excluded.created_at,
+  revoked_at = excluded.revoked_at;
+
+insert into operator_users (id, email, full_name, supabase_user_id, created_at, last_login_at) values
+  ('op_dev_rest', 'dev@rest.com', 'Restaurant Dev Operator', null, '2026-05-01T18:00:00.000Z', null)
+on conflict (id) do update set
+  email = excluded.email,
+  full_name = excluded.full_name,
+  supabase_user_id = coalesce(operator_users.supabase_user_id, excluded.supabase_user_id),
+  created_at = excluded.created_at;
+
+insert into operator_memberships (id, operator_user_id, restaurant_id, location_id, role, created_at) values
+  ('membership_lb_owner', 'op_dev_rest', 'rest_lb_steakhouse', 'loc_lb_main', 'owner', '2026-05-01T18:00:00.000Z')
+on conflict (id) do update set
+  operator_user_id = excluded.operator_user_id,
+  restaurant_id = excluded.restaurant_id,
+  location_id = excluded.location_id,
+  role = excluded.role,
   created_at = excluded.created_at;
 
 insert into restaurant_agent_permissions (id, restaurant_id, agent_id, status, notes, last_activity_at) values
-  ('perm_lb_phantom', 'rest_lb_steakhouse', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z')
+  ('perm_lb_phantom', 'rest_lb_steakhouse', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
+  ('perm_lb_coachimhungry', 'rest_lb_steakhouse', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   restaurant_id = excluded.restaurant_id,
   agent_id = excluded.agent_id,
@@ -159,12 +189,172 @@ insert into ordering_rules (
   max_headcount, auto_accept_enabled, manager_approval_threshold_cents, blackout_windows,
   allowed_fulfillment_types, substitution_policy, payment_policy, allowed_agent_ids
 ) values (
-  'rules_lb_default', 'rest_lb_steakhouse', 90, 2500, 25, 40, false, 80000,
+  'rules_lb_default', 'rest_lb_steakhouse', 90, 250, 1000, 1000, false, 80000,
   '[{"id":"blackout_brunch","label":"Sunday Brunch Blackout","startsAt":"2026-05-03T17:00:00.000Z","endsAt":"2026-05-03T21:00:00.000Z"}]'::jsonb,
   array['pickup','delivery','catering']::text[],
   'require_approval', 'required_before_submit',
-  array['agent_phantom']::text[]
+  array['agent_phantom','agent_coachimhungry']::text[]
 )
+on conflict (id) do update set
+  restaurant_id = excluded.restaurant_id,
+  minimum_lead_time_minutes = excluded.minimum_lead_time_minutes,
+  max_order_dollar_amount = excluded.max_order_dollar_amount,
+  max_item_quantity = excluded.max_item_quantity,
+  max_headcount = excluded.max_headcount,
+  auto_accept_enabled = excluded.auto_accept_enabled,
+  manager_approval_threshold_cents = excluded.manager_approval_threshold_cents,
+  blackout_windows = excluded.blackout_windows,
+  allowed_fulfillment_types = excluded.allowed_fulfillment_types,
+  substitution_policy = excluded.substitution_policy,
+  payment_policy = excluded.payment_policy,
+  allowed_agent_ids = excluded.allowed_agent_ids;
+
+insert into restaurants (
+  id, name, location, timezone, image_url, cuisine_type, description, rating, delivery_fee, minimum_order, supports_catering, pos_provider, agent_ordering_enabled,
+  default_approval_mode, contact_email, contact_phone, fulfillment_types_supported,
+  created_at, updated_at
+) values
+  (
+    'rest_pizza_palace', 'Pizza Palace', '1325 Sunnyvale Saratoga Rd, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/825661/pexels-photo-825661.jpeg', 'Pizza', 'Shareable pies, garlic knots, and easy crowd ordering for pickup or delivery.', 4.5, 199, 1800, true, 'toast', true,
+    'threshold_review', 'ops@pizzapalace.example', '(123) 456-7890',
+    array['pickup', 'delivery', 'catering']::text[],
+    '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
+  ),
+  (
+    'rest_green_leaf_salads', 'Green Leaf Salads', '650 W El Camino Real, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/1640774/pexels-photo-1640774.jpeg', 'Salads', 'Fresh salads and wraps with lighter delivery-friendly team meal options.', 4.6, 249, 1500, true, 'toast', true,
+    'threshold_review', 'ops@greenleafsalads.example', '(408) 555-5505',
+    array['pickup', 'delivery', 'catering']::text[],
+    '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
+  )
+on conflict (id) do update set
+  name = excluded.name,
+  location = excluded.location,
+  timezone = excluded.timezone,
+  image_url = excluded.image_url,
+  cuisine_type = excluded.cuisine_type,
+  description = excluded.description,
+  rating = excluded.rating,
+  delivery_fee = excluded.delivery_fee,
+  minimum_order = excluded.minimum_order,
+  supports_catering = excluded.supports_catering,
+  pos_provider = excluded.pos_provider,
+  agent_ordering_enabled = excluded.agent_ordering_enabled,
+  default_approval_mode = excluded.default_approval_mode,
+  contact_email = excluded.contact_email,
+  contact_phone = excluded.contact_phone,
+  fulfillment_types_supported = excluded.fulfillment_types_supported,
+  updated_at = excluded.updated_at;
+
+insert into restaurant_locations (id, restaurant_id, name, address1, city, state, postal_code, latitude, longitude) values
+  ('loc_pizza_palace_main', 'rest_pizza_palace', 'Sunnyvale Saratoga', '1325 Sunnyvale Saratoga Rd', 'Sunnyvale', 'CA', '94087', 37.3385, -122.0322),
+  ('loc_green_leaf_salads_main', 'rest_green_leaf_salads', 'West El Camino', '650 W El Camino Real', 'Sunnyvale', 'CA', '94087', 37.3794, -122.0428)
+on conflict (id) do update set
+  restaurant_id = excluded.restaurant_id,
+  name = excluded.name,
+  address1 = excluded.address1,
+  city = excluded.city,
+  state = excluded.state,
+  postal_code = excluded.postal_code,
+  latitude = excluded.latitude,
+  longitude = excluded.longitude;
+
+insert into pos_connections (
+  id, restaurant_id, provider, status, mode, restaurant_guid, location_id, metadata, last_tested_at, last_synced_at
+) values
+  (
+    'posconn_pizza_palace_toast', 'rest_pizza_palace', 'toast', 'sandbox', 'mock',
+    'toast-rest-guid-pizza-palace', 'toast-location-pizza-palace-main', '{"source":"demo"}'::jsonb,
+    '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
+  ),
+  (
+    'posconn_green_leaf_salads_toast', 'rest_green_leaf_salads', 'toast', 'sandbox', 'mock',
+    'toast-rest-guid-green-leaf-salads', 'toast-location-green-leaf-salads-main', '{"source":"demo"}'::jsonb,
+    '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
+  )
+on conflict (id) do update set
+  restaurant_id = excluded.restaurant_id,
+  provider = excluded.provider,
+  status = excluded.status,
+  mode = excluded.mode,
+  restaurant_guid = excluded.restaurant_guid,
+  location_id = excluded.location_id,
+  metadata = excluded.metadata,
+  last_tested_at = excluded.last_tested_at,
+  last_synced_at = excluded.last_synced_at;
+
+insert into canonical_menu_items (
+  id, restaurant_id, category, name, description, image_url, price_cents, availability, mapping_status, modifier_group_ids, pos_ref
+) values
+  ('item_pizza_margherita', 'rest_pizza_palace', 'Pizzas', 'Margherita Pizza', 'Classic tomato, mozzarella, and basil.', 'https://images.pexels.com/photos/315755/pexels-photo-315755.jpeg', 1399, 'available', 'mapped', array[]::text[], '{"provider":"toast","externalId":"toast_item_pizza_margherita"}'::jsonb),
+  ('item_pizza_bbq', 'rest_pizza_palace', 'Pizzas', 'BBQ Chicken Pizza', 'BBQ chicken, onions, and cilantro.', 'https://images.pexels.com/photos/1653877/pexels-photo-1653877.jpeg', 1799, 'available', 'mapped', array[]::text[], '{"provider":"toast","externalId":"toast_item_pizza_bbq"}'::jsonb),
+  ('item_pizza_knots', 'rest_pizza_palace', 'Sides', 'Garlic Knots', 'Baked knots with roasted garlic butter.', 'https://images.pexels.com/photos/6941037/pexels-photo-6941037.jpeg', 799, 'available', 'mapped', array[]::text[], '{"provider":"toast","externalId":"toast_item_pizza_knots"}'::jsonb),
+  ('item_green_cobb', 'rest_green_leaf_salads', 'Salads', 'Cobb Power Salad', 'Chicken, egg, avocado, bacon, and greens.', 'https://images.pexels.com/photos/1213710/pexels-photo-1213710.jpeg', 1499, 'available', 'mapped', array[]::text[], '{"provider":"toast","externalId":"toast_item_green_cobb"}'::jsonb),
+  ('item_green_kale', 'rest_green_leaf_salads', 'Salads', 'Kale Caesar', 'Kale, parmesan, and brioche crumb.', 'https://images.pexels.com/photos/257816/pexels-photo-257816.jpeg', 1399, 'available', 'mapped', array[]::text[], '{"provider":"toast","externalId":"toast_item_green_kale"}'::jsonb),
+  ('item_green_wrap', 'rest_green_leaf_salads', 'Wraps', 'Mediterranean Chicken Wrap', 'Grilled chicken, cucumber, tomato, and feta.', 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg', 1599, 'available', 'mapped', array[]::text[], '{"provider":"toast","externalId":"toast_item_green_wrap"}'::jsonb)
+on conflict (id) do update set
+  restaurant_id = excluded.restaurant_id,
+  category = excluded.category,
+  name = excluded.name,
+  description = excluded.description,
+  image_url = excluded.image_url,
+  price_cents = excluded.price_cents,
+  availability = excluded.availability,
+  mapping_status = excluded.mapping_status,
+  modifier_group_ids = excluded.modifier_group_ids,
+  pos_ref = excluded.pos_ref;
+
+insert into pos_menu_mappings (id, restaurant_id, canonical_type, canonical_id, provider, provider_reference, status) values
+  ('map_item_pizza_margherita', 'rest_pizza_palace', 'item', 'item_pizza_margherita', 'toast', 'toast_item_pizza_margherita', 'mapped'),
+  ('map_item_pizza_bbq', 'rest_pizza_palace', 'item', 'item_pizza_bbq', 'toast', 'toast_item_pizza_bbq', 'mapped'),
+  ('map_item_pizza_knots', 'rest_pizza_palace', 'item', 'item_pizza_knots', 'toast', 'toast_item_pizza_knots', 'mapped'),
+  ('map_item_green_cobb', 'rest_green_leaf_salads', 'item', 'item_green_cobb', 'toast', 'toast_item_green_cobb', 'mapped'),
+  ('map_item_green_kale', 'rest_green_leaf_salads', 'item', 'item_green_kale', 'toast', 'toast_item_green_kale', 'mapped'),
+  ('map_item_green_wrap', 'rest_green_leaf_salads', 'item', 'item_green_wrap', 'toast', 'toast_item_green_wrap', 'mapped')
+on conflict (id) do update set
+  restaurant_id = excluded.restaurant_id,
+  canonical_type = excluded.canonical_type,
+  canonical_id = excluded.canonical_id,
+  provider = excluded.provider,
+  provider_reference = excluded.provider_reference,
+  status = excluded.status;
+
+insert into operator_memberships (id, operator_user_id, restaurant_id, location_id, role, created_at) values
+  ('membership_pizza_palace_owner', 'op_dev_rest', 'rest_pizza_palace', 'loc_pizza_palace_main', 'owner', '2026-05-01T18:00:00.000Z'),
+  ('membership_green_leaf_salads_owner', 'op_dev_rest', 'rest_green_leaf_salads', 'loc_green_leaf_salads_main', 'owner', '2026-05-01T18:00:00.000Z')
+on conflict (id) do update set
+  operator_user_id = excluded.operator_user_id,
+  restaurant_id = excluded.restaurant_id,
+  location_id = excluded.location_id,
+  role = excluded.role,
+  created_at = excluded.created_at;
+
+insert into restaurant_agent_permissions (id, restaurant_id, agent_id, status, notes, last_activity_at) values
+  ('perm_pizza_palace_phantom', 'rest_pizza_palace', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
+  ('perm_pizza_palace_coachimhungry', 'rest_pizza_palace', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z'),
+  ('perm_green_leaf_salads_phantom', 'rest_green_leaf_salads', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
+  ('perm_green_leaf_salads_coachimhungry', 'rest_green_leaf_salads', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z')
+on conflict (id) do update set
+  restaurant_id = excluded.restaurant_id,
+  agent_id = excluded.agent_id,
+  status = excluded.status,
+  notes = excluded.notes,
+  last_activity_at = excluded.last_activity_at;
+
+insert into ordering_rules (
+  id, restaurant_id, minimum_lead_time_minutes, max_order_dollar_amount, max_item_quantity,
+  max_headcount, auto_accept_enabled, manager_approval_threshold_cents, blackout_windows,
+  allowed_fulfillment_types, substitution_policy, payment_policy, allowed_agent_ids
+) values
+  (
+    'rules_pizza_palace_default', 'rest_pizza_palace', 45, 300, 1000, 1000, false, 5000,
+    '[]'::jsonb, array['pickup','delivery','catering']::text[],
+    'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
+  ),
+  (
+    'rules_green_leaf_salads_default', 'rest_green_leaf_salads', 45, 350, 1000, 1000, false, 5000,
+    '[]'::jsonb, array['pickup','delivery','catering']::text[],
+    'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
+  )
 on conflict (id) do update set
   restaurant_id = excluded.restaurant_id,
   minimum_lead_time_minutes = excluded.minimum_lead_time_minutes,

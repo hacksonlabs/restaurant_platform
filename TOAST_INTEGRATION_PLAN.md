@@ -2,7 +2,7 @@
 
 ## Goal
 
-Prepare Phantom to switch from `POS_MODE=mock` to `POS_MODE=live` without changing the canonical API or frontend flows.
+Prepare Phantom to switch from `POS_MODE=mock` to `POS_MODE=live` without changing the core API or frontend flows.
 
 ## Current State
 
@@ -11,7 +11,7 @@ Prepare Phantom to switch from `POS_MODE=mock` to `POS_MODE=live` without changi
   - config validation
   - optional access-token reuse
   - client-credential auth scaffolding
-  - canonical order → Toast order mapping scaffold
+  - order → Toast order mapping scaffold
   - `/orders/v2/prices` before `/orders/v2/orders`
   - `/orders/v2/orders/{guid}` status lookup
   - adapter diagnostics
@@ -35,7 +35,7 @@ Reference template: [.env.example](/Users/akayla/Desktop/restaurant_platform/.en
 ## Flow
 
 1. Authenticate to Toast.
-2. Build a Toast `Order` payload from `CanonicalOrderIntent`.
+2. Build a Toast `Order` payload from the submitted order shape.
 3. Call `POST /orders/v2/prices`.
 4. Persist Phantom quote data.
 5. Call `POST /orders/v2/orders`.
@@ -72,7 +72,7 @@ Current checks:
 ## Known Gaps Before First Real Sandbox Order
 
 - Dining option, revenue center, and any location-specific Toast metadata may still need to be added to `pos_connections.metadata`.
-- Modifier group and modifier payload mapping currently uses the canonical seam and will need sandbox confirmation against real Toast configuration data.
+- Modifier group and modifier payload mapping currently uses the shared menu seam and will need sandbox confirmation against real Toast configuration data.
 - Toast payment handling is intentionally limited to unpaid/manual-open style flows first.
 - Webhook processing is not implemented yet.
 

@@ -3,6 +3,9 @@ import { createId } from "../utils/ids";
 import type {
   Agent,
   AgentApiKey,
+  OperatorMembership,
+  OperatorSession,
+  OperatorUser,
   AgentOrderItemRecord,
   AgentOrderModifierRecord,
   AgentOrderRecord,
@@ -10,6 +13,8 @@ import type {
   CanonicalMenuItem,
   CanonicalModifier,
   CanonicalModifierGroup,
+  EventIngestionRecord,
+  IdempotencyRecord,
   OrderingRule,
   POSConnection,
   POSMenuMapping,
@@ -17,6 +22,7 @@ import type {
   Restaurant,
   RestaurantAgentPermission,
   RestaurantLocation,
+  RetryAttempt,
   StatusEvent,
 } from "../../shared/types";
 
@@ -30,6 +36,9 @@ export interface DemoSeedState {
   posMappings: POSMenuMapping[];
   agents: Agent[];
   agentApiKeys: AgentApiKey[];
+  operatorUsers: OperatorUser[];
+  operatorMemberships: OperatorMembership[];
+  operatorSessions: OperatorSession[];
   permissions: RestaurantAgentPermission[];
   orderingRules: OrderingRule[];
   orders: AgentOrderRecord[];
@@ -41,6 +50,9 @@ export interface DemoSeedState {
   statusEvents: StatusEvent[];
   reportingMetrics: ReportingDailyMetric[];
   auditLogs: AuditLog[];
+  idempotencyRecords: IdempotencyRecord[];
+  retryAttempts: RetryAttempt[];
+  ingestedEvents: EventIngestionRecord[];
 }
 
 export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
@@ -48,13 +60,21 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
   const restaurantId = "rest_lb_steakhouse";
   const locationId = "loc_lb_main";
   const phantomAgentId = "agent_phantom";
+  const coachImHungryAgentId = "agent_coachimhungry";
   const orderId = "order_lb_demo_001";
 
   const restaurant: Restaurant = {
     id: restaurantId,
     name: "LB Steakhouse",
-    location: "San Jose, CA",
+    location: "1533 Ashcroft Way, Sunnyvale, CA 94087",
     timezone: "America/Los_Angeles",
+    imageUrl: "https://images.pexels.com/photos/67468/pexels-photo-67468.jpeg",
+    cuisineType: "Steakhouse",
+    description: "Classic steakhouse plates, polished sides, and a strong team-order catering fit.",
+    rating: 4.7,
+    deliveryFee: 299,
+    minimumOrder: 2500,
+    supportsCatering: true,
     posProvider: "toast",
     agentOrderingEnabled: true,
     defaultApprovalMode: "threshold_review",
@@ -68,11 +88,13 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
   const location: RestaurantLocation = {
     id: locationId,
     restaurantId,
-    name: "Santana Row",
-    address1: "334 Santana Row",
-    city: "San Jose",
+    name: "Ashcroft Way Test Kitchen",
+    address1: "1533 Ashcroft Way",
+    city: "Sunnyvale",
     state: "CA",
-    postalCode: "95128",
+    postalCode: "94087",
+    latitude: 37.3509,
+    longitude: -122.0378,
   };
 
   const posConnection: POSConnection = {
@@ -82,7 +104,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     status: "sandbox",
     mode: "mock",
     restaurantGuid: "toast-rest-guid-lb-steakhouse",
-    locationId: "toast-location-lb-main",
+    locationId: "toast-location-lb-ashcroft",
     lastTestedAt: now,
     lastSyncedAt: now,
     metadata: {
@@ -138,6 +160,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       category: "Steaks",
       name: "16oz Prime Ribeye",
       description: "Dry-aged ribeye with rosemary butter.",
+      imageUrl: "https://images.pexels.com/photos/675951/pexels-photo-675951.jpeg",
       priceCents: 5600,
       availability: "available",
       mappingStatus: "mapped",
@@ -150,6 +173,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       category: "Steaks",
       name: "8oz Center Cut Filet",
       description: "Tender filet with sea salt finish.",
+      imageUrl: "https://images.pexels.com/photos/361184/asparagus-steak-veal-steak-veal-361184.jpeg",
       priceCents: 4900,
       availability: "available",
       mappingStatus: "mapped",
@@ -162,6 +186,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       category: "Starters",
       name: "Tableside Caesar",
       description: "Romaine, parmesan, brioche crumb.",
+      imageUrl: "https://images.pexels.com/photos/2097090/pexels-photo-2097090.jpeg",
       priceCents: 1600,
       availability: "available",
       mappingStatus: "mapped",
@@ -174,6 +199,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       category: "Dessert",
       name: "Butter Cake",
       description: "Warm vanilla butter cake with berries.",
+      imageUrl: "https://images.pexels.com/photos/291528/pexels-photo-291528.jpeg",
       priceCents: 1400,
       availability: "available",
       mappingStatus: "needs_review",
@@ -212,7 +238,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     })),
   ];
 
-  const agent: Agent = {
+  const phantomAgent: Agent = {
     id: phantomAgentId,
     name: "Phantom",
     slug: "phantom",
@@ -220,13 +246,46 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     createdAt: now,
   };
 
+  const coachImHungryAgent: Agent = {
+    id: coachImHungryAgentId,
+    name: "CoachImHungry",
+    slug: "coachimhungry",
+    description: "External MealOps ordering agent acting on behalf of customers.",
+    createdAt: now,
+  };
+
   const agentApiKey: AgentApiKey = {
-    id: "key_phantom_demo",
-    agentId: phantomAgentId,
-    label: "Local demo key",
+    id: "key_coachimhungry_demo",
+    agentId: coachImHungryAgentId,
+    label: "CoachImHungry local demo key",
     keyPrefix: demoPhantomApiKey.slice(0, 8),
     keyHash: sha256(demoPhantomApiKey),
+    scopes: [
+      "restaurants:read",
+      "menus:read",
+      "payments:start",
+      "orders:validate",
+      "orders:quote",
+      "orders:submit",
+      "orders:status",
+    ],
     lastUsedAt: now,
+    createdAt: now,
+  };
+
+  const operatorUser: OperatorUser = {
+    id: "op_dev_rest",
+    email: "dev@rest.com",
+    fullName: "Restaurant Dev Operator",
+    createdAt: now,
+  };
+
+  const operatorMembership: OperatorMembership = {
+    id: "membership_lb_owner",
+    operatorUserId: operatorUser.id,
+    restaurantId,
+    locationId,
+    role: "owner",
     createdAt: now,
   };
 
@@ -239,11 +298,20 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     lastActivityAt: now,
   };
 
+  const coachPermission: RestaurantAgentPermission = {
+    id: "perm_lb_coachimhungry",
+    restaurantId,
+    agentId: coachImHungryAgentId,
+    status: "allowed",
+    notes: "Seeded CoachImHungry allow-list entry.",
+    lastActivityAt: now,
+  };
+
   const orderingRule: OrderingRule = {
     id: "rules_lb_default",
     restaurantId,
     minimumLeadTimeMinutes: 90,
-    maxOrderDollarAmount: 2500,
+    maxOrderDollarAmount: 250,
     maxItemQuantity: 25,
     maxHeadcount: 40,
     autoAcceptEnabled: false,
@@ -259,7 +327,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     allowedFulfillmentTypes: ["pickup", "delivery", "catering"],
     substitutionPolicy: "require_approval",
     paymentPolicy: "required_before_submit",
-    allowedAgentIds: [phantomAgentId],
+    allowedAgentIds: [phantomAgentId, coachImHungryAgentId],
   };
 
   const orderIntent = {
@@ -433,18 +501,301 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     },
   ];
 
+  function createSimpleRestaurantSeed(input: {
+    restaurantId: string;
+    name: string;
+    locationLabel: string;
+    address1: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    latitude: number;
+    longitude: number;
+    contactEmail: string;
+    contactPhone: string;
+    imageUrl: string;
+    cuisineType: string;
+    description: string;
+    rating: number;
+    deliveryFee: number;
+    minimumOrder: number;
+    supportsCatering?: boolean;
+  menuItems: Array<{
+      id: string;
+      category: string;
+      name: string;
+      description: string;
+      imageUrl: string;
+      priceCents: number;
+      posExternalId: string;
+    }>;
+    maxOrderDollarAmount: number;
+  }) {
+    const locationId = `loc_${input.restaurantId.replace(/^rest_/, "")}_main`;
+    const restaurant: Restaurant = {
+      id: input.restaurantId,
+      name: input.name,
+      location: `${input.address1}, ${input.city}, ${input.state} ${input.postalCode}`,
+      timezone: "America/Los_Angeles",
+      imageUrl: input.imageUrl,
+      cuisineType: input.cuisineType,
+      description: input.description,
+      rating: input.rating,
+      deliveryFee: input.deliveryFee,
+      minimumOrder: input.minimumOrder,
+      supportsCatering: input.supportsCatering ?? true,
+      posProvider: "toast",
+      agentOrderingEnabled: true,
+      defaultApprovalMode: "threshold_review",
+      contactEmail: input.contactEmail,
+      contactPhone: input.contactPhone,
+      fulfillmentTypesSupported: ["pickup", "delivery", "catering"],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const location: RestaurantLocation = {
+      id: locationId,
+      restaurantId: input.restaurantId,
+      name: input.locationLabel,
+      address1: input.address1,
+      city: input.city,
+      state: input.state,
+      postalCode: input.postalCode,
+      latitude: input.latitude,
+      longitude: input.longitude,
+    };
+
+    const posConnection: POSConnection = {
+      id: `posconn_${input.restaurantId.replace(/^rest_/, "")}_toast`,
+      restaurantId: input.restaurantId,
+      provider: "toast",
+      status: "sandbox",
+      mode: "mock",
+      restaurantGuid: `toast-rest-guid-${input.restaurantId.replace(/^rest_/, "")}`,
+      locationId: `toast-location-${input.restaurantId.replace(/^rest_/, "")}-main`,
+      lastTestedAt: now,
+      lastSyncedAt: now,
+      metadata: { source: "demo" },
+    };
+
+    const menuItems = input.menuItems.map<CanonicalMenuItem>((item) => ({
+      id: item.id,
+      restaurantId: input.restaurantId,
+      category: item.category,
+      name: item.name,
+      description: item.description,
+      imageUrl: item.imageUrl,
+      priceCents: item.priceCents,
+      availability: "available",
+      mappingStatus: "mapped",
+      modifierGroupIds: [],
+      posRef: { provider: "toast", externalId: item.posExternalId },
+    }));
+
+    const posMappings = menuItems.map<POSMenuMapping>((item) => ({
+      id: `map_${item.id}`,
+      restaurantId: input.restaurantId,
+      canonicalType: "item",
+      canonicalId: item.id,
+      provider: "toast",
+      providerReference: item.posRef.externalId,
+      status: "mapped",
+    }));
+
+    const membership: OperatorMembership = {
+      id: `membership_${input.restaurantId.replace(/^rest_/, "")}_owner`,
+      operatorUserId: operatorUser.id,
+      restaurantId: input.restaurantId,
+      locationId,
+      role: "owner",
+      createdAt: now,
+    };
+
+    const permission: RestaurantAgentPermission = {
+      id: `perm_${input.restaurantId.replace(/^rest_/, "")}_phantom`,
+      restaurantId: input.restaurantId,
+      agentId: phantomAgentId,
+      status: "allowed",
+      notes: "Seeded default allow-list entry.",
+      lastActivityAt: now,
+    };
+
+    const coachPermission: RestaurantAgentPermission = {
+      id: `perm_${input.restaurantId.replace(/^rest_/, "")}_coachimhungry`,
+      restaurantId: input.restaurantId,
+      agentId: coachImHungryAgentId,
+      status: "allowed",
+      notes: "Seeded CoachImHungry allow-list entry.",
+      lastActivityAt: now,
+    };
+
+    const orderingRule: OrderingRule = {
+      id: `rules_${input.restaurantId.replace(/^rest_/, "")}_default`,
+      restaurantId: input.restaurantId,
+      minimumLeadTimeMinutes: 45,
+      maxOrderDollarAmount: input.maxOrderDollarAmount,
+      maxItemQuantity: 1000,
+      maxHeadcount: 1000,
+      autoAcceptEnabled: false,
+      managerApprovalThresholdCents: 5000,
+      blackoutWindows: [],
+      allowedFulfillmentTypes: ["pickup", "delivery", "catering"],
+      substitutionPolicy: "strict",
+      paymentPolicy: "required_before_submit",
+      allowedAgentIds: [phantomAgentId, coachImHungryAgentId],
+    };
+
+    const auditLog: AuditLog = {
+      id: `audit_${input.restaurantId.replace(/^rest_/, "")}_menu_sync`,
+      restaurantId: input.restaurantId,
+      actorType: "system",
+      actorId: "seed",
+      action: "menu.synced",
+      targetType: "pos_connection",
+      targetId: posConnection.id,
+      summary: "Seeded Toast sandbox menu sync completed.",
+      createdAt: now,
+    };
+
+    return {
+      restaurant,
+      location,
+      posConnection,
+      menuItems,
+      posMappings,
+      membership,
+      permission,
+      coachPermission,
+      orderingRule,
+      auditLog,
+    };
+  }
+
+  const pizzaPalace = createSimpleRestaurantSeed({
+    restaurantId: "rest_pizza_palace",
+    name: "Pizza Palace",
+    locationLabel: "Sunnyvale Saratoga",
+    address1: "1325 Sunnyvale Saratoga Rd",
+    city: "Sunnyvale",
+    state: "CA",
+    postalCode: "94087",
+    latitude: 37.3385,
+    longitude: -122.0322,
+    contactEmail: "ops@pizzapalace.example",
+    contactPhone: "(123) 456-7890",
+    imageUrl: "https://images.pexels.com/photos/825661/pexels-photo-825661.jpeg",
+    cuisineType: "Pizza",
+    description: "Shareable pies, garlic knots, and easy crowd ordering for pickup or delivery.",
+    rating: 4.5,
+    deliveryFee: 199,
+    minimumOrder: 1800,
+    supportsCatering: true,
+    maxOrderDollarAmount: 300,
+    menuItems: [
+      {
+        id: "item_pizza_margherita",
+        category: "Pizzas",
+        name: "Margherita Pizza",
+        description: "Classic tomato, mozzarella, and basil.",
+        imageUrl: "https://images.pexels.com/photos/315755/pexels-photo-315755.jpeg",
+        priceCents: 1399,
+        posExternalId: "toast_item_pizza_margherita",
+      },
+      {
+        id: "item_pizza_bbq",
+        category: "Pizzas",
+        name: "BBQ Chicken Pizza",
+        description: "BBQ chicken, onions, and cilantro.",
+        imageUrl: "https://images.pexels.com/photos/1653877/pexels-photo-1653877.jpeg",
+        priceCents: 1799,
+        posExternalId: "toast_item_pizza_bbq",
+      },
+      {
+        id: "item_pizza_knots",
+        category: "Sides",
+        name: "Garlic Knots",
+        description: "Baked knots with roasted garlic butter.",
+        imageUrl: "https://images.pexels.com/photos/6941037/pexels-photo-6941037.jpeg",
+        priceCents: 799,
+        posExternalId: "toast_item_pizza_knots",
+      },
+    ],
+  });
+
+  const greenLeafSalads = createSimpleRestaurantSeed({
+    restaurantId: "rest_green_leaf_salads",
+    name: "Green Leaf Salads",
+    locationLabel: "West El Camino",
+    address1: "650 W El Camino Real",
+    city: "Sunnyvale",
+    state: "CA",
+    postalCode: "94087",
+    latitude: 37.3794,
+    longitude: -122.0428,
+    contactEmail: "ops@greenleafsalads.example",
+    contactPhone: "(408) 555-5505",
+    imageUrl: "https://images.pexels.com/photos/1640774/pexels-photo-1640774.jpeg",
+    cuisineType: "Salads",
+    description: "Fresh salads and wraps with lighter delivery-friendly team meal options.",
+    rating: 4.6,
+    deliveryFee: 249,
+    minimumOrder: 1500,
+    supportsCatering: true,
+    maxOrderDollarAmount: 350,
+    menuItems: [
+      {
+        id: "item_green_cobb",
+        category: "Salads",
+        name: "Cobb Power Salad",
+        description: "Chicken, egg, avocado, bacon, and greens.",
+        imageUrl: "https://images.pexels.com/photos/1213710/pexels-photo-1213710.jpeg",
+        priceCents: 1499,
+        posExternalId: "toast_item_green_cobb",
+      },
+      {
+        id: "item_green_kale",
+        category: "Salads",
+        name: "Kale Caesar",
+        description: "Kale, parmesan, and brioche crumb.",
+        imageUrl: "https://images.pexels.com/photos/257816/pexels-photo-257816.jpeg",
+        priceCents: 1399,
+        posExternalId: "toast_item_green_kale",
+      },
+      {
+        id: "item_green_wrap",
+        category: "Wraps",
+        name: "Mediterranean Chicken Wrap",
+        description: "Grilled chicken, cucumber, tomato, and feta.",
+        imageUrl: "https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg",
+        priceCents: 1599,
+        posExternalId: "toast_item_green_wrap",
+      },
+    ],
+  });
+
   return {
-    restaurants: [restaurant],
-    locations: [location],
-    posConnections: [posConnection],
-    menuItems,
+    restaurants: [restaurant, pizzaPalace.restaurant, greenLeafSalads.restaurant],
+    locations: [location, pizzaPalace.location, greenLeafSalads.location],
+    posConnections: [posConnection, pizzaPalace.posConnection, greenLeafSalads.posConnection],
+    menuItems: [...menuItems, ...pizzaPalace.menuItems, ...greenLeafSalads.menuItems],
     modifierGroups,
     modifiers,
-    posMappings,
-    agents: [agent],
+    posMappings: [...posMappings, ...pizzaPalace.posMappings, ...greenLeafSalads.posMappings],
+    agents: [phantomAgent, coachImHungryAgent],
     agentApiKeys: [agentApiKey],
-    permissions: [permission],
-    orderingRules: [orderingRule],
+    operatorUsers: [operatorUser],
+    operatorMemberships: [operatorMembership, pizzaPalace.membership, greenLeafSalads.membership],
+    operatorSessions: [],
+    permissions: [
+      permission,
+      coachPermission,
+      pizzaPalace.permission,
+      pizzaPalace.coachPermission,
+      greenLeafSalads.permission,
+      greenLeafSalads.coachPermission,
+    ],
+    orderingRules: [orderingRule, pizzaPalace.orderingRule, greenLeafSalads.orderingRule],
     orders: [order],
     orderItems,
     orderModifiers,
@@ -453,6 +804,9 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     posSubmissions: [],
     statusEvents,
     reportingMetrics,
-    auditLogs,
+    auditLogs: [...auditLogs, pizzaPalace.auditLog, greenLeafSalads.auditLog],
+    idempotencyRecords: [],
+    retryAttempts: [],
+    ingestedEvents: [],
   };
 }

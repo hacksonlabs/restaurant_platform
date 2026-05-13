@@ -1,19 +1,22 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { useTenant } from "../auth/AuthContext";
 import { Button, Card, Field, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
 export function SettingsPage() {
+  const { selectedRestaurantId, canManageRules } = useTenant();
   const { data, setData, loading, error } = useResource(
+    `settings:${selectedRestaurantId}`,
     async () => {
       const [restaurant, rules] = await Promise.all([
-        api.restaurant("rest_lb_steakhouse"),
-        api.rules("rest_lb_steakhouse"),
+        api.restaurant(selectedRestaurantId!),
+        api.rules(selectedRestaurantId!),
       ]);
 
       return { restaurant, rules };
     },
-    [],
+    [selectedRestaurantId],
   );
   const [message, setMessage] = useState("");
 
@@ -27,7 +30,7 @@ export function SettingsPage() {
   async function save() {
     const [restaurant, rules] = await Promise.all([
       api.updateRestaurant(data.restaurant.id, data.restaurant),
-      api.updateRules("rest_lb_steakhouse", data.rules),
+      api.updateRules(selectedRestaurantId!, data.rules),
     ]);
     setData({ restaurant, rules });
     setMessage("Profile and ordering rules saved.");
@@ -39,13 +42,14 @@ export function SettingsPage() {
         eyebrow="Restaurant Profile"
         title="Profile & Settings"
         description="Configure the restaurant tenant and its ordering guardrails in one place."
-        actions={<Button onClick={save}>Save Changes</Button>}
+        actions={<Button onClick={save} disabled={!canManageRules}>Save Changes</Button>}
       />
       <Card title="Restaurant Configuration">
         <div className="form-grid">
           <Field label="Restaurant Name">
             <input
               value={data.restaurant.name}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({ ...data, restaurant: { ...data.restaurant, name: event.target.value } })
               }
@@ -54,6 +58,7 @@ export function SettingsPage() {
           <Field label="Location">
             <input
               value={data.restaurant.location}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({ ...data, restaurant: { ...data.restaurant, location: event.target.value } })
               }
@@ -62,6 +67,7 @@ export function SettingsPage() {
           <Field label="Timezone">
             <input
               value={data.restaurant.timezone}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({ ...data, restaurant: { ...data.restaurant, timezone: event.target.value } })
               }
@@ -73,6 +79,7 @@ export function SettingsPage() {
           <Field label="Contact Email">
             <input
               value={data.restaurant.contactEmail}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({ ...data, restaurant: { ...data.restaurant, contactEmail: event.target.value } })
               }
@@ -81,6 +88,7 @@ export function SettingsPage() {
           <Field label="Contact Phone">
             <input
               value={data.restaurant.contactPhone}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({ ...data, restaurant: { ...data.restaurant, contactPhone: event.target.value } })
               }
@@ -89,6 +97,7 @@ export function SettingsPage() {
           <Field label="Default Approval Mode">
             <select
               value={data.restaurant.defaultApprovalMode}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,
@@ -104,6 +113,7 @@ export function SettingsPage() {
           <Field label="Agent Ordering Enabled">
             <select
               value={String(data.restaurant.agentOrderingEnabled)}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,
@@ -129,6 +139,7 @@ export function SettingsPage() {
             <input
               type="number"
               value={data.rules.minimumLeadTimeMinutes}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,
@@ -141,6 +152,7 @@ export function SettingsPage() {
             <input
               type="number"
               value={data.rules.maxOrderDollarAmount}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,
@@ -153,6 +165,7 @@ export function SettingsPage() {
             <input
               type="number"
               value={data.rules.maxItemQuantity}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,
@@ -165,6 +178,7 @@ export function SettingsPage() {
             <input
               type="number"
               value={data.rules.maxHeadcount}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,
@@ -176,6 +190,7 @@ export function SettingsPage() {
           <Field label="Auto Accept">
             <select
               value={String(data.rules.autoAcceptEnabled)}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,
@@ -191,6 +206,7 @@ export function SettingsPage() {
             <input
               type="number"
               value={data.rules.managerApprovalThresholdCents}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,
@@ -205,6 +221,7 @@ export function SettingsPage() {
           <Field label="Substitution Policy">
             <select
               value={data.rules.substitutionPolicy}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,
@@ -220,6 +237,7 @@ export function SettingsPage() {
           <Field label="Payment Policy">
             <select
               value={data.rules.paymentPolicy}
+              disabled={!canManageRules}
               onChange={(event) =>
                 setData({
                   ...data,

@@ -8,12 +8,11 @@ import { LoginPage } from "./pages/LoginPage";
 import { MenuPage } from "./pages/MenuPage";
 import { OrderDetailPage } from "./pages/OrderDetailPage";
 import { OrdersPage } from "./pages/OrdersPage";
-import { POSConnectionPage } from "./pages/POSConnectionPage";
 import { ReportingPage } from "./pages/ReportingPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
 export function App() {
-  const { user, loading } = useAuth();
+  const { session, loading } = useAuth();
 
   if (loading) {
     return (
@@ -23,7 +22,7 @@ export function App() {
     );
   }
 
-  if (!user) {
+  if (!session) {
     return <LoginPage />;
   }
 
@@ -32,8 +31,8 @@ export function App() {
       <Routes>
         <Route path="/" element={<DashboardPage />} />
         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/pos-connection" element={<POSConnectionPage />} />
         <Route path="/menu" element={<MenuPage />} />
+        <Route path="/pos-connection" element={<Navigate to="/menu" replace />} />
         <Route path="/orders" element={<OrdersPage />} />
         <Route path="/orders/:orderId" element={<OrderDetailPage />} />
         <Route path="/agents" element={<AgentsPage />} />

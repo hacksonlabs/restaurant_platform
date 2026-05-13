@@ -203,6 +203,23 @@ textarea {
   gap: 20px;
 }
 
+.menu-header-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 20px;
+  align-items: start;
+}
+
+.menu-pos-card {
+  width: 100%;
+  justify-self: end;
+}
+
+.menu-pos-card .card-header {
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
 .page-header,
 .card-header,
 .stack-row,
@@ -415,6 +432,11 @@ textarea {
   cursor: pointer;
 }
 
+.button.button-small {
+  padding: 8px 12px;
+  font-size: 0.92rem;
+}
+
 .button.primary {
   background: linear-gradient(135deg, var(--accent), var(--accent-dark));
   color: white;
@@ -459,6 +481,10 @@ th {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+.detail-grid.compact {
+  gap: 12px;
 }
 
 .agent-directory {
@@ -509,6 +535,40 @@ th {
 .manage-link {
   color: #cf5b1f;
   font-weight: 700;
+}
+
+.order-link {
+  color: #cf5b1f;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.review-cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.review-trigger {
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.review-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 10;
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: #fffaf3;
+  box-shadow: 0 14px 26px rgba(70, 51, 29, 0.12);
 }
 
 .agent-detail-topline {
@@ -696,6 +756,7 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .menu-header-grid,
   .two-column,
   .agent-manage-grid,
   .detail-grid,

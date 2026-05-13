@@ -1,17 +1,19 @@
 import { useState } from "react";
 import { api } from "../lib/api";
+import { useTenant } from "../auth/AuthContext";
 import { Button, Card, Field, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
 export function RulesPage() {
-  const { data, setData, loading, error } = useResource(() => api.rules("rest_lb_steakhouse"), []);
+  const { selectedRestaurantId, canManageRules } = useTenant();
+  const { data, setData, loading, error } = useResource(`rules:${selectedRestaurantId}`, () => api.rules(selectedRestaurantId!), [selectedRestaurantId]);
   const [message, setMessage] = useState("");
 
   if (loading) return <div className="panel-state">Loading ordering rules…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 
   async function save() {
-    const updated = await api.updateRules("rest_lb_steakhouse", data);
+    const updated = await api.updateRules(selectedRestaurantId!, data);
     setData(updated);
     setMessage("Ordering rules saved.");
   }
@@ -22,7 +24,7 @@ export function RulesPage() {
         eyebrow="Agent Ordering Rules"
         title="Order Guardrails"
         description="Deterministic rule checks run before quote and submit to keep agent ordering safe."
-        actions={<Button onClick={save}>Save Rules</Button>}
+        actions={<Button onClick={save} disabled={!canManageRules}>Save Rules</Button>}
       />
       <Card title="Rules">
         <div className="form-grid">
@@ -30,6 +32,7 @@ export function RulesPage() {
             <input
               type="number"
               value={data.minimumLeadTimeMinutes}
+              disabled={!canManageRules}
               onChange={(event) => setData({ ...data, minimumLeadTimeMinutes: Number(event.target.value) })}
             />
           </Field>
@@ -37,6 +40,7 @@ export function RulesPage() {
             <input
               type="number"
               value={data.maxOrderDollarAmount}
+              disabled={!canManageRules}
               onChange={(event) => setData({ ...data, maxOrderDollarAmount: Number(event.target.value) })}
             />
           </Field>
@@ -44,6 +48,7 @@ export function RulesPage() {
             <input
               type="number"
               value={data.maxItemQuantity}
+              disabled={!canManageRules}
               onChange={(event) => setData({ ...data, maxItemQuantity: Number(event.target.value) })}
             />
           </Field>
@@ -51,12 +56,14 @@ export function RulesPage() {
             <input
               type="number"
               value={data.maxHeadcount}
+              disabled={!canManageRules}
               onChange={(event) => setData({ ...data, maxHeadcount: Number(event.target.value) })}
             />
           </Field>
           <Field label="Auto Accept">
             <select
               value={String(data.autoAcceptEnabled)}
+              disabled={!canManageRules}
               onChange={(event) => setData({ ...data, autoAcceptEnabled: event.target.value === "true" })}
             >
               <option value="true">enabled</option>
@@ -67,12 +74,14 @@ export function RulesPage() {
             <input
               type="number"
               value={data.managerApprovalThresholdCents}
+              disabled={!canManageRules}
               onChange={(event) => setData({ ...data, managerApprovalThresholdCents: Number(event.target.value) })}
             />
           </Field>
           <Field label="Substitution Policy">
             <select
               value={data.substitutionPolicy}
+              disabled={!canManageRules}
               onChange={(event) => setData({ ...data, substitutionPolicy: event.target.value as any })}
             >
               <option value="strict">strict</option>
@@ -83,6 +92,7 @@ export function RulesPage() {
           <Field label="Payment Policy">
             <select
               value={data.paymentPolicy}
+              disabled={!canManageRules}
               onChange={(event) => setData({ ...data, paymentPolicy: event.target.value as any })}
             >
               <option value="required_before_submit">required_before_submit</option>

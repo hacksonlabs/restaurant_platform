@@ -4,6 +4,7 @@ import type {
   POSContext,
   POSDiagnosticsResult,
   POSOrderStatusResult,
+  POSPaymentSessionResult,
   POSProvider,
   POSSubmissionResult,
   MenuSyncResult,
@@ -18,6 +19,15 @@ export interface POSAdapter {
   syncMenu(connection: POSConnection, context: POSContext): Promise<MenuSyncResult>;
   validateOrder(order: CanonicalOrderIntent, context: POSContext): Promise<OrderValidationResult>;
   quoteOrder(order: CanonicalOrderIntent, context: POSContext): Promise<OrderQuoteResult>;
+  startPayment?(
+    order: CanonicalOrderIntent,
+    quote: OrderQuoteResult,
+    paymentSession: {
+      successUrl: string;
+      cancelUrl: string;
+    },
+    context: POSContext,
+  ): Promise<POSPaymentSessionResult>;
   submitOrder(
     order: CanonicalOrderIntent,
     quote: OrderQuoteResult,

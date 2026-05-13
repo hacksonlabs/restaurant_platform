@@ -1,11 +1,19 @@
 import type {
+  AuthenticatedOperator,
   AgentOrderRecord,
+  AgentApiScope,
   DashboardSnapshot,
   OrderingRule,
   Restaurant,
 } from "@shared/types";
+import { clearResourceCache } from "./resourceCache";
+
+export interface OperatorAuthPayload extends AuthenticatedOperator {
+  restaurants: Array<Restaurant & { memberships: Array<{ id: string; role: string; locationId?: string }> }>;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
   const response = await fetch(path, {
     credentials: "include",
     headers: {
@@ -20,6 +28,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(payload?.error || `Request failed: ${response.status}`);
   }
 
+  if (method !== "GET") {
+    clearResourceCache();
+  }
+
   if (response.status === 204) {
     return undefined as T;
   }
@@ -28,15 +40,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  authMe: () => request<{ email: string; restaurantId: string; approvalRequired: false }>("/api/auth/me"),
+  authMe: () => request<OperatorAuthPayload>("/api/auth/me"),
   login: (email: string, password: string) =>
-    request<{ email: string; restaurantId: string; approvalRequired: false }>("/api/auth/login", {
+    request<OperatorAuthPayload>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
   logout: () =>
     request<void>("/api/auth/logout", {
       method: "POST",
+    }),
+  selectTenant: (restaurantId: string, locationId?: string) =>
+    request<OperatorAuthPayload>("/api/auth/select-tenant", {
+      method: "POST",
+      body: JSON.stringify({ restaurantId, locationId }),
     }),
   restaurants: () => request<Restaurant[]>("/api/restaurants"),
   restaurant: (restaurantId: string) => request<Restaurant>(`/api/restaurants/${restaurantId}`),
@@ -77,6 +94,20 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  createAgentKey: (restaurantId: string, agentId: string, body: { label: string; scopes: AgentApiScope[] }) =>
+    request(`/api/restaurants/${restaurantId}/agents/${agentId}/keys`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  rotateAgentKey: (restaurantId: string, agentId: string, keyId: string, body: { scopes: AgentApiScope[] }) =>
+    request(`/api/restaurants/${restaurantId}/agents/${agentId}/keys/${keyId}/rotate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeAgentKey: (restaurantId: string, agentId: string, keyId: string) =>
+    request(`/api/restaurants/${restaurantId}/agents/${agentId}/keys/${keyId}/revoke`, {
+      method: "POST",
+    }),
   orders: (restaurantId: string) =>
     request<AgentOrderRecord[]>(`/api/restaurants/${restaurantId}/orders`),
   order: (restaurantId: string, orderId: string) =>
@@ -87,6 +118,12 @@ export const api = {
     request(`/api/restaurants/${restaurantId}/orders/${orderId}/reject`, { method: "POST" }),
   submitOrderToPOS: (restaurantId: string, orderId: string) =>
     request(`/api/restaurants/${restaurantId}/orders/${orderId}/submit-to-pos`, { method: "POST" }),
+  replayOrderSubmit: (restaurantId: string, orderId: string) =>
+    request(`/api/restaurants/${restaurantId}/orders/${orderId}/replay-submit`, { method: "POST" }),
+  refreshOrderStatus: (restaurantId: string, orderId: string) =>
+    request(`/api/restaurants/${restaurantId}/orders/${orderId}/refresh-status`, { method: "POST" }),
   reporting: (restaurantId: string) =>
     request(`/api/restaurants/${restaurantId}/reporting`),
+  operationsDiagnostics: (restaurantId: string) =>
+    request(`/api/restaurants/${restaurantId}/operations/diagnostics`),
 };

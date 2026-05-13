@@ -1,4 +1,5 @@
 export type POSProvider = "toast" | "square" | "deliverect" | "olo";
+export type OperatorRole = "owner" | "manager" | "staff" | "viewer";
 export type POSConnectionStatus =
   | "not_connected"
   | "sandbox"
@@ -35,6 +36,13 @@ export interface Restaurant {
   name: string;
   location: string;
   timezone: string;
+  imageUrl?: string;
+  cuisineType?: string;
+  description?: string;
+  rating?: number;
+  deliveryFee?: number;
+  minimumOrder?: number;
+  supportsCatering?: boolean;
   posProvider: POSProvider;
   agentOrderingEnabled: boolean;
   defaultApprovalMode: DefaultApprovalMode;
@@ -53,6 +61,8 @@ export interface RestaurantLocation {
   city: string;
   state: string;
   postalCode: string;
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface POSConnection {
@@ -92,6 +102,7 @@ export interface CanonicalMenuItem {
   category: string;
   name: string;
   description: string;
+  imageUrl?: string;
   priceCents: number;
   availability: "available" | "unavailable";
   mappingStatus: "mapped" | "needs_review";
@@ -126,10 +137,21 @@ export interface AgentApiKey {
   label: string;
   keyPrefix: string;
   keyHash: string;
+  scopes: AgentApiScope[];
   lastUsedAt?: string;
   createdAt: string;
   rotatedAt?: string;
+  revokedAt?: string;
 }
+
+export type AgentApiScope =
+  | "restaurants:read"
+  | "menus:read"
+  | "payments:start"
+  | "orders:validate"
+  | "orders:quote"
+  | "orders:submit"
+  | "orders:status";
 
 export interface RestaurantAgentPermission {
   id: string;
@@ -138,6 +160,39 @@ export interface RestaurantAgentPermission {
   status: AgentPermissionStatus;
   notes?: string;
   lastActivityAt?: string;
+}
+
+export interface OperatorUser {
+  id: string;
+  email: string;
+  fullName: string;
+  supabaseUserId?: string;
+  createdAt: string;
+  lastLoginAt?: string;
+}
+
+export interface OperatorMembership {
+  id: string;
+  operatorUserId: string;
+  restaurantId: string;
+  locationId?: string;
+  role: OperatorRole;
+  createdAt: string;
+}
+
+export interface OperatorSession {
+  id: string;
+  operatorUserId: string;
+  selectedRestaurantId: string;
+  selectedLocationId?: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface AuthenticatedOperator {
+  user: OperatorUser;
+  memberships: OperatorMembership[];
+  selectedMembership: OperatorMembership;
 }
 
 export interface OrderingRule {
@@ -218,6 +273,7 @@ export interface OrderValidationResult {
   valid: boolean;
   issues: ValidationIssue[];
   checkedAt: string;
+  idempotencyKey?: string;
 }
 
 export interface OrderQuote {
@@ -229,6 +285,18 @@ export interface OrderQuote {
   totalCents: number;
   currency: "USD";
   quotedAt: string;
+  idempotencyKey?: string;
+}
+
+export interface POSPaymentSessionResult {
+  ok: boolean;
+  status: "redirect_required" | "paid" | "pending_external_confirmation" | "failed";
+  redirectUrl?: string | null;
+  paymentReference?: string | null;
+  totalCents?: number;
+  currency?: "USD";
+  message: string;
+  raw: Record<string, unknown>;
 }
 
 export interface POSOrderSubmission {
@@ -238,6 +306,8 @@ export interface POSOrderSubmission {
   status: "pending" | "submitted" | "accepted" | "failed";
   externalOrderId?: string;
   response: Record<string, unknown>;
+  payloadSnapshot?: Record<string, unknown>;
+  attemptCount?: number;
   submittedAt: string;
 }
 
@@ -253,6 +323,7 @@ export interface AgentOrderRecord {
   id: string;
   restaurantId: string;
   agentId: string;
+  agentName?: string;
   externalOrderReference: string;
   customerName: string;
   customerEmail?: string;
@@ -269,6 +340,10 @@ export interface AgentOrderRecord {
   packagingInstructions?: string;
   dietaryConstraints: string[];
   orderIntent: CanonicalOrderIntent;
+  splitGroupId?: string;
+  splitGroupIndex?: number;
+  splitGroupSize?: number;
+  groupedOrderIds?: string[];
 }
 
 export interface AgentOrderItemRecord {
@@ -311,6 +386,75 @@ export interface AuditLog {
   targetId: string;
   summary: string;
   createdAt: string;
+}
+
+export type IdempotencyScope = "validate" | "quote" | "submit";
+
+export interface IdempotencyRecord {
+  id: string;
+  scope: IdempotencyScope;
+  restaurantId: string;
+  agentId: string;
+  idempotencyKey: string;
+  requestHash: string;
+  status: "pending" | "completed" | "failed";
+  orderId?: string;
+  response?: Record<string, unknown>;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RetryAttempt {
+  id: string;
+  orderId?: string;
+  stage: "quote" | "pos_submit" | "status_poll";
+  attemptNumber: number;
+  status: "pending" | "succeeded" | "failed";
+  errorMessage?: string;
+  payloadSnapshot?: Record<string, unknown>;
+  responseSnapshot?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface EventIngestionRecord {
+  id: string;
+  provider: "toast" | "deliverect";
+  eventType: string;
+  externalEventId?: string;
+  orderId?: string;
+  status: "received" | "processed" | "failed" | "ignored";
+  payload: Record<string, unknown>;
+  createdAt: string;
+  processedAt?: string;
+}
+
+export interface OrderTimelineEvent {
+  id: string;
+  kind: "status" | "validation" | "quote" | "submission" | "retry" | "audit";
+  title: string;
+  message: string;
+  createdAt: string;
+  status?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface OrderDiagnostics {
+  rawOrderIntent: CanonicalOrderIntent;
+  latestValidation?: OrderValidationResult;
+  latestQuote?: OrderQuote;
+  latestSubmission?: POSOrderSubmission;
+  mappedPayload?: Record<string, unknown>;
+  retries: RetryAttempt[];
+}
+
+export interface OperationalDiagnosticsSnapshot {
+  failedOrders: Array<{ orderId: string; status: string; updatedAt: string }>;
+  stuckOrders: Array<{ orderId: string; status: string; updatedAt: string }>;
+  quoteFailures: Array<{ orderId?: string; count: number; lastError?: string }>;
+  posFailures: Array<{ orderId?: string; count: number; lastError?: string }>;
+  retryQueue: RetryAttempt[];
+  mappingIssues: Array<{ menuItemId: string; name: string; mappingStatus: string }>;
 }
 
 export interface DashboardSnapshot {

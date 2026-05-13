@@ -28,7 +28,7 @@ export function LoginPage() {
         <div className="eyebrow">Restaurant Access</div>
         <h1>Sign in to Phantom</h1>
         <p className="auth-copy">
-          Demo access is limited to the restaurant operator account for LB Steakhouse. No approval step is required.
+          Sign in with your restaurant operator account to access the correct tenant, location, and role-based controls.
         </p>
         <form className="auth-form" onSubmit={handleSubmit}>
           <Field label="Email">
