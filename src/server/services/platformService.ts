@@ -50,7 +50,9 @@ function normalizeText(value: unknown): string | null {
 export class PlatformService {
   private quoteExpiryMs = 15 * 60 * 1000;
   private operatorSessionTtlMs = 7 * 24 * 60 * 60 * 1000;
+  private operatorSessionAuthRefreshMs = 5 * 60 * 1000;
   private retryBaseDelayMs = 75;
+  private operatorSessionVerificationCache = new Map<string, number>();
 
   private quoteAllowedValidationCodes = new Set([
     "order_value_too_large",
@@ -153,6 +155,7 @@ export class PlatformService {
       targetId: authenticated.user.id,
       summary: `Operator ${authenticated.user.email} signed in.`,
     });
+    this.operatorSessionVerificationCache.set(sessionTokenHash, Date.now());
     return {
       sessionToken,
       authenticated,
@@ -161,14 +164,78 @@ export class PlatformService {
   }
 
   async getOperatorSession(rawSessionToken: string) {
-    let authenticated = await this.repository.getAuthenticatedOperatorBySessionToken(sha256(rawSessionToken));
+    return this.resolveOperatorSession(rawSessionToken, {
+      includeRestaurants: true,
+      forceRefreshIdentity: true,
+    });
+  }
+
+  async getOperatorRequestSession(rawSessionToken: string) {
+    return this.resolveOperatorSession(rawSessionToken, {
+      includeRestaurants: false,
+      forceRefreshIdentity: false,
+    });
+  }
+
+  async logoutOperator(rawSessionToken: string) {
+    const sessionTokenHash = sha256(rawSessionToken);
+    const authenticated = await this.repository.getAuthenticatedOperatorBySessionToken(sessionTokenHash);
+    await this.repository.deleteOperatorSession(sessionTokenHash);
+    this.operatorSessionVerificationCache.delete(sessionTokenHash);
+    if (authenticated) {
+      await this.repository.appendAuditLog({
+        restaurantId: authenticated.selectedMembership.restaurantId,
+        actorType: "manager",
+        actorId: authenticated.user.id,
+        action: "operator.logout",
+        targetType: "operator_user",
+        targetId: authenticated.user.id,
+        summary: `Operator ${authenticated.user.email} signed out.`,
+      });
+    }
+  }
+
+  async selectOperatorTenant(rawSessionToken: string, restaurantId: string, locationId?: string) {
+    const sessionTokenHash = sha256(rawSessionToken);
+    const session = await this.getOperatorRequestSession(rawSessionToken);
+    const membership =
+      session.memberships.find((entry) => entry.restaurantId === restaurantId && entry.locationId === locationId) ??
+      session.memberships.find((entry) => entry.restaurantId === restaurantId);
+    if (!membership) {
+      throw new Error("Operator does not have access to that restaurant.");
+    }
+    await this.repository.updateOperatorSessionSelection(sessionTokenHash, restaurantId, locationId);
+    return {
+      ...session,
+      selectedMembership: membership,
+      restaurants: await this.repository.listAccessibleRestaurants(session.user.id),
+    };
+  }
+
+  private async resolveOperatorSession(
+    rawSessionToken: string,
+    options: { includeRestaurants: boolean; forceRefreshIdentity: boolean },
+  ) {
+    const sessionTokenHash = sha256(rawSessionToken);
+    let authenticated = await this.repository.getAuthenticatedOperatorBySessionToken(sessionTokenHash);
     if (!authenticated) {
       throw new Error("Not signed in.");
     }
-    const selectedMembershipBeforeRefresh = authenticated.selectedMembership;
-    if (this.operatorAuth?.isEnabled() && authenticated.user.supabaseUserId) {
+
+    const shouldRefreshIdentity =
+      this.operatorAuth?.isEnabled() &&
+      authenticated.user.supabaseUserId &&
+      (
+        options.forceRefreshIdentity ||
+        (this.operatorSessionVerificationCache.get(sessionTokenHash) ?? 0) + this.operatorSessionAuthRefreshMs <
+          Date.now()
+      );
+
+    if (shouldRefreshIdentity) {
+      const selectedMembershipBeforeRefresh = authenticated.selectedMembership;
       const authUser = await this.operatorAuth.getUserById(authenticated.user.supabaseUserId);
       if (!authUser) {
+        this.operatorSessionVerificationCache.delete(sessionTokenHash);
         throw new Error("Supabase Auth account is no longer active.");
       }
       const refreshed = await this.repository.reconcileOperatorIdentity(authUser, { updateLastLoginAt: false });
@@ -188,39 +255,17 @@ export class PlatformService {
           selectedMembership: preservedSelection,
         };
       }
+      this.operatorSessionVerificationCache.set(sessionTokenHash, Date.now());
     }
+
+    if (!options.includeRestaurants) {
+      return authenticated;
+    }
+
     return {
       ...authenticated,
       restaurants: await this.repository.listAccessibleRestaurants(authenticated.user.id),
     };
-  }
-
-  async logoutOperator(rawSessionToken: string) {
-    const authenticated = await this.repository.getAuthenticatedOperatorBySessionToken(sha256(rawSessionToken));
-    await this.repository.deleteOperatorSession(sha256(rawSessionToken));
-    if (authenticated) {
-      await this.repository.appendAuditLog({
-        restaurantId: authenticated.selectedMembership.restaurantId,
-        actorType: "manager",
-        actorId: authenticated.user.id,
-        action: "operator.logout",
-        targetType: "operator_user",
-        targetId: authenticated.user.id,
-        summary: `Operator ${authenticated.user.email} signed out.`,
-      });
-    }
-  }
-
-  async selectOperatorTenant(rawSessionToken: string, restaurantId: string, locationId?: string) {
-    const session = await this.getOperatorSession(rawSessionToken);
-    const membership =
-      session.memberships.find((entry) => entry.restaurantId === restaurantId && entry.locationId === locationId) ??
-      session.memberships.find((entry) => entry.restaurantId === restaurantId);
-    if (!membership) {
-      throw new Error("Operator does not have access to that restaurant.");
-    }
-    await this.repository.updateOperatorSessionSelection(sha256(rawSessionToken), restaurantId, locationId);
-    return this.getOperatorSession(rawSessionToken);
   }
 
   assertOperatorAccess(authenticated: AuthenticatedOperator, restaurantId: string, allowedRoles?: OperatorRole[]) {
@@ -484,22 +529,32 @@ export class PlatformService {
     return this.buildGroupedOrderDetail(restaurantId, groupOrders);
   }
 
-  async updateOrderStatus(restaurantId: string, orderId: string, status: AgentOrderStatus, message: string) {
+  async updateOrderStatus(
+    restaurantId: string,
+    orderId: string,
+    status: AgentOrderStatus,
+    message: string,
+    options: { refreshReporting?: boolean } = {},
+  ) {
     const updated = await this.repository.updateOrder(orderId, {
       status,
       updatedAt: new Date().toISOString(),
     });
-    await this.repository.appendStatusEvent({ orderId, status, message });
-    await this.repository.appendAuditLog({
-      restaurantId,
-      actorType: "manager",
-      actorId: "demo_manager",
-      action: `order.${status}`,
-      targetType: "agent_order",
-      targetId: orderId,
-      summary: message,
-    });
-    await this.repository.refreshReportingMetrics(restaurantId);
+    await Promise.all([
+      this.repository.appendStatusEvent({ orderId, status, message }),
+      this.repository.appendAuditLog({
+        restaurantId,
+        actorType: "manager",
+        actorId: "demo_manager",
+        action: `order.${status}`,
+        targetType: "agent_order",
+        targetId: orderId,
+        summary: message,
+      }),
+    ]);
+    if (options.refreshReporting !== false) {
+      await this.repository.refreshReportingMetrics(restaurantId);
+    }
     return updated;
   }
 
@@ -507,62 +562,88 @@ export class PlatformService {
     const order = await this.requirePendingDecisionOrder(restaurantId, orderId);
     const groupOrders = await this.getDecisionGroupOrders(restaurantId, order);
     const representative = groupOrders[0] ?? order;
+    const decisionMessage = this.buildGroupDecisionMessage(groupOrders, "approved");
 
-    for (const groupOrder of groupOrders) {
-      log("info", "order_approved", { restaurantId, orderId: groupOrder.id, splitGroupId: representative.splitGroupId ?? null });
-      await this.updateOrderStatus(restaurantId, groupOrder.id, "approved", this.buildGroupDecisionMessage(groupOrders, "approved"));
-    }
-
-    for (const groupOrder of groupOrders) {
-      try {
-        await this.submitOrderToPOS(restaurantId, groupOrder.id);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await this.repository.appendStatusEvent({
-          orderId: groupOrder.id,
-          status: "approved",
-          message: `Order was approved, but POS submission needs attention: ${message}`,
-        });
-        await this.repository.appendAuditLog({
-          restaurantId,
-          actorType: "system",
-          actorId: "pos_submit_after_approval",
-          action: "order.pos_submission_attention_needed",
-          targetType: "agent_order",
-          targetId: groupOrder.id,
-          summary: `Order was approved, but POS submission needs attention: ${message}`,
-        });
-        log("warn", "pos_submission_attention_needed", {
+    await Promise.all(
+      groupOrders.map(async (groupOrder) => {
+        log("info", "order_approved", {
           restaurantId,
           orderId: groupOrder.id,
-          correlationId: groupOrder.externalOrderReference,
           splitGroupId: representative.splitGroupId ?? null,
-          error: message,
         });
-      }
-    }
+        await this.updateOrderStatus(restaurantId, groupOrder.id, "approved", decisionMessage, {
+          refreshReporting: false,
+        });
+      }),
+    );
+    await this.repository.refreshReportingMetrics(restaurantId);
 
-    return this.buildGroupedOrder(groupOrders, representative);
+    await Promise.all(
+      groupOrders.map(async (groupOrder) => {
+        try {
+          await this.submitOrderToPOS(restaurantId, groupOrder.id);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await Promise.all([
+            this.repository.appendStatusEvent({
+              orderId: groupOrder.id,
+              status: "approved",
+              message: `Order was approved, but POS submission needs attention: ${message}`,
+            }),
+            this.repository.appendAuditLog({
+              restaurantId,
+              actorType: "system",
+              actorId: "pos_submit_after_approval",
+              action: "order.pos_submission_attention_needed",
+              targetType: "agent_order",
+              targetId: groupOrder.id,
+              summary: `Order was approved, but POS submission needs attention: ${message}`,
+            }),
+          ]);
+          log("warn", "pos_submission_attention_needed", {
+            restaurantId,
+            orderId: groupOrder.id,
+            correlationId: groupOrder.externalOrderReference,
+            splitGroupId: representative.splitGroupId ?? null,
+            error: message,
+          });
+        }
+      }),
+    );
+
+    return this.getCurrentGroupedOrderState(restaurantId, representative.id);
   }
 
   async rejectOrder(restaurantId: string, orderId: string) {
     const order = await this.requirePendingDecisionOrder(restaurantId, orderId);
     const groupOrders = await this.getDecisionGroupOrders(restaurantId, order);
     const representative = groupOrders[0] ?? order;
+    const decisionMessage = this.buildGroupDecisionMessage(groupOrders, "rejected");
 
-    for (const groupOrder of groupOrders) {
-      log("warn", "order_rejected", { restaurantId, orderId: groupOrder.id, splitGroupId: representative.splitGroupId ?? null });
-      await this.updateOrderStatus(restaurantId, groupOrder.id, "rejected", this.buildGroupDecisionMessage(groupOrders, "rejected"));
-    }
+    await Promise.all(
+      groupOrders.map(async (groupOrder) => {
+        log("warn", "order_rejected", {
+          restaurantId,
+          orderId: groupOrder.id,
+          splitGroupId: representative.splitGroupId ?? null,
+        });
+        await this.updateOrderStatus(restaurantId, groupOrder.id, "rejected", decisionMessage, {
+          refreshReporting: false,
+        });
+      }),
+    );
+    await this.repository.refreshReportingMetrics(restaurantId);
 
-    return this.buildGroupedOrder(groupOrders, representative);
+    return this.getCurrentGroupedOrderState(restaurantId, representative.id);
   }
 
   async submitOrderToPOS(restaurantId: string, orderId: string) {
     const detail = await this.requireSingleOrderDetail(restaurantId, orderId);
     const quote = await this.ensureFreshQuote(detail.order);
     await this.assertReadyForPOSSubmission(detail.order, quote);
-    await this.updateOrderStatus(restaurantId, orderId, "submitting_to_pos", "Submitting order to POS.");
+    await this.updateOrderStatus(restaurantId, orderId, "submitting_to_pos", "Submitting order to POS.", {
+      refreshReporting: false,
+    });
     const context = await this.getPOSContext(restaurantId);
     const adapter = this.adapters.getAdapter(context.connection);
     const payloadSnapshot = this.buildPayloadSnapshot(detail.order, quote, context);
@@ -586,7 +667,6 @@ export class PlatformService {
       submittedAt: new Date().toISOString(),
     };
     await this.repository.saveSubmission(submission);
-    await this.repository.refreshReportingMetrics(restaurantId);
     log(response.ok ? "info" : "error", "pos_submission", {
       restaurantId,
       orderId,
@@ -1505,6 +1585,7 @@ export class PlatformService {
 
     return {
       ...representative,
+      status: this.getGroupedOrderStatus(sortedGroupOrders, representative.status),
       totalEstimateCents: sortedGroupOrders.reduce((sum, order) => sum + Math.max(0, Number(order.totalEstimateCents || 0)), 0),
       headcount: sortedGroupOrders.reduce((sum, order) => sum + Math.max(0, Number(order.headcount || 0)), 0),
       splitGroupId: this.getSplitGroupId(representative) || undefined,
@@ -1546,6 +1627,16 @@ export class PlatformService {
     return [...standalone, ...aggregated].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  private async getCurrentGroupedOrderState(restaurantId: string, representativeOrderId: string) {
+    const refreshedRepresentative = await this.repository.getOrderById(representativeOrderId);
+    if (!refreshedRepresentative) {
+      throw new Error(`Order ${representativeOrderId} not found.`);
+    }
+    const refreshedGroupOrders = await this.getDecisionGroupOrders(restaurantId, refreshedRepresentative);
+    const refreshedRepresentativeOrder = refreshedGroupOrders[0] ?? refreshedRepresentative;
+    return this.buildGroupedOrder(refreshedGroupOrders, refreshedRepresentativeOrder);
+  }
+
   private async getDecisionGroupOrders(restaurantId: string, order: AgentOrderRecord) {
     const splitGroupId = this.getSplitGroupId(order);
     if (!splitGroupId) return [order];
@@ -1564,6 +1655,30 @@ export class PlatformService {
       const rightIndex = Number(right.splitGroupIndex ?? right.orderIntent?.metadata?.split_group_index ?? Number.MAX_SAFE_INTEGER);
       return leftIndex - rightIndex || left.createdAt.localeCompare(right.createdAt);
     });
+  }
+
+  private getGroupedOrderStatus(groupOrders: AgentOrderRecord[], fallbackStatus: AgentOrderStatus) {
+    const statuses = groupOrders
+      .map((order) => normalizeText(order.status))
+      .filter((status): status is AgentOrderStatus => Boolean(status));
+
+    if (!statuses.length) {
+      return fallbackStatus;
+    }
+
+    if (statuses.some((status) => status === "failed")) return "failed";
+    if (statuses.some((status) => status === "cancelled")) return "cancelled";
+    if (statuses.some((status) => status === "rejected")) return "rejected";
+    if (statuses.some((status) => status === "completed")) return "completed";
+    if (statuses.some((status) => status === "ready")) return "ready";
+    if (statuses.some((status) => status === "preparing")) return "preparing";
+    if (statuses.some((status) => status === "accepted")) return "accepted";
+    if (statuses.some((status) => status === "submitted_to_pos")) return "submitted_to_pos";
+    if (statuses.some((status) => status === "approved")) return "approved";
+    if (statuses.some((status) => status === "submitting_to_pos")) return "submitting_to_pos";
+    if (statuses.every((status) => status === "needs_approval")) return "needs_approval";
+
+    return fallbackStatus;
   }
 
   private buildGroupDecisionMessage(groupOrders: AgentOrderRecord[], decision: "approved" | "rejected") {

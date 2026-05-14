@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useTenant } from "../auth/AuthContext";
@@ -17,35 +17,25 @@ export function OrderDetailPage() {
   const [message, setMessage] = useState("");
   const [showOrderDetails, setShowOrderDetails] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [pendingDecision, setPendingDecision] = useState<"approve" | "reject" | null>(null);
+  const [optimisticDecisionStatus, setOptimisticDecisionStatus] = useState<"approved" | "rejected" | null>(null);
 
-  if (loading) return <div className="panel-state">Loading order…</div>;
-  if (error || !data) return <div className="panel-state error">{error}</div>;
-
-  async function refresh() {
-    setData(await api.order(selectedRestaurantId!, orderId));
+  function mergeOptimisticDecision(detail: any, optimisticStatus: "approved" | "rejected" | null) {
+    if (!optimisticStatus) return detail;
+    if (detail?.order?.status !== "needs_approval") return detail;
+    return {
+      ...detail,
+      order: { ...detail.order, status: optimisticStatus },
+      groupedOrders: Array.isArray(detail.groupedOrders)
+        ? detail.groupedOrders.map((order: any) =>
+            order.status === "needs_approval" ? { ...order, status: optimisticStatus } : order,
+          )
+        : detail.groupedOrders,
+    };
   }
 
-  async function approve() {
-    await api.approveOrder(selectedRestaurantId!, orderId);
-    setMessage(
-      data.order.splitGroupSize && data.order.splitGroupSize > 1
-        ? `Split order bundle approved. Phantom is sending ${data.order.splitGroupSize} linked orders to POS.`
-        : "Order approved. Phantom is sending it to POS."
-    );
-    await refresh();
-  }
-
-  async function reject() {
-    await api.rejectOrder(selectedRestaurantId!, orderId);
-    setMessage(
-      data.order.splitGroupSize && data.order.splitGroupSize > 1
-        ? "Split order bundle rejected."
-        : "Order rejected."
-    );
-    await refresh();
-  }
-
-  const groupedOrders = Array.isArray(data.groupedOrders) ? data.groupedOrders : [];
+  const displayData = data ? mergeOptimisticDecision(data, optimisticDecisionStatus) : data;
+  const groupedOrders = Array.isArray(displayData?.groupedOrders) ? displayData.groupedOrders : [];
   const hasSplitBundle = groupedOrders.length > 1;
   const orderLabelById = new Map(
     groupedOrders.map((order: any, index: number) => [
@@ -53,7 +43,91 @@ export function OrderDetailPage() {
       `Suborder ${order.splitGroupIndex ?? index + 1} of ${groupedOrders.length}`,
     ]),
   );
-  const canDecide = canManageOrders && !isReadOnly && data.order.status === "needs_approval";
+
+  if (loading) return <div className="panel-state">Loading order…</div>;
+  if (error || !displayData) return <div className="panel-state error">{error}</div>;
+
+  async function refresh() {
+    const latestDetail = await api.order(selectedRestaurantId!, orderId);
+    if (latestDetail?.order?.status && latestDetail.order.status !== "needs_approval") {
+      setOptimisticDecisionStatus(null);
+    }
+    setData(mergeOptimisticDecision(latestDetail, optimisticDecisionStatus));
+  }
+
+  async function approve() {
+    setPendingDecision("approve");
+    setOptimisticDecisionStatus("approved");
+    setMessage("Approving order…");
+    setData({
+      ...displayData,
+      order: { ...displayData.order, status: "approved" },
+      groupedOrders: groupedOrders.length
+        ? groupedOrders.map((order: any) => ({ ...order, status: "approved" }))
+        : displayData.groupedOrders,
+    });
+    try {
+      const updatedOrder = await api.approveOrder(selectedRestaurantId!, orderId);
+      setMessage(
+        updatedOrder.splitGroupSize && updatedOrder.splitGroupSize > 1
+          ? `Split order bundle approved. Phantom is sending ${updatedOrder.splitGroupSize} linked orders to POS.`
+          : "Order approved. Phantom is sending it to POS."
+      );
+      setData({
+        ...displayData,
+        order: updatedOrder,
+        groupedOrders: groupedOrders.length
+          ? groupedOrders.map((order: any) => ({ ...order, status: "approved" }))
+          : displayData.groupedOrders,
+      });
+      void refresh();
+    } catch (submitError) {
+      setMessage(submitError instanceof Error ? submitError.message : "Failed to approve order.");
+      await refresh();
+    } finally {
+      setPendingDecision(null);
+    }
+  }
+
+  async function reject() {
+    setPendingDecision("reject");
+    setOptimisticDecisionStatus("rejected");
+    setMessage("Rejecting order…");
+    setData({
+      ...displayData,
+      order: { ...displayData.order, status: "rejected" },
+      groupedOrders: groupedOrders.length
+        ? groupedOrders.map((order: any) => ({ ...order, status: "rejected" }))
+        : displayData.groupedOrders,
+    });
+    try {
+      const updatedOrder = await api.rejectOrder(selectedRestaurantId!, orderId);
+      setMessage(
+        updatedOrder.splitGroupSize && updatedOrder.splitGroupSize > 1
+          ? "Split order bundle rejected."
+          : "Order rejected."
+      );
+      setData({
+        ...displayData,
+        order: updatedOrder,
+        groupedOrders: groupedOrders.length
+          ? groupedOrders.map((order: any) => ({ ...order, status: "rejected" }))
+          : displayData.groupedOrders,
+      });
+      void refresh();
+    } catch (submitError) {
+      setMessage(submitError instanceof Error ? submitError.message : "Failed to reject order.");
+      await refresh();
+    } finally {
+      setPendingDecision(null);
+    }
+  }
+
+  const canDecide = canManageOrders && !isReadOnly && displayData.order.status === "needs_approval";
+  const shouldAutoRefresh =
+    displayData.order.status === "approved" ||
+    displayData.order.status === "submitting_to_pos" ||
+    groupedOrders.some((order: any) => ["approved", "submitting_to_pos"].includes(order.status));
   const renderCaret = (expanded: boolean) => (
     <span
       style={{
@@ -66,17 +140,31 @@ export function OrderDetailPage() {
     </span>
   );
 
+  useEffect(() => {
+    if (!shouldAutoRefresh || !selectedRestaurantId) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refresh();
+    }, 2500);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [shouldAutoRefresh, selectedRestaurantId, orderId]);
+
   return (
     <div className="page-grid">
       <PageHeader
         eyebrow="Order Detail"
-        title={data.order.id}
+        title={displayData.order.id}
         description="Managers make a one-time approve or reject decision. Phantom handles the POS workflow after approval."
         actions={
           canDecide ? (
             <div className="page-actions">
-              <Button tone="secondary" onClick={approve}>Approve</Button>
-              <Button tone="danger" onClick={reject}>Reject</Button>
+              <Button tone="secondary" onClick={approve} disabled={pendingDecision !== null}>Approve</Button>
+              <Button tone="danger" onClick={reject} disabled={pendingDecision !== null}>Reject</Button>
             </div>
           ) : undefined
         }
@@ -85,21 +173,21 @@ export function OrderDetailPage() {
       <div className="two-column">
         <Card title="Order Overview">
           <div className="detail-grid">
-            <div><span>Status</span><strong><Badge tone="warning">{data.order.status}</Badge></strong></div>
-            <div><span>Agent</span><strong>{data.order.agentName ?? data.order.agentId}</strong></div>
-            <div><span>Customer</span><strong>{data.order.customerName}</strong></div>
-            <div><span>Fulfillment</span><strong>{data.order.fulfillmentType}</strong></div>
-            <div><span>Requested Time</span><strong>{dateTime(data.order.requestedFulfillmentTime)}</strong></div>
-            <div><span>Headcount</span><strong>{data.order.headcount}</strong></div>
-            <div><span>Total</span><strong>{money(data.order.totalEstimateCents)}</strong></div>
-            {data.order.splitGroupSize && data.order.splitGroupSize > 1 ? (
-              <div><span>Split Orders</span><strong>{String(data.order.splitGroupSize)}</strong></div>
+            <div><span>Status</span><strong><Badge tone="warning">{displayData.order.status}</Badge></strong></div>
+            <div><span>Agent</span><strong>{displayData.order.agentName ?? displayData.order.agentId}</strong></div>
+            <div><span>Customer</span><strong>{displayData.order.customerName}</strong></div>
+            <div><span>Fulfillment</span><strong>{displayData.order.fulfillmentType}</strong></div>
+            <div><span>Requested Time</span><strong>{dateTime(displayData.order.requestedFulfillmentTime)}</strong></div>
+            <div><span>Headcount</span><strong>{displayData.order.headcount}</strong></div>
+            <div><span>Total</span><strong>{money(displayData.order.totalEstimateCents)}</strong></div>
+            {displayData.order.splitGroupSize && displayData.order.splitGroupSize > 1 ? (
+              <div><span>Split Orders</span><strong>{String(displayData.order.splitGroupSize)}</strong></div>
             ) : null}
           </div>
         </Card>
         <Card title="Validation & Quote">
           <div className="stack-list">
-            {(data.validationResults ?? []).map((result: any) => (
+            {(displayData.validationResults ?? []).map((result: any) => (
               <div key={result.id} className="stack-row">
                 <div>
                   <strong>{result.valid ? "Valid" : "Validation failed"}</strong>
@@ -109,7 +197,7 @@ export function OrderDetailPage() {
                 <div className="muted">{result.issues.length} issues</div>
               </div>
             ))}
-            {(data.quotes ?? []).map((quote: any) => (
+            {(displayData.quotes ?? []).map((quote: any) => (
               <div key={quote.id} className="stack-row">
                 <div>
                   <strong>Quoted total</strong>
@@ -141,7 +229,7 @@ export function OrderDetailPage() {
       <Card title="Items">
         <DataTable
           columns={hasSplitBundle ? ["Suborder", "Item", "Qty", "Modifiers"] : ["Item", "Qty", "Modifiers"]}
-          rows={data.items.map((item: any) => [
+          rows={displayData.items.map((item: any) => [
             ...(hasSplitBundle ? [orderLabelById.get(item.orderId) ?? item.orderId] : []),
             item.menuItem?.name ?? item.menuItemId,
             String(item.quantity),
@@ -175,14 +263,14 @@ export function OrderDetailPage() {
               ))}
             </div>
           ) : (
-            <pre className="json-view">{JSON.stringify(data.order.orderIntent, null, 2)}</pre>
+            <pre className="json-view">{JSON.stringify(displayData.order.orderIntent, null, 2)}</pre>
           )
         ) : null}
       </Card>
 
       <Card title="Order Timeline" subtitle="Lifecycle, validation, quote, submission, retry, and audit events are shown together for debugging.">
         <div className="stack-list">
-          {(data.timeline ?? []).map((event: any) => (
+          {(displayData.timeline ?? []).map((event: any) => (
             <div key={event.id} className="stack-row">
               <div>
                 <strong>{event.title}</strong>
@@ -210,7 +298,7 @@ export function OrderDetailPage() {
         }
       >
         {showDiagnostics ? (
-          <pre className="json-view">{JSON.stringify(data.diagnostics ?? {}, null, 2)}</pre>
+          <pre className="json-view">{JSON.stringify(displayData.diagnostics ?? {}, null, 2)}</pre>
         ) : null}
       </Card>
     </div>

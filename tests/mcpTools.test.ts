@@ -108,7 +108,7 @@ describe("Phantom MCP tools", () => {
     expect(result.modifierGroups.length).toBeGreaterThan(0);
     expect(result.items[0]).toEqual(
       expect.objectContaining({
-        imageUrl: expect.stringContaining("https://"),
+        imageUrl: expect.stringMatching(/^https?:\/\//),
       }),
     );
   });

@@ -146,7 +146,7 @@ describe("PlatformService", () => {
     );
     expect(menu.items[0]).toEqual(
       expect.objectContaining({
-        imageUrl: expect.stringContaining("https://"),
+        imageUrl: expect.stringMatching(/^https?:\/\//),
       }),
     );
   });

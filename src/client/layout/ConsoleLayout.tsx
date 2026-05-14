@@ -67,7 +67,6 @@ export function ConsoleLayout({ children }: PropsWithChildren) {
               </select>
             </label>
           ) : null}
-          {session ? <div className="session-role">{session.selectedMembership.role}</div> : null}
           <button type="button" className="sidebar-signout" onClick={() => void logout()}>
             Sign Out
           </button>

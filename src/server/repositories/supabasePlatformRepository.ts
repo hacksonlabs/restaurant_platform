@@ -505,6 +505,10 @@ export class SupabasePlatformRepository implements PlatformRepository {
         ["membership_lb_owner", "rest_lb_steakhouse", "loc_lb_main"],
         ["membership_pizza_palace_owner", "rest_pizza_palace", "loc_pizza_palace_main"],
         ["membership_green_leaf_salads_owner", "rest_green_leaf_salads", "loc_green_leaf_salads_main"],
+        ["membership_sakura_sushi_house_owner", "rest_sakura_sushi_house", "loc_sakura_sushi_house_main"],
+        ["membership_sunrise_taqueria_owner", "rest_sunrise_taqueria", "loc_sunrise_taqueria_main"],
+        ["membership_midnight_noodle_bar_owner", "rest_midnight_noodle_bar", "loc_midnight_noodle_bar_main"],
+        ["membership_harbor_sandwich_co_owner", "rest_harbor_sandwich_co", "loc_harbor_sandwich_co_main"],
       ] as const;
       for (const [membershipId, restaurantId, fallbackLocationId] of seededMemberships) {
         const restaurant = await this.getRestaurant(restaurantId);

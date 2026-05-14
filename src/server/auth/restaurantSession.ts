@@ -41,7 +41,7 @@ export function requireRestaurantSession(service: PlatformService) {
       return;
     }
     try {
-      const session = await service.getOperatorSession(rawSessionToken);
+      const session = await service.getOperatorRequestSession(rawSessionToken);
       request.restaurantSession = session;
       request.restaurantSessionToken = rawSessionToken;
       next();
@@ -125,7 +125,7 @@ export function restaurantAuthRoutes(service: PlatformService) {
 declare global {
   namespace Express {
     interface Request {
-      restaurantSession?: Awaited<ReturnType<PlatformService["getOperatorSession"]>>;
+      restaurantSession?: Awaited<ReturnType<PlatformService["getOperatorRequestSession"]>>;
       restaurantSessionToken?: string;
       restaurantMembership?: ReturnType<PlatformService["assertOperatorAccess"]>;
     }
