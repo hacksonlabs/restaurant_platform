@@ -279,6 +279,7 @@ function mapQuote(row: any): OrderQuote {
     subtotalCents: row.subtotal_cents,
     taxCents: row.tax_cents,
     feesCents: row.fees_cents,
+    tipCents: row.tip_cents ?? 0,
     totalCents: row.total_cents,
     currency: row.currency,
     quotedAt: isoTimestamp(row.quoted_at),
@@ -1087,14 +1088,15 @@ export class SupabasePlatformRepository implements PlatformRepository {
       );
       await client.query(
         `insert into order_quotes
-         (id, order_id, subtotal_cents, tax_cents, fees_cents, total_cents, currency, quoted_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         (id, order_id, subtotal_cents, tax_cents, fees_cents, tip_cents, total_cents, currency, quoted_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           input.quote.id,
           input.quote.orderId,
           input.quote.subtotalCents,
           input.quote.taxCents,
           input.quote.feesCents,
+          input.quote.tipCents,
           input.quote.totalCents,
           input.quote.currency,
           input.quote.quotedAt,
@@ -1167,9 +1169,9 @@ export class SupabasePlatformRepository implements PlatformRepository {
   async saveQuote(quote: OrderQuote) {
     await this.pool.query(
       `insert into order_quotes
-       (id, order_id, subtotal_cents, tax_cents, fees_cents, total_cents, currency, quoted_at, idempotency_key)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [quote.id, quote.orderId, quote.subtotalCents, quote.taxCents, quote.feesCents, quote.totalCents, quote.currency, quote.quotedAt, quote.idempotencyKey ?? null],
+       (id, order_id, subtotal_cents, tax_cents, fees_cents, tip_cents, total_cents, currency, quoted_at, idempotency_key)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [quote.id, quote.orderId, quote.subtotalCents, quote.taxCents, quote.feesCents, quote.tipCents, quote.totalCents, quote.currency, quote.quotedAt, quote.idempotencyKey ?? null],
     );
   }
 

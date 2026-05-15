@@ -112,6 +112,7 @@ export class DeliverectAdapterLive implements POSAdapter {
       subtotalCents: totals.subtotalCents,
       taxCents: totals.taxCents,
       feesCents: totals.feesCents,
+      tipCents: totals.tipCents,
       totalCents: totals.totalCents,
       message: "Deliverect basket quote generated.",
     };
@@ -522,7 +523,20 @@ export class DeliverectAdapterLive implements POSAdapter {
     if (!response.ok) {
       throw deliverectError(`Deliverect basket creation failed: ${response.status} ${this.readError(payload)}`);
     }
-    return payload;
+    const basketId = this.readBasketId(payload);
+    const tipCents = this.tipCents(order);
+    if (!basketId || tipCents <= 0) {
+      return payload;
+    }
+    const tipPayload = await this.updateBasketTip(context.connection, basketId, tipCents);
+    if (isObject(tipPayload)) {
+      return tipPayload;
+    }
+    return {
+      ...(isObject(payload) ? payload : {}),
+      basketId,
+      tip: tipCents,
+    };
   }
 
   private extractSourcePaymentProfile(order: CanonicalOrderIntent) {
@@ -664,9 +678,10 @@ export class DeliverectAdapterLive implements POSAdapter {
       this.findNumericValue(payload, ["serviceCharge", "serviceFee"]) +
       this.findNumericValue(payload, ["deliveryCost", "deliveryFee"]) +
       this.findNumericValue(payload, ["bagFee", "smallOrderFee"]);
-    const fallbackTotal = subtotalCents + taxCents + feesCents;
+    const tipCents = this.findNumericValue(payload, ["tip"]);
+    const fallbackTotal = subtotalCents + taxCents + feesCents + tipCents;
     const totalCents = this.findNumericValue(payload, ["total", "totalAmount", "paymentAmount"]) || fallbackTotal;
-    return { subtotalCents, taxCents, feesCents, totalCents };
+    return { subtotalCents, taxCents, feesCents, tipCents, totalCents };
   }
 
   private findNumericValue(payload: unknown, keys: string[]) {
@@ -716,5 +731,26 @@ export class DeliverectAdapterLive implements POSAdapter {
     }
     const value = payload[key];
     return typeof value === "string" ? value : typeof value === "number" ? String(value) : undefined;
+  }
+
+  private tipCents(order: CanonicalOrderIntent) {
+    return Math.max(0, Math.round(Number(order.tip_cents ?? 0) || 0));
+  }
+
+  private async updateBasketTip(connection: POSConnection, basketId: string, tipCents: number) {
+    const response = await this.deliverectFetch(
+      `/commerce/${this.accountId(connection)}/baskets/${basketId}/payment`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          tip: tipCents,
+        }),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw deliverectError(`Deliverect basket tip update failed: ${response.status} ${this.readError(payload)}`);
+    }
+    return payload;
   }
 }

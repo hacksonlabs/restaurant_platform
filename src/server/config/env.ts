@@ -26,6 +26,7 @@ export interface AppEnv {
   toastRestaurantGuid: string;
   toastLocationId: string;
   toastManagementGroupGuid: string;
+  toastTipServiceChargeGuid: string;
   toastAccessToken: string;
   toastWebhookSecret: string;
   deliverectBaseUrl: string;
@@ -63,6 +64,7 @@ export function getEnv(): AppEnv {
     toastRestaurantGuid: text(process.env.TOAST_RESTAURANT_GUID, "toast-rest-guid-lb-steakhouse"),
     toastLocationId: text(process.env.TOAST_LOCATION_ID),
     toastManagementGroupGuid: text(process.env.TOAST_MANAGEMENT_GROUP_GUID),
+    toastTipServiceChargeGuid: text(process.env.TOAST_TIP_SERVICE_CHARGE_GUID),
     toastAccessToken: text(process.env.TOAST_ACCESS_TOKEN),
     toastWebhookSecret: text(process.env.TOAST_WEBHOOK_SECRET),
     deliverectBaseUrl: text(process.env.DELIVERECT_BASE_URL, "https://api.staging.deliverect.com"),

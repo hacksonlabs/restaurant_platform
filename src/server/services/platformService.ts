@@ -1159,9 +1159,41 @@ export class PlatformService {
       subtotalCents: quote.subtotalCents,
       taxCents: quote.taxCents,
       feesCents: quote.feesCents,
+      tipCents: quote.tipCents,
       totalCents: quote.totalCents,
       message: "Using stored quote.",
     };
+  }
+
+  private normalizeReplayResponse<T extends Record<string, unknown>>(
+    scope: "validate" | "quote" | "submit",
+    response: T,
+  ): T {
+    if (scope !== "quote") {
+      return response;
+    }
+
+    const normalized = { ...response } as T & {
+      subtotalCents?: unknown;
+      taxCents?: unknown;
+      feesCents?: unknown;
+      tipCents?: unknown;
+      totalCents?: unknown;
+    };
+
+    const subtotalCents = Number(normalized.subtotalCents ?? 0) || 0;
+    const taxCents = Number(normalized.taxCents ?? 0) || 0;
+    const feesCents = Number(normalized.feesCents ?? 0) || 0;
+    const tipCents = Number(normalized.tipCents ?? 0) || 0;
+    const totalCents = Number(normalized.totalCents ?? subtotalCents + taxCents + feesCents + tipCents) || 0;
+
+    normalized.subtotalCents = subtotalCents;
+    normalized.taxCents = taxCents;
+    normalized.feesCents = feesCents;
+    normalized.tipCents = tipCents;
+    normalized.totalCents = totalCents;
+
+    return normalized;
   }
 
   private readSourceQuoteTotalCents(order: CanonicalOrderIntent) {
@@ -1180,6 +1212,7 @@ export class PlatformService {
       subtotalCents: quoteResult.subtotalCents,
       taxCents: quoteResult.taxCents,
       feesCents: quoteResult.feesCents,
+      tipCents: quoteResult.tipCents,
       totalCents: quoteResult.totalCents,
       currency: "USD" as const,
       quotedAt: new Date().toISOString(),
@@ -1345,7 +1378,7 @@ export class PlatformService {
         throw new Error(`Idempotency key ${idempotencyKey} was already used for a different request.`);
       }
       if (record.status === "completed" && record.response) {
-        return record.response as T;
+        return this.normalizeReplayResponse(scope, record.response as T);
       }
       if (record.status === "failed") {
         throw new Error(record.error || "A prior identical request failed.");
@@ -1368,7 +1401,7 @@ export class PlatformService {
         throw new Error(`Idempotency key ${idempotencyKey} was already used for a different request.`);
       }
       if (existing.status === "completed" && existing.response) {
-        return existing.response as T;
+        return this.normalizeReplayResponse(scope, existing.response as T);
       }
       if (existing.status === "pending") {
         const pendingResult = await this.waitForIdempotentResult<T>(scope, parsed.restaurant_id, parsed.agent_id, idempotencyKey, requestHash);

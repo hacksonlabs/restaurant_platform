@@ -96,11 +96,13 @@ export class ToastAdapterLive implements POSAdapter {
       throw toastError(`Toast /prices failed: ${response.status} ${this.readToastError(payload)}`);
     }
     const totals = this.extractToastTotals(payload);
+    const tipCents = this.tipCents(order);
     return {
       ok: true,
       subtotalCents: totals.subtotalCents,
       taxCents: totals.taxCents,
-      feesCents: totals.feesCents,
+      feesCents: Math.max(0, totals.feesCents - tipCents),
+      tipCents,
       totalCents: totals.totalCents,
       message: "Toast sandbox/live quote generated.",
     };
@@ -329,6 +331,7 @@ export class ToastAdapterLive implements POSAdapter {
   private localToastReadinessIssues(order: CanonicalOrderIntent, context: POSContext): OrderValidationResult["issues"] {
     const issues: OrderValidationResult["issues"] = [];
     const menuItemMap = new Map(context.menuItems.map((item) => [item.id, item]));
+    const tipServiceChargeGuid = this.tipServiceChargeGuid(context.connection);
     order.items.forEach((item, index) => {
       const menuItem = menuItemMap.get(item.item_id);
       if (!menuItem) {
@@ -356,6 +359,14 @@ export class ToastAdapterLive implements POSAdapter {
         severity: "error",
       });
     }
+    if (this.tipCents(order) > 0 && !tipServiceChargeGuid) {
+      issues.push({
+        code: "toast_tip_configuration_missing",
+        message: "Toast tip support requires a configured open gratuity service charge GUID.",
+        field: "tip_cents",
+        severity: "error",
+      });
+    }
     return issues;
   }
 
@@ -364,6 +375,9 @@ export class ToastAdapterLive implements POSAdapter {
     const modifierMap = new Map(context.modifiers.map((modifier) => [modifier.id, modifier]));
     const openedDate = isFutureOrder(order) ? order.requested_fulfillment_time : new Date().toISOString();
     const promisedDate = isFutureOrder(order) ? order.requested_fulfillment_time : null;
+
+    const tipCents = this.tipCents(order);
+    const tipServiceChargeGuid = this.tipServiceChargeGuid(context.connection);
 
     return {
       entityType: "Order",
@@ -380,6 +394,17 @@ export class ToastAdapterLive implements POSAdapter {
             email: order.customer.email ?? undefined,
             phone: order.customer.phone ?? undefined,
           },
+          appliedServiceCharges:
+            tipCents > 0 && tipServiceChargeGuid
+              ? [
+                  {
+                    serviceCharge: {
+                      guid: tipServiceChargeGuid,
+                    },
+                    chargeAmount: tipCents / 100,
+                  },
+                ]
+              : undefined,
           selections: order.items.map((item) => {
             const menuItem = menuItemMap.get(item.item_id);
             return {
@@ -444,5 +469,18 @@ export class ToastAdapterLive implements POSAdapter {
     if (typeof payload?.error === "string") return payload.error;
     if (typeof payload?.status === "string") return payload.status;
     return "Unknown Toast error";
+  }
+
+  private tipCents(order: CanonicalOrderIntent) {
+    return Math.max(0, Math.round(Number(order.tip_cents ?? 0) || 0));
+  }
+
+  private tipServiceChargeGuid(connection?: POSConnection) {
+    const metadataValue = connection?.metadata?.toastTipServiceChargeGuid;
+    if (typeof metadataValue === "string" && metadataValue.trim()) {
+      return metadataValue.trim();
+    }
+    const envValue = this.env?.toastTipServiceChargeGuid;
+    return typeof envValue === "string" && envValue.trim() ? envValue.trim() : "";
   }
 }

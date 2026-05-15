@@ -236,11 +236,15 @@ create table if not exists order_quotes (
   subtotal_cents integer not null,
   tax_cents integer not null,
   fees_cents integer not null,
+  tip_cents integer not null default 0,
   total_cents integer not null,
   currency text not null default 'USD',
   quoted_at timestamptz not null default now(),
   idempotency_key text
 );
+
+alter table if exists order_quotes
+  add column if not exists tip_cents integer not null default 0;
 
 create table if not exists pos_order_submissions (
   id text primary key,

@@ -246,6 +246,7 @@ export interface CanonicalOrderIntent {
     notes?: string;
   };
   headcount: number;
+  tip_cents?: number;
   budget_constraints?: {
     max_total_cents?: number;
   };
@@ -282,6 +283,7 @@ export interface OrderQuote {
   subtotalCents: number;
   taxCents: number;
   feesCents: number;
+  tipCents: number;
   totalCents: number;
   currency: "USD";
   quotedAt: string;
@@ -489,6 +491,7 @@ export interface OrderQuoteResult {
   subtotalCents: number;
   taxCents: number;
   feesCents: number;
+  tipCents: number;
   totalCents: number;
   message: string;
 }

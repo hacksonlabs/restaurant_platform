@@ -107,6 +107,7 @@ async function main() {
         subtotalCents: z.number(),
         taxCents: z.number(),
         feesCents: z.number(),
+        tipCents: z.number(),
         totalCents: z.number(),
         currency: z.literal("USD"),
         quotedAt: z.string(),

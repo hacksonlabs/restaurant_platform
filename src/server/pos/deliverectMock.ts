@@ -60,13 +60,15 @@ export class DeliverectAdapterMock implements POSAdapter {
       return sum + itemSubtotal + modifierSubtotal;
     }, 0);
     const taxCents = Math.round(subtotalCents * 0.09);
+    const tipCents = Math.max(0, Math.round(Number(order.tip_cents ?? 0) || 0));
 
     return {
       ok: true,
       subtotalCents,
       taxCents,
       feesCents: 0,
-      totalCents: subtotalCents + taxCents,
+      tipCents,
+      totalCents: subtotalCents + taxCents + tipCents,
       message: "Mock Deliverect basket quote generated.",
     };
   }

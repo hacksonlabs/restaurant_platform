@@ -22,6 +22,7 @@ export const canonicalOrderIntentSchema = z.object({
     })
     .optional(),
   headcount: z.number().int().positive(),
+  tip_cents: z.number().int().nonnegative().optional(),
   budget_constraints: z
     .object({
       max_total_cents: z.number().int().positive().optional(),

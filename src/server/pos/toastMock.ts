@@ -61,13 +61,15 @@ export class ToastAdapterMock implements POSAdapter {
     }, 0);
     const taxCents = Math.round(subtotalCents * 0.09);
     const feesCents = Math.round(subtotalCents * 0.03);
+    const tipCents = Math.max(0, Math.round(Number(order.tip_cents ?? 0) || 0));
 
     return {
       ok: true,
       subtotalCents,
       taxCents,
       feesCents,
-      totalCents: subtotalCents + taxCents + feesCents,
+      tipCents,
+      totalCents: subtotalCents + taxCents + feesCents + tipCents,
       message: "Mock Toast quote generated.",
     };
   }

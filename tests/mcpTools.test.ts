@@ -30,6 +30,7 @@ function orderPayload(reference: string) {
       fulfillment_type: "pickup" as const,
       requested_fulfillment_time: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
       headcount: 2,
+      tip_cents: 0,
       payment_policy: "required_before_submit" as const,
       items: [{ item_id: "item_filet", quantity: 1, modifiers: [] }],
       dietary_constraints: [],
@@ -160,6 +161,28 @@ describe("Phantom MCP tools", () => {
     expect(result.status).toBe("redirect_required");
     expect(result.paymentReference).toBeTruthy();
     expect(result.redirectUrl).toContain("mealops.test/order/success");
+  });
+
+  it("passes tip amounts through MCP quote and payment flows", async () => {
+    const context = await createContext();
+    const tippedPayload = {
+      restaurant_id: "rest_lb_steakhouse",
+      order: {
+        ...orderPayload("mcp-tip-1").order,
+        tip_cents: 725,
+      },
+    };
+
+    const quote = await quoteOrderTool(context, tippedPayload);
+    const payment = await startPaymentTool(context, {
+      ...tippedPayload,
+      success_url: "https://mealops.test/order/success?orderId=mcp-tip-1",
+      cancel_url: "https://mealops.test/shopping-cart-checkout?cartId=mcp-tip-1",
+    });
+
+    expect(quote.tipCents).toBe(725);
+    expect(quote.totalCents).toBe(quote.subtotalCents + quote.taxCents + quote.feesCents + quote.tipCents);
+    expect(payment.totalCents).toBe(quote.totalCents);
   });
 
   it("submits an order using the authenticated MCP agent identity", async () => {

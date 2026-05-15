@@ -1,4 +1,5 @@
 import express from "express";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApiRouter } from "../src/server/api/router";
 import { InMemoryPlatformRepository } from "../src/server/repositories/platformRepository";
@@ -77,6 +78,7 @@ function agentOrder(reference: string): CanonicalOrderIntent {
     fulfillment_type: "pickup",
     requested_fulfillment_time: futureIso(48),
     headcount: 2,
+    tip_cents: 0,
     payment_policy: "required_before_submit",
     items: [{ item_id: "item_filet", quantity: 1, modifiers: [] }],
     dietary_constraints: [],
@@ -172,6 +174,28 @@ describe("PlatformService", () => {
     expect(detail.validationResults).toHaveLength(1);
     expect(detail.quotes).toHaveLength(1);
     expect(detail.statusEvents.map((event) => event.status)).toContain("received");
+  });
+
+  it("includes tip amounts in quotes, payment sessions, and submitted order totals", async () => {
+    const service = createService();
+    const tippedOrder = {
+      ...agentOrder("test-tip-flow-1"),
+      tip_cents: 650,
+    };
+
+    const quote = await service.quoteOrder(tippedOrder);
+    const payment = await service.startPaymentSession(tippedOrder, {
+      successUrl: "https://mealops.test/order/success?orderId=test-tip-flow-1",
+      cancelUrl: "https://mealops.test/order/cancel?orderId=test-tip-flow-1",
+    });
+    const order = await service.submitAgentOrder(tippedOrder);
+    const detail = await service.getOrder("rest_lb_steakhouse", order.id);
+
+    expect(quote.tipCents).toBe(650);
+    expect(quote.totalCents).toBe(quote.subtotalCents + quote.taxCents + quote.feesCents + quote.tipCents);
+    expect(payment.totalCents).toBe(quote.totalCents);
+    expect(order.totalEstimateCents).toBe(quote.totalCents);
+    expect(detail.quotes[0]?.tipCents).toBe(650);
   });
 
   it("prefers the upstream source quote total for operator-facing order totals", async () => {
@@ -342,6 +366,39 @@ describe("PlatformService", () => {
 
     expect(first.id).toBe(second.id);
     expect(first.totalCents).toBe(second.totalCents);
+  });
+
+  it("backfills missing tipCents on cached idempotent quote responses", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const payload = {
+      ...agentOrder("idem-quote-legacy-tip"),
+      metadata: { idempotency_key: "pilot-quote-legacy-tip" },
+    };
+
+    await repository.createIdempotencyRecord({
+      scope: "quote",
+      restaurantId: payload.restaurant_id,
+      agentId: payload.agent_id,
+      idempotencyKey: "pilot-quote-legacy-tip",
+      requestHash: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+      status: "completed",
+      response: {
+        id: "quote_legacy",
+        orderId: "idem-quote-legacy-tip",
+        subtotalCents: 2500,
+        taxCents: 225,
+        feesCents: 299,
+        totalCents: 3024,
+        currency: "USD",
+        quotedAt: new Date().toISOString(),
+      },
+    });
+
+    const result = await service.quoteOrder(payload);
+
+    expect(result.tipCents).toBe(0);
+    expect(result.totalCents).toBe(3024);
   });
 
   it("still returns a quote when validation only fails on split-resolvable size limits", async () => {
