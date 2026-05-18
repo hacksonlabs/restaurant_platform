@@ -6,6 +6,111 @@ import { dateTime, money } from "../lib/format";
 import { Badge, Button, Card, DataTable, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
+function sortTextList(values: string[]) {
+  return [...values].sort((left, right) => left.localeCompare(right));
+}
+
+function formatModifierLabel(modifier: any) {
+  const name = modifier?.modifier?.name ?? modifier?.modifierId ?? "Modifier";
+  const quantity = Number(modifier?.quantity || 1);
+  return quantity > 1 ? `${name} x${quantity}` : name;
+}
+
+function buildItemModifierSummary(item: any) {
+  return sortTextList(
+    (Array.isArray(item?.modifiers) ? item.modifiers : []).map((modifier: any) => formatModifierLabel(modifier)),
+  );
+}
+
+function buildItemUnitPriceCents(item: any) {
+  const basePriceCents = Number(item?.menuItem?.priceCents ?? 0) || 0;
+  const modifierPriceCents = (Array.isArray(item?.modifiers) ? item.modifiers : []).reduce(
+    (sum: number, modifier: any) =>
+      sum + ((Number(modifier?.modifier?.priceCents ?? 0) || 0) * (Number(modifier?.quantity || 1) || 1)),
+    0,
+  );
+  return basePriceCents + modifierPriceCents;
+}
+
+function aggregateDisplayItems(items: any[], hasSplitBundle: boolean) {
+  const grouped = new Map<string, any>();
+
+  for (const item of Array.isArray(items) ? items : []) {
+    const modifierSummary = buildItemModifierSummary(item);
+    const notes = String(item?.notes || "").trim();
+    const groupOrderId = hasSplitBundle ? String(item?.orderId || item?.groupOrderId || "") : "";
+    const itemName = item?.menuItem?.name ?? item?.menuItemId ?? "Item";
+    const unitPriceCents = buildItemUnitPriceCents(item);
+    const key = JSON.stringify({
+      groupOrderId,
+      itemName,
+      modifierSummary,
+      notes,
+      unitPriceCents,
+    });
+
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.quantity += Number(item?.quantity || 0) || 0;
+      existing.lineTotalCents = existing.unitPriceCents * existing.quantity;
+      continue;
+    }
+
+    grouped.set(key, {
+      key,
+      groupOrderId,
+      groupOrderIndex: item?.groupOrderIndex ?? null,
+      groupOrderSize: item?.groupOrderSize ?? null,
+      itemName,
+      quantity: Number(item?.quantity || 0) || 0,
+      unitPriceCents,
+      lineTotalCents: unitPriceCents * (Number(item?.quantity || 0) || 0),
+      modifierSummary,
+      notes,
+    });
+  }
+
+  return Array.from(grouped.values()).sort((left, right) => {
+    const leftIndex = Number(left.groupOrderIndex ?? Number.MAX_SAFE_INTEGER);
+    const rightIndex = Number(right.groupOrderIndex ?? Number.MAX_SAFE_INTEGER);
+    if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+    return left.itemName.localeCompare(right.itemName);
+  });
+}
+
+function getLatestQuotesByOrderId(quotes: any[]) {
+  const latestByOrderId = new Map<string, any>();
+  for (const quote of Array.isArray(quotes) ? quotes : []) {
+    const orderId = String(quote?.orderId || "");
+    if (!orderId) continue;
+    const existing = latestByOrderId.get(orderId);
+    if (!existing || new Date(quote.quotedAt).getTime() > new Date(existing.quotedAt).getTime()) {
+      latestByOrderId.set(orderId, quote);
+    }
+  }
+  return latestByOrderId;
+}
+
+function formatStatusLabel(status: string | null | undefined) {
+  return String(status || "unknown")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (value) => value.toUpperCase());
+}
+
+function getStatusTone(status: string | null | undefined): "default" | "success" | "warning" | "danger" {
+  const normalized = String(status || "").toLowerCase();
+  if (["accepted", "confirmed", "approved", "completed", "ready", "preparing", "submitted_to_pos"].includes(normalized)) {
+    return "success";
+  }
+  if (["rejected", "failed", "cancelled", "canceled"].includes(normalized)) {
+    return "danger";
+  }
+  if (["needs_approval", "pending_confirmation", "submitted", "submitting_to_pos"].includes(normalized)) {
+    return "warning";
+  }
+  return "default";
+}
+
 export function OrderDetailPage() {
   const { orderId = "" } = useParams();
   const { selectedRestaurantId, canManageOrders, isReadOnly } = useTenant();
@@ -17,6 +122,8 @@ export function OrderDetailPage() {
   const [message, setMessage] = useState("");
   const [showOrderDetails, setShowOrderDetails] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showSuborderPricing, setShowSuborderPricing] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(false);
   const [pendingDecision, setPendingDecision] = useState<"approve" | "reject" | null>(null);
   const [optimisticDecisionStatus, setOptimisticDecisionStatus] = useState<"approved" | "rejected" | null>(null);
 
@@ -43,9 +150,26 @@ export function OrderDetailPage() {
       `Suborder ${order.splitGroupIndex ?? index + 1} of ${groupedOrders.length}`,
     ]),
   );
-
-  if (loading) return <div className="panel-state">Loading order…</div>;
-  if (error || !displayData) return <div className="panel-state error">{error}</div>;
+  const aggregatedItems = aggregateDisplayItems(displayData?.items ?? [], hasSplitBundle);
+  const latestQuotesByOrderId = getLatestQuotesByOrderId(displayData?.quotes ?? []);
+  const latestQuoteEntries = Array.from(latestQuotesByOrderId.values()).sort((left, right) => {
+    const leftOrder = groupedOrders.find((order: any) => order.id === left.orderId);
+    const rightOrder = groupedOrders.find((order: any) => order.id === right.orderId);
+    const leftIndex = Number(leftOrder?.splitGroupIndex ?? Number.MAX_SAFE_INTEGER);
+    const rightIndex = Number(rightOrder?.splitGroupIndex ?? Number.MAX_SAFE_INTEGER);
+    if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+    return new Date(right.quotedAt).getTime() - new Date(left.quotedAt).getTime();
+  });
+  const pricingBreakdown = latestQuoteEntries.reduce(
+    (sum, quote: any) => ({
+      subtotalCents: sum.subtotalCents + (Number(quote?.subtotalCents ?? 0) || 0),
+      taxCents: sum.taxCents + (Number(quote?.taxCents ?? 0) || 0),
+      feesCents: sum.feesCents + (Number(quote?.feesCents ?? 0) || 0),
+      tipCents: sum.tipCents + (Number(quote?.tipCents ?? 0) || 0),
+      totalCents: sum.totalCents + (Number(quote?.totalCents ?? 0) || 0),
+    }),
+    { subtotalCents: 0, taxCents: 0, feesCents: 0, tipCents: 0, totalCents: 0 },
+  );
 
   async function refresh() {
     const latestDetail = await api.order(selectedRestaurantId!, orderId);
@@ -123,21 +247,13 @@ export function OrderDetailPage() {
     }
   }
 
-  const canDecide = canManageOrders && !isReadOnly && displayData.order.status === "needs_approval";
+  const canDecide = canManageOrders && !isReadOnly && displayData?.order?.status === "needs_approval";
   const shouldAutoRefresh =
-    displayData.order.status === "approved" ||
-    displayData.order.status === "submitting_to_pos" ||
+    displayData?.order?.status === "approved" ||
+    displayData?.order?.status === "submitting_to_pos" ||
     groupedOrders.some((order: any) => ["approved", "submitting_to_pos"].includes(order.status));
   const renderCaret = (expanded: boolean) => (
-    <span
-      style={{
-        display: "inline-block",
-        transform: expanded ? "rotate(0deg)" : "rotate(180deg)",
-        transition: "transform 0.2s ease",
-      }}
-    >
-      ^
-    </span>
+    <span className={`section-caret ${expanded ? "expanded" : ""}`} aria-hidden="true" />
   );
 
   useEffect(() => {
@@ -153,6 +269,9 @@ export function OrderDetailPage() {
       window.clearInterval(intervalId);
     };
   }, [shouldAutoRefresh, selectedRestaurantId, orderId]);
+
+  if (loading) return <div className="panel-state">Loading order…</div>;
+  if (error || !displayData) return <div className="panel-state error">{error}</div>;
 
   return (
     <div className="page-grid">
@@ -171,43 +290,107 @@ export function OrderDetailPage() {
       />
       {message ? <div className="inline-message success">{message}</div> : null}
       <div className="two-column">
-        <Card title="Order Overview">
+        <Card title="Order Overview" className="overview-card">
           <div className="detail-grid">
-            <div><span>Status</span><strong><Badge tone="warning">{displayData.order.status}</Badge></strong></div>
+            <div>
+              <span>Status</span>
+              <strong className="overview-status-wrap">
+                <Badge tone={getStatusTone(displayData.order.status)}>{formatStatusLabel(displayData.order.status)}</Badge>
+              </strong>
+            </div>
             <div><span>Agent</span><strong>{displayData.order.agentName ?? displayData.order.agentId}</strong></div>
             <div><span>Customer</span><strong>{displayData.order.customerName}</strong></div>
             <div><span>Fulfillment</span><strong>{displayData.order.fulfillmentType}</strong></div>
             <div><span>Requested Time</span><strong>{dateTime(displayData.order.requestedFulfillmentTime)}</strong></div>
             <div><span>Headcount</span><strong>{displayData.order.headcount}</strong></div>
-            <div><span>Total</span><strong>{money(displayData.order.totalEstimateCents)}</strong></div>
-            {displayData.order.splitGroupSize && displayData.order.splitGroupSize > 1 ? (
+            {/* <div><span>Total</span><strong>{money(displayData.order.totalEstimateCents)}</strong></div> */}
+            {/* {displayData.order.splitGroupSize && displayData.order.splitGroupSize > 1 ? (
               <div><span>Split Orders</span><strong>{String(displayData.order.splitGroupSize)}</strong></div>
-            ) : null}
+            ) : null} */}
           </div>
         </Card>
-        <Card title="Validation & Quote">
-          <div className="stack-list">
-            {(displayData.validationResults ?? []).map((result: any) => (
-              <div key={result.id} className="stack-row">
-                <div>
-                  <strong>{result.valid ? "Valid" : "Validation failed"}</strong>
-                  <div className="muted">{dateTime(result.checkedAt)}</div>
-                  {hasSplitBundle ? <div className="muted">{orderLabelById.get(result.orderId) ?? result.orderId}</div> : null}
-                </div>
-                <div className="muted">{result.issues.length} issues</div>
+        <Card title="Pricing" className="pricing-card">
+          <div className="pricing-flow-card">
+            <div className="pricing-flow-list">
+              <div className="pricing-flow-row">
+                <span>Subtotal</span>
+                <strong>{money(pricingBreakdown.subtotalCents)}</strong>
               </div>
-            ))}
-            {(displayData.quotes ?? []).map((quote: any) => (
-              <div key={quote.id} className="stack-row">
-                <div>
-                  <strong>Quoted total</strong>
-                  <div className="muted">{dateTime(quote.quotedAt)}</div>
-                  {hasSplitBundle ? <div className="muted">{orderLabelById.get(quote.orderId) ?? quote.orderId}</div> : null}
-                </div>
-                <div>{money(quote.totalCents)}</div>
+              <div className="pricing-flow-row">
+                <span>Tax</span>
+                <strong>{money(pricingBreakdown.taxCents)}</strong>
               </div>
-            ))}
+              <div className="pricing-flow-row">
+                <span>Fees</span>
+                <strong>{money(pricingBreakdown.feesCents)}</strong>
+              </div>
+              <div className="pricing-flow-row">
+                <span>Tip</span>
+                <strong>{money(pricingBreakdown.tipCents)}</strong>
+              </div>
+            </div>
+            <div className="pricing-flow-total">
+              <span>Total</span>
+              <strong>{money(pricingBreakdown.totalCents || displayData.order.totalEstimateCents)}</strong>
+            </div>
+            {latestQuoteEntries[0]?.quotedAt ? (
+              <div className="pricing-flow-meta">
+                Latest quote: {dateTime(latestQuoteEntries[0].quotedAt)}
+              </div>
+            ) : null}
           </div>
+          {hasSplitBundle && latestQuoteEntries.length > 0 ? (
+            <div className="split-breakdown-shell">
+              <button
+                type="button"
+                className="split-breakdown-toggle"
+                onClick={() => setShowSuborderPricing((value) => !value)}
+                aria-expanded={showSuborderPricing}
+              >
+                <div className="split-breakdown-toggle-copy">
+                  <span className="split-breakdown-heading">Suborder Pricing</span>
+                  <strong>{latestQuoteEntries.length} linked suborders</strong>
+                </div>
+                <span
+                  className={`split-breakdown-caret ${showSuborderPricing ? "expanded" : ""}`}
+                  aria-hidden="true"
+                />
+              </button>
+              {showSuborderPricing ? (
+                <div className="split-breakdown-panel">
+                  {latestQuoteEntries.map((quote: any) => (
+                    <div key={quote.id} className="split-breakdown-card">
+                      <div className="split-breakdown-meta">
+                        <strong>{orderLabelById.get(quote.orderId) ?? quote.orderId}</strong>
+                      </div>
+                      <div className="split-breakdown-receipt">
+                        <div className="quote-breakdown-values">
+                          <span>Subtotal</span>
+                          <strong>{money(quote.subtotalCents)}</strong>
+                        </div>
+                        <div className="quote-breakdown-values">
+                          <span>Tax</span>
+                          <strong>{money(quote.taxCents)}</strong>
+                        </div>
+                        <div className="quote-breakdown-values">
+                          <span>Fees</span>
+                          <strong>{money(quote.feesCents)}</strong>
+                        </div>
+                        <div className="quote-breakdown-values">
+                          <span>Tip</span>
+                          <strong>{money(quote.tipCents)}</strong>
+                        </div>
+                        <div className="quote-breakdown-total">
+                          <span>Total</span>
+                          <strong>{money(quote.totalCents)}</strong>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </Card>
       </div>
 
@@ -226,20 +409,64 @@ export function OrderDetailPage() {
         </Card>
       ) : null}
 
-      <Card title="Items">
+      <Card title="Items" subtitle="Identical item configurations are grouped together so managers can review the actual order composition quickly.">
         <DataTable
-          columns={hasSplitBundle ? ["Suborder", "Item", "Qty", "Modifiers"] : ["Item", "Qty", "Modifiers"]}
-          rows={displayData.items.map((item: any) => [
-            ...(hasSplitBundle ? [orderLabelById.get(item.orderId) ?? item.orderId] : []),
-            item.menuItem?.name ?? item.menuItemId,
+          columns={
+            hasSplitBundle
+              ? ["Suborder", "Item", "Qty", "Unit Price", "Line Total", "Modifiers & Customizations"]
+              : ["Item", "Qty", "Unit Price", "Line Total", "Modifiers & Customizations"]
+          }
+          rows={aggregatedItems.map((item: any) => [
+            ...(hasSplitBundle ? [orderLabelById.get(item.groupOrderId) ?? item.groupOrderId] : []),
+            item.itemName,
             String(item.quantity),
-            item.modifiers.map((modifier: any) => modifier.modifier?.name ?? modifier.modifierId).join(", "),
+            money(item.unitPriceCents),
+            money(item.lineTotalCents),
+            <div className="item-detail-cell" key={item.key}>
+              {item.modifierSummary.length ? (
+                <div className="item-detail-primary">{item.modifierSummary.join(", ")}</div>
+              ) : (
+                <div className="muted">—</div>
+              )}
+              {item.notes ? <div className="item-detail-note">Notes: {item.notes}</div> : null}
+            </div>,
           ])}
         />
       </Card>
 
       <Card
-        title="Order Details"
+        title="Order Timeline"
+        subtitle="Lifecycle and submission events for debugging."
+        actions={
+          <Button
+            type="button"
+            tone="secondary"
+            onClick={() => setShowTimeline((value) => !value)}
+            aria-expanded={showTimeline}
+          >
+            {renderCaret(showTimeline)}
+          </Button>
+        }
+      >
+        {showTimeline ? (
+          <div className="stack-list">
+            {(displayData.timeline ?? []).map((event: any) => (
+              <div key={event.id} className="stack-row">
+                <div>
+                  <strong>{event.title}</strong>
+                  <div className="muted">{event.kind} · {dateTime(event.createdAt)}</div>
+                  <div className="muted">{event.message}</div>
+                </div>
+                <div className="muted">{event.status ?? ""}</div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </Card>
+
+      <Card
+        title="Order Payload"
+        subtitle="Raw order data captured for this submission."
         actions={
           <Button
             type="button"
@@ -268,24 +495,9 @@ export function OrderDetailPage() {
         ) : null}
       </Card>
 
-      <Card title="Order Timeline" subtitle="Lifecycle, validation, quote, submission, retry, and audit events are shown together for debugging.">
-        <div className="stack-list">
-          {(displayData.timeline ?? []).map((event: any) => (
-            <div key={event.id} className="stack-row">
-              <div>
-                <strong>{event.title}</strong>
-                <div className="muted">{event.kind} · {dateTime(event.createdAt)}</div>
-                <div className="muted">{event.message}</div>
-              </div>
-              <div className="muted">{event.status ?? ""}</div>
-            </div>
-          ))}
-        </div>
-      </Card>
-
       <Card
-        title="Operational Diagnostics"
-        subtitle="Raw payloads and retry history for operator debugging."
+        title="Execution Diagnostics"
+        subtitle="Retry history and execution debug context."
         actions={
           <Button
             type="button"

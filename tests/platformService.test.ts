@@ -368,6 +368,25 @@ describe("PlatformService", () => {
     expect(first.totalCents).toBe(second.totalCents);
   });
 
+  it("treats quote requests with only a different created_at_iso as the same idempotent request", async () => {
+    const service = createService();
+    const firstPayload = {
+      ...agentOrder("idem-quote-created-at"),
+      created_at_iso: "2026-05-18T19:00:00.000Z",
+      metadata: { idempotency_key: "pilot-quote-created-at" },
+    };
+    const secondPayload = {
+      ...firstPayload,
+      created_at_iso: "2026-05-18T19:00:05.000Z",
+    };
+
+    const first = await service.quoteOrder(firstPayload);
+    const second = await service.quoteOrder(secondPayload);
+
+    expect(first.id).toBe(second.id);
+    expect(first.totalCents).toBe(second.totalCents);
+  });
+
   it("backfills missing tipCents on cached idempotent quote responses", async () => {
     const service = createService();
     const repository = (service as any).repository as InMemoryPlatformRepository;

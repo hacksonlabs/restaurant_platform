@@ -47,6 +47,14 @@ function normalizeText(value: unknown): string | null {
   return text || null;
 }
 
+function buildStableIdempotencyPayload(order: CanonicalOrderIntent) {
+  const payload: Record<string, unknown> = {
+    ...order,
+  };
+  delete payload.created_at_iso;
+  return payload;
+}
+
 export class PlatformService {
   private quoteExpiryMs = 15 * 60 * 1000;
   private operatorSessionTtlMs = 7 * 24 * 60 * 60 * 1000;
@@ -1394,7 +1402,7 @@ export class PlatformService {
     work: (orderId: string, idempotencyKey: string) => Promise<T>,
   ): Promise<T> {
     const idempotencyKey = this.buildIdempotencyKey(scope, parsed);
-    const requestHash = sha256(JSON.stringify(parsed));
+    const requestHash = sha256(JSON.stringify(buildStableIdempotencyPayload(parsed)));
     const existing = await this.repository.getIdempotencyRecord(scope, parsed.restaurant_id, parsed.agent_id, idempotencyKey);
     if (existing) {
       if (existing.requestHash !== requestHash) {
