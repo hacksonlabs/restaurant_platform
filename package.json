@@ -12,6 +12,7 @@
     "start": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/index.ts",
     "test": "vitest run",
     "db:check": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/checkSupabase.ts",
+    "db:seed:demo-operator": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/seedDemoRestaurantOperator.ts",
     "db:sync:coach-demo": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/syncCoachDemoOrders.ts",
     "smoke:e2e": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/smokeOrderFlow.ts"
   },

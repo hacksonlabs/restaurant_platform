@@ -159,7 +159,8 @@ on conflict (id) do update set
   revoked_at = excluded.revoked_at;
 
 insert into operator_users (id, email, full_name, supabase_user_id, created_at, last_login_at) values
-  ('op_dev_rest', 'dev@rest.com', 'Restaurant Dev Operator', null, '2026-05-01T18:00:00.000Z', null)
+  ('op_dev_rest', 'dev@rest.com', 'Restaurant Dev Operator', null, '2026-05-01T18:00:00.000Z', null),
+  ('op_demo_rest', 'demo@restaurant.com', 'Restaurant Demo Operator', null, '2026-05-01T18:00:00.000Z', null)
 on conflict (id) do update set
   email = excluded.email,
   full_name = excluded.full_name,
@@ -167,7 +168,8 @@ on conflict (id) do update set
   created_at = excluded.created_at;
 
 insert into operator_memberships (id, operator_user_id, restaurant_id, location_id, role, created_at) values
-  ('membership_lb_owner', 'op_dev_rest', 'rest_lb_steakhouse', 'loc_lb_main', 'owner', '2026-05-01T18:00:00.000Z')
+  ('membership_lb_owner', 'op_dev_rest', 'rest_lb_steakhouse', 'loc_lb_main', 'owner', '2026-05-01T18:00:00.000Z'),
+  ('membership_demo_rest_lb_owner', 'op_demo_rest', 'rest_lb_steakhouse', 'loc_lb_main', 'owner', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   operator_user_id = excluded.operator_user_id,
   restaurant_id = excluded.restaurant_id,
@@ -321,7 +323,8 @@ on conflict (id) do update set
 
 insert into operator_memberships (id, operator_user_id, restaurant_id, location_id, role, created_at) values
   ('membership_pizza_palace_owner', 'op_dev_rest', 'rest_pizza_palace', 'loc_pizza_palace_main', 'owner', '2026-05-01T18:00:00.000Z'),
-  ('membership_green_leaf_salads_owner', 'op_dev_rest', 'rest_green_leaf_salads', 'loc_green_leaf_salads_main', 'owner', '2026-05-01T18:00:00.000Z')
+  ('membership_green_leaf_salads_owner', 'op_dev_rest', 'rest_green_leaf_salads', 'loc_green_leaf_salads_main', 'owner', '2026-05-01T18:00:00.000Z'),
+  ('membership_demo_rest_green_leaf_owner', 'op_demo_rest', 'rest_green_leaf_salads', 'loc_green_leaf_salads_main', 'owner', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   operator_user_id = excluded.operator_user_id,
   restaurant_id = excluded.restaurant_id,
