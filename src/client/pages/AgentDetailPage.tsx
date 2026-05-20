@@ -33,11 +33,14 @@ export function AgentDetailPage() {
   const [keyLabel, setKeyLabel] = useState("Primary API Key");
   const [rawKey, setRawKey] = useState<string | null>(null);
   const [selectedScopes, setSelectedScopes] = useState<AgentApiScope[]>(defaultScopes);
+  const [permissionStatus, setPermissionStatus] = useState<string>("allowed");
 
   useEffect(() => {
     if (!data) return;
+    const configuredScopes = data.apiKey?.scopes?.length ? data.apiKey.scopes : defaultScopes();
     setKeyLabel(data.apiKey?.label ?? "Primary API Key");
-    setSelectedScopes(data.apiKey?.scopes?.length ? data.apiKey.scopes : defaultScopes());
+    setSelectedScopes(data.permission.status === "blocked" ? [] : configuredScopes);
+    setPermissionStatus(data.permission.status);
   }, [data]);
 
   if (loading) return <div className="panel-state">Loading agent…</div>;
@@ -47,12 +50,15 @@ export function AgentDetailPage() {
     setData(await api.agent(selectedRestaurantId!, agentId));
   }
 
-  async function updateStatus(status: string) {
+  async function updateStatus(status: string, options: { silent?: boolean } = {}) {
+    const previousStatus = permissionStatus;
     setPending(true);
+    setPermissionStatus(status);
     try {
       await api.updateAgentPermission(selectedRestaurantId!, agentId, { status });
-      await refreshAgent();
-      setMessage(`Agent set to ${status}.`);
+    } catch (error) {
+      setPermissionStatus(previousStatus);
+      throw error;
     } finally {
       setPending(false);
     }
@@ -101,10 +107,20 @@ export function AgentDetailPage() {
     }
   }
 
-  function toggleScope(scope: AgentApiScope) {
-    setSelectedScopes((current) =>
-      current.includes(scope) ? current.filter((entry) => entry !== scope) : [...current, scope],
-    );
+  async function toggleScope(scope: AgentApiScope) {
+    const nextScopes = selectedScopes.includes(scope)
+      ? selectedScopes.filter((entry) => entry !== scope)
+      : [...selectedScopes, scope];
+    setSelectedScopes(nextScopes);
+    const nextStatus = nextScopes.length > 0 ? "allowed" : "blocked";
+    if (nextStatus !== permissionStatus) {
+      try {
+        await updateStatus(nextStatus, { silent: true });
+      } catch (error) {
+        setSelectedScopes(selectedScopes);
+        setMessage(error instanceof Error ? error.message : "Failed to update agent status.");
+      }
+    }
   }
 
   return (
@@ -160,16 +176,16 @@ export function AgentDetailPage() {
             </div>
             <div className="summary-row">
               <span>Status</span>
-              <Badge
-                tone={
-                  data.permission.status === "allowed"
+                <Badge
+                  tone={
+                  permissionStatus === "allowed"
                     ? "success"
-                    : data.permission.status === "blocked"
+                    : permissionStatus === "blocked"
                       ? "danger"
                       : "warning"
                 }
               >
-                {data.permission.status}
+                {permissionStatus}
               </Badge>
             </div>
             <div className="summary-row">
@@ -189,11 +205,28 @@ export function AgentDetailPage() {
               <strong>{data.apiKey?.revokedAt ? `Revoked ${dateTimeOrFallback(data.apiKey.revokedAt)}` : "Active"}</strong>
             </div>
             <div className="summary-actions">
-              <Button tone="secondary" onClick={() => updateStatus("allowed")} disabled={!canManageAgents || pending}>
-                Allow
-              </Button>
-              <Button tone="danger" onClick={() => updateStatus("blocked")} disabled={!canManageAgents || pending}>
-                Block
+              <Button
+                tone={permissionStatus === "allowed" ? "danger" : "secondary"}
+                onClick={() => {
+                  if (permissionStatus === "allowed") {
+                    setSelectedScopes([]);
+                    void updateStatus("blocked").catch((error) => {
+                      setSelectedScopes(selectedScopes);
+                      setMessage(error instanceof Error ? error.message : "Failed to update agent status.");
+                    });
+                    return;
+                  }
+
+                  const restoredScopes = AVAILABLE_SCOPES.map((scope) => scope.value);
+                  setSelectedScopes(restoredScopes);
+                  void updateStatus("allowed").catch((error) => {
+                    setSelectedScopes([]);
+                    setMessage(error instanceof Error ? error.message : "Failed to update agent status.");
+                  });
+                }}
+                disabled={!canManageAgents || pending}
+              >
+                {permissionStatus === "allowed" ? "Block" : "Allow"}
               </Button>
             </div>
           </div>
@@ -216,26 +249,31 @@ export function AgentDetailPage() {
         </Card>
       </div>
 
-      <Card title="Scope Permissions" subtitle="Server-enforced capabilities for this restaurant tenant.">
+      <Card title="Scope Permissions"><br></br>
         <div className="scope-grid">
           {AVAILABLE_SCOPES.map((scope) => (
-            <label key={scope.value} className="scope-card">
+            <div key={scope.value} className="scope-card">
               <div>
                 <strong>{scope.label}</strong>
                 <div className="muted">{scope.description}</div>
               </div>
-              <input
-                type="checkbox"
-                checked={selectedScopes.includes(scope.value)}
-                onChange={() => toggleScope(scope.value)}
+              <button
+                type="button"
+                className={`scope-toggle ${selectedScopes.includes(scope.value) ? "on" : ""}`}
+                role="switch"
+                aria-checked={selectedScopes.includes(scope.value)}
+                aria-label={scope.label}
+                onClick={() => void toggleScope(scope.value)}
                 disabled={!canManageAgents || pending || !!data.apiKey?.revokedAt}
-              />
-            </label>
+              >
+                <span />
+              </button>
+            </div>
           ))}
         </div>
       </Card>
 
-      <Card title="Agent Notes">
+      {/* <Card title="Agent Notes">
         <div className="agent-note-block">
           <strong>{data.agent.description}</strong>
           <p className="muted">
@@ -243,7 +281,7 @@ export function AgentDetailPage() {
             which capabilities its API key has, and when that key was last used or rotated.
           </p>
         </div>
-      </Card>
+      </Card> */}
     </div>
   );
 }

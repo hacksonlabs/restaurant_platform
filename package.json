@@ -5,14 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:client": "vite",
-    "dev:server": "node --env-file=.env --watch --import tsx src/server/index.ts",
-    "mcp:stdio": "node --env-file=.env --import tsx src/server/mcp/stdio.ts",
-    "build": "vite build",
-    "start": "node --env-file=.env --import tsx src/server/index.ts",
+    "dev:client": "vite --mode demo",
+    "dev:server": "node --env-file=.env --env-file=.env.demo.local --watch --import tsx src/server/index.ts",
+    "mcp:stdio": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/mcp/stdio.ts",
+    "build": "vite build --mode demo",
+    "start": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/index.ts",
     "test": "vitest run",
-    "db:check": "node --env-file=.env --import tsx src/server/scripts/checkSupabase.ts",
-    "smoke:e2e": "node --env-file=.env --import tsx src/server/scripts/smokeOrderFlow.ts"
+    "db:check": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/checkSupabase.ts",
+    "db:sync:coach-demo": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/syncCoachDemoOrders.ts",
+    "smoke:e2e": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/smokeOrderFlow.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

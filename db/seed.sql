@@ -138,7 +138,8 @@ on conflict (id) do update set
   status = excluded.status;
 
 insert into agents (id, name, slug, description, created_at) values
-  ('agent_phantom', 'Phantom', 'phantom', 'Default first-party agent integration.', '2026-05-01T18:00:00.000Z')
+  ('agent_phantom', 'Phantom', 'phantom', 'Default first-party agent integration.', '2026-05-01T18:00:00.000Z'),
+  ('agent_coachimhungry', 'CoachImHungry', 'coachimhungry', 'Seeded external ordering agent integration.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   name = excluded.name,
   slug = excluded.slug,

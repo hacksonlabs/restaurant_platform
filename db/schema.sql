@@ -227,8 +227,12 @@ create table if not exists order_validation_results (
   order_id text not null references agent_orders(id) on delete cascade,
   valid boolean not null,
   issues jsonb not null default '[]'::jsonb,
-  checked_at timestamptz not null default now()
+  checked_at timestamptz not null default now(),
+  idempotency_key text
 );
+
+alter table if exists order_validation_results
+  add column if not exists idempotency_key text;
 
 create table if not exists order_quotes (
   id text primary key,
