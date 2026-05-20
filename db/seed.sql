@@ -12,7 +12,7 @@ insert into restaurants (
   created_at, updated_at
 ) values (
   'rest_lb_steakhouse', 'LB Steakhouse', '1533 Ashcroft Way, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/67468/pexels-photo-67468.jpeg', 'Steakhouse', 'Classic steakhouse plates, polished sides, and a strong team-order catering fit.', 4.7, 299, 2500, true, 'toast', true,
-  'threshold_review', 'ops@lbsteakhouse.example', '(408) 555-0193',
+  'auto', 'ops@lbsteakhouse.example', '(408) 555-0193',
   array['pickup', 'delivery', 'catering']::text[],
   '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
 )
@@ -192,7 +192,7 @@ insert into ordering_rules (
   max_headcount, auto_accept_enabled, manager_approval_threshold_cents, blackout_windows,
   allowed_fulfillment_types, substitution_policy, payment_policy, allowed_agent_ids
 ) values (
-  'rules_lb_default', 'rest_lb_steakhouse', 90, 250, 1000, 1000, false, 80000,
+  'rules_lb_default', 'rest_lb_steakhouse', 90, 250, 1000, 1000, true, 2147483647,
   '[{"id":"blackout_brunch","label":"Sunday Brunch Blackout","startsAt":"2026-05-03T17:00:00.000Z","endsAt":"2026-05-03T21:00:00.000Z"}]'::jsonb,
   array['pickup','delivery','catering']::text[],
   'require_approval', 'required_before_submit',
@@ -219,13 +219,13 @@ insert into restaurants (
 ) values
   (
     'rest_pizza_palace', 'Pizza Palace', '1325 Sunnyvale Saratoga Rd, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/825661/pexels-photo-825661.jpeg', 'Pizza', 'Shareable pies, garlic knots, and easy crowd ordering for pickup or delivery.', 4.5, 199, 1800, true, 'toast', true,
-    'threshold_review', 'ops@pizzapalace.example', '(123) 456-7890',
+    'auto', 'ops@pizzapalace.example', '(123) 456-7890',
     array['pickup', 'delivery', 'catering']::text[],
     '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
   ),
   (
     'rest_green_leaf_salads', 'Green Leaf Salads', '650 W El Camino Real, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/1640774/pexels-photo-1640774.jpeg', 'Salads', 'Fresh salads and wraps with lighter delivery-friendly team meal options.', 4.6, 249, 1500, true, 'toast', true,
-    'threshold_review', 'ops@greenleafsalads.example', '(408) 555-5505',
+    'auto', 'ops@greenleafsalads.example', '(408) 555-5505',
     array['pickup', 'delivery', 'catering']::text[],
     '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
   )
@@ -350,12 +350,12 @@ insert into ordering_rules (
   allowed_fulfillment_types, substitution_policy, payment_policy, allowed_agent_ids
 ) values
   (
-    'rules_pizza_palace_default', 'rest_pizza_palace', 45, 300, 1000, 1000, false, 5000,
+    'rules_pizza_palace_default', 'rest_pizza_palace', 45, 300, 1000, 1000, true, 2147483647,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
     'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
   ),
   (
-    'rules_green_leaf_salads_default', 'rest_green_leaf_salads', 45, 350, 1000, 1000, false, 5000,
+    'rules_green_leaf_salads_default', 'rest_green_leaf_salads', 45, 350, 1000, 1000, true, 2147483647,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
     'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
   )
@@ -380,43 +380,43 @@ insert into restaurants (
 ) values
   (
     'rest_lb_steakhouse', 'LB Steakhouse', '1533 Ashcroft Way, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/67468/pexels-photo-67468.jpeg', 'Steakhouse', 'Classic steakhouse plates, polished sides, and a strong team-order catering fit.', 4.7, 299, 2500, true, 'toast', true,
-    'threshold_review', 'ops@lbsteakhouse.example', '(408) 555-0193',
+    'auto', 'ops@lbsteakhouse.example', '(408) 555-0193',
     array['pickup', 'delivery', 'catering']::text[],
     '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
   ),
   (
     'rest_pizza_palace', 'Pizza Palace', '1325 Sunnyvale Saratoga Rd, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/825661/pexels-photo-825661.jpeg', 'Pizza', 'Shareable pies, garlic knots, and easy crowd ordering for pickup or delivery.', 4.5, 199, 1800, true, 'toast', true,
-    'threshold_review', 'ops@pizzapalace.example', '(123) 456-7890',
+    'auto', 'ops@pizzapalace.example', '(123) 456-7890',
     array['pickup', 'delivery', 'catering']::text[],
     '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
   ),
   (
     'rest_green_leaf_salads', 'Green Leaf Salads', '650 W El Camino Real, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/1640774/pexels-photo-1640774.jpeg', 'Salads', 'Fresh salads and wraps with lighter delivery-friendly team meal options.', 4.6, 249, 1500, true, 'toast', true,
-    'threshold_review', 'ops@greenleafsalads.example', '(408) 555-5505',
+    'auto', 'ops@greenleafsalads.example', '(408) 555-5505',
     array['pickup', 'delivery', 'catering']::text[],
     '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
   ),
   (
     'rest_sakura_sushi_house', 'Sakura Sushi House', '895 E El Camino Real, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/8696567/pexels-photo-8696567.jpeg', 'Sushi', 'Bright sushi sets, rice bowls, and polished small plates for high-trust demo ordering.', 4.8, 299, 2200, true, 'toast', true,
-    'threshold_review', 'ops@sakurasushi.example', '(408) 555-7331',
+    'auto', 'ops@sakurasushi.example', '(408) 555-7331',
     array['pickup', 'delivery', 'catering']::text[],
     '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
   ),
   (
     'rest_sunrise_taqueria', 'Sunrise Taqueria', '1105 Fair Oaks Ave, Sunnyvale, CA 94089', 'America/Los_Angeles', 'https://images.pexels.com/photos/4958641/pexels-photo-4958641.jpeg?cs=srgb&dl=pexels-los-muertos-crew-4958641.jpg&fm=jpg', 'Mexican', 'Colorful tacos, burritos, and sides that read beautifully on camera and in shared carts.', 4.7, 249, 1600, true, 'toast', true,
-    'threshold_review', 'ops@sunrisetaqueria.example', '(408) 555-2408',
+    'auto', 'ops@sunrisetaqueria.example', '(408) 555-2408',
     array['pickup', 'delivery', 'catering']::text[],
     '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
   ),
   (
     'rest_midnight_noodle_bar', 'Midnight Noodle Bar', '301 W Washington Ave, Sunnyvale, CA 94086', 'America/Los_Angeles', 'https://images.pexels.com/photos/15985539/pexels-photo-15985539.jpeg?cs=srgb&dl=pexels-pixabay-45170-15985539.jpg&fm=jpg', 'Asian', 'Late-night noodle bowls and craveable small plates designed to make the menu feel rich and premium.', 4.7, 299, 1800, true, 'toast', true,
-    'threshold_review', 'ops@midnightnoodle.example', '(408) 555-9077',
+    'auto', 'ops@midnightnoodle.example', '(408) 555-9077',
     array['pickup', 'delivery', 'catering']::text[],
     '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
   ),
   (
     'rest_harbor_sandwich_co', 'Harbor Sandwich Co', '251 N Murphy Ave, Sunnyvale, CA 94085', 'America/Los_Angeles', 'https://images.pexels.com/photos/15153241/pexels-photo-15153241.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=1260', 'Sandwiches', 'Stacked sandwiches, warm soups, and polished lunch-friendly extras for office ordering.', 4.6, 199, 1400, true, 'toast', true,
-    'threshold_review', 'ops@harborsandwich.example', '(408) 555-4412',
+    'auto', 'ops@harborsandwich.example', '(408) 555-4412',
     array['pickup', 'delivery', 'catering']::text[],
     '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
   )
@@ -738,22 +738,22 @@ insert into ordering_rules (
   allowed_fulfillment_types, substitution_policy, payment_policy, allowed_agent_ids
 ) values
   (
-    'rules_sakura_sushi_house_default', 'rest_sakura_sushi_house', 45, 325, 1000, 1000, false, 5000,
+    'rules_sakura_sushi_house_default', 'rest_sakura_sushi_house', 45, 325, 1000, 1000, true, 2147483647,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
     'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
   ),
   (
-    'rules_sunrise_taqueria_default', 'rest_sunrise_taqueria', 45, 285, 1000, 1000, false, 5000,
+    'rules_sunrise_taqueria_default', 'rest_sunrise_taqueria', 45, 285, 1000, 1000, true, 2147483647,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
     'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
   ),
   (
-    'rules_midnight_noodle_bar_default', 'rest_midnight_noodle_bar', 45, 340, 1000, 1000, false, 5000,
+    'rules_midnight_noodle_bar_default', 'rest_midnight_noodle_bar', 45, 340, 1000, 1000, true, 2147483647,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
     'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
   ),
   (
-    'rules_harbor_sandwich_co_default', 'rest_harbor_sandwich_co', 45, 260, 1000, 1000, false, 5000,
+    'rules_harbor_sandwich_co_default', 'rest_harbor_sandwich_co', 45, 260, 1000, 1000, true, 2147483647,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
     'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
   )
@@ -778,7 +778,7 @@ insert into agent_orders (
 ) values (
   'order_lb_demo_001', 'rest_lb_steakhouse', 'agent_phantom', 'phantom-team-lunch-1001',
   'Avery Chen', 'avery@phantom.example', 'Design Team', 'catering', '2026-05-02T19:30:00.000Z',
-  8, 'needs_approval', true, 29697,
+  8, 'approved', false, 29697,
   '{
     "restaurant_id":"rest_lb_steakhouse",
     "agent_id":"agent_phantom",
@@ -804,7 +804,7 @@ insert into agent_orders (
     "dietary_constraints":["nut_free"],
     "packaging_instructions":"Label each entree with guest name when possible.",
     "substitution_policy":"require_approval",
-    "approval_requirements":{"manager_approval_required":true},
+    "approval_requirements":{"manager_approval_required":false},
     "metadata":{"source":"seed_demo"}
   }'::jsonb,
   'Label each entree with guest name when possible.',
@@ -887,7 +887,7 @@ on conflict (id) do update set
 
 insert into order_status_events (id, order_id, status, message, created_at) values
   ('evt_1', 'order_lb_demo_001', 'received', 'Order received from Phantom.', '2026-05-01T18:00:00.000Z'),
-  ('evt_2', 'order_lb_demo_001', 'needs_approval', 'Order exceeded auto-accept threshold and needs manager review.', '2026-05-01T18:00:00.000Z')
+  ('evt_2', 'order_lb_demo_001', 'approved', 'Order auto-approved by restaurant rules.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   order_id = excluded.order_id,
   status = excluded.status,
