@@ -9,10 +9,30 @@ function bool(value: string | undefined, fallback = false): boolean {
   return TRUE_VALUES.has(value.trim().toLowerCase());
 }
 
+function list(value: string | undefined, fallback: string[] = []): string[] {
+  if (!value?.trim()) return fallback;
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function sameSite(value: string | undefined, fallback: "lax" | "strict" | "none" = "lax") {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "lax" || normalized === "strict" || normalized === "none") {
+    return normalized;
+  }
+  return fallback;
+}
+
 export interface AppEnv {
   port: number;
   appUrl: string;
+  apiUrl: string;
   demoMode: boolean;
+  corsOrigins: string[];
+  sessionCookieSameSite: "lax" | "strict" | "none";
+  sessionCookieSecure: boolean;
   databaseUrl: string;
   supabaseUrl: string;
   supabaseAnonKey: string;
@@ -45,10 +65,15 @@ export interface AppEnv {
 }
 
 export function getEnv(): AppEnv {
+  const appUrl = text(process.env.VITE_APP_URL, "http://localhost:5173");
   return {
     port: Number.parseInt(process.env.PORT ?? "3030", 10),
-    appUrl: text(process.env.VITE_APP_URL, "http://localhost:5173"),
+    appUrl,
+    apiUrl: text(process.env.VITE_API_URL),
     demoMode: bool(process.env.DEMO_MODE, true),
+    corsOrigins: list(process.env.CORS_ORIGINS, appUrl ? [appUrl] : []),
+    sessionCookieSameSite: sameSite(process.env.SESSION_COOKIE_SAME_SITE, "lax"),
+    sessionCookieSecure: bool(process.env.SESSION_COOKIE_SECURE, false),
     databaseUrl: text(process.env.DATABASE_URL),
     supabaseUrl: text(process.env.SUPABASE_URL),
     supabaseAnonKey: text(process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY),

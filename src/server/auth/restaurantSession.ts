@@ -1,9 +1,11 @@
 import type { NextFunction, Request, Response } from "express";
 import type { OperatorRole } from "../../shared/types";
+import { getEnv } from "../config/env";
 import type { PlatformService } from "../services/platformService";
 import { log } from "../utils/logger";
 
 const SESSION_COOKIE = "phantom_restaurant_session";
+const env = getEnv();
 
 function parseCookies(header: string | undefined) {
   if (!header) return new Map<string, string>();
@@ -25,11 +27,29 @@ function getRawSessionToken(request: Request) {
 }
 
 function sessionCookieValue(token: string) {
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`;
+  return [
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    `SameSite=${env.sessionCookieSameSite[0].toUpperCase()}${env.sessionCookieSameSite.slice(1)}`,
+    `Max-Age=${604800}`,
+    env.sessionCookieSecure ? "Secure" : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
 }
 
 function clearedSessionCookie() {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  return [
+    `${SESSION_COOKIE}=`,
+    "Path=/",
+    "HttpOnly",
+    `SameSite=${env.sessionCookieSameSite[0].toUpperCase()}${env.sessionCookieSameSite.slice(1)}`,
+    "Max-Age=0",
+    env.sessionCookieSecure ? "Secure" : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
 }
 
 export function requireRestaurantSession(service: PlatformService) {

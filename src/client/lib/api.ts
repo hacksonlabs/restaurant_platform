@@ -12,9 +12,25 @@ export interface OperatorAuthPayload extends AuthenticatedOperator {
   restaurants: Array<Restaurant & { memberships: Array<{ id: string; role: string; locationId?: string }> }>;
 }
 
+function stripTrailingSlash(value: string) {
+  return value.replace(/\/+$/, "");
+}
+
+function buildApiUrl(path: string) {
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+  const baseUrl = import.meta.env.VITE_API_URL?.trim();
+  if (!baseUrl) {
+    return path;
+  }
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${stripTrailingSlash(baseUrl)}${normalizedPath}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
-  const response = await fetch(path, {
+  const response = await fetch(buildApiUrl(path), {
     credentials: "include",
     headers: {
       "Content-Type": "application/json",

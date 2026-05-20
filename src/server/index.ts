@@ -18,7 +18,18 @@ async function main() {
 
   const app = express();
 
-  app.use(cors());
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (!origin || env.corsOrigins.length === 0 || env.corsOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error(`Origin ${origin} is not allowed by Phantom CORS.`));
+      },
+      credentials: true,
+    }),
+  );
   app.get("/demo-images/:slug.svg", (request, response) => {
     const svg = getDemoImageSvg(String(request.params.slug ?? ""));
     if (!svg) {

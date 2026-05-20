@@ -71,6 +71,26 @@ To switch from demo mode to your Supabase project:
 4. Run `npm run db:check` to verify the required tables are available.
 5. Start the app with `npm run dev` or `npm start`.
 
+## Hosted demo setup
+
+For a hosted demo split across Vercel and Railway:
+
+1. Deploy the Phantom backend from this repo to Railway with:
+   - Start command: `npm run start`
+2. Point the Phantom frontend at that backend with:
+   - `VITE_API_URL=https://<your-phantom-railway-domain>`
+3. Allow the frontend origin through CORS on the backend:
+   - `CORS_ORIGINS=https://<your-phantom-frontend-domain>`
+4. If the frontend and backend are on different sites, use cross-site cookies:
+   - `SESSION_COOKIE_SAME_SITE=none`
+   - `SESSION_COOKIE_SECURE=1`
+5. Set the demo agent key on the backend:
+   - `DEMO_PHANTOM_API_KEY=coachimhungry_demo_live_local_key`
+
+If the frontend and backend share the same site in production, you can usually keep:
+- `SESSION_COOKIE_SAME_SITE=lax`
+- `SESSION_COOKIE_SECURE=1`
+
 ## Demo tenant
 
 - Restaurant: `LB Steakhouse`
