@@ -776,7 +776,7 @@ insert into agent_orders (
   fulfillment_type, requested_fulfillment_time, headcount, status, approval_required,
   total_estimate_cents, order_intent, packaging_instructions, dietary_constraints, created_at, updated_at
 ) values (
-  'order_lb_demo_001', 'rest_lb_steakhouse', 'agent_phantom', 'phantom-team-lunch-1001',
+  'order_lbk82p1x', 'rest_lb_steakhouse', 'agent_phantom', 'phantom-team-lunch-1001',
   'Avery Chen', 'avery@phantom.example', 'Design Team', 'catering', '2026-05-02T19:30:00.000Z',
   8, 'accepted', false, 29697,
   '{
@@ -830,9 +830,9 @@ on conflict (id) do update set
   updated_at = excluded.updated_at;
 
 insert into agent_order_items (id, order_id, menu_item_id, quantity, notes) values
-  ('order_item_1', 'order_lb_demo_001', 'item_ribeye', 4, null),
-  ('order_item_2', 'order_lb_demo_001', 'item_filet', 2, null),
-  ('order_item_3', 'order_lb_demo_001', 'item_caesar', 2, null)
+  ('order_item_1', 'order_lbk82p1x', 'item_ribeye', 4, null),
+  ('order_item_2', 'order_lbk82p1x', 'item_filet', 2, null),
+  ('order_item_3', 'order_lbk82p1x', 'item_caesar', 2, null)
 on conflict (id) do update set
   order_id = excluded.order_id,
   menu_item_id = excluded.menu_item_id,
@@ -874,7 +874,7 @@ insert into audit_logs (
   id, restaurant_id, actor_type, actor_id, action, target_type, target_id, summary, created_at
 ) values
   ('audit_1', 'rest_lb_steakhouse', 'system', 'seed', 'menu.synced', 'pos_connection', 'posconn_lb_toast', 'Seeded Toast sandbox menu sync completed.', '2026-05-01T18:00:00.000Z'),
-  ('audit_2', 'rest_lb_steakhouse', 'agent', 'agent_phantom', 'order.received', 'agent_order', 'order_lb_demo_001', 'Phantom submitted a catering request for the Design Team.', '2026-05-01T18:00:00.000Z')
+  ('audit_2', 'rest_lb_steakhouse', 'agent', 'agent_phantom', 'order.received', 'agent_order', 'order_lbk82p1x', 'Phantom submitted a catering request for the Design Team.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   restaurant_id = excluded.restaurant_id,
   actor_type = excluded.actor_type,
@@ -886,8 +886,8 @@ on conflict (id) do update set
   created_at = excluded.created_at;
 
 insert into order_status_events (id, order_id, status, message, created_at) values
-  ('evt_1', 'order_lb_demo_001', 'received', 'Order received from Phantom.', '2026-05-01T18:00:00.000Z'),
-  ('evt_2', 'order_lb_demo_001', 'accepted', 'Order auto-accepted by mock restaurant rules.', '2026-05-01T18:00:00.000Z')
+  ('evt_1', 'order_lbk82p1x', 'received', 'Order received from Phantom.', '2026-05-01T18:00:00.000Z'),
+  ('evt_2', 'order_lbk82p1x', 'accepted', 'Order auto-accepted by mock restaurant rules.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   order_id = excluded.order_id,
   status = excluded.status,

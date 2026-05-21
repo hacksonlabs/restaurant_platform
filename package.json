@@ -14,6 +14,7 @@
     "test": "vitest run",
     "db:check": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/checkSupabase.ts",
     "db:enable:auto-approve": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/enableDemoAutoApprove.ts",
+    "db:shorten:demo-order-ids": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/shortenDemoOrderIds.ts",
     "db:seed:demo-operator": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/seedDemoRestaurantOperator.ts",
     "db:sync:coach-demo": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/syncCoachDemoOrders.ts",
     "smoke:e2e": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/smokeOrderFlow.ts"

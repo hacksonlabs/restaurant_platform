@@ -296,6 +296,29 @@ function buildExternalReference(orderId: string) {
   return `coach-demo-${orderId}`;
 }
 
+function buildShortPhantomOrderId(sourceOrderId: string, usedOrderIds: Set<string>) {
+  const compact = sourceOrderId.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const candidateLengths = [8, 10, 12, 16, compact.length];
+
+  for (const length of candidateLengths) {
+    const candidate = `order_${compact.slice(0, Math.min(length, compact.length))}`;
+    if (!usedOrderIds.has(candidate)) {
+      usedOrderIds.add(candidate);
+      return candidate;
+    }
+  }
+
+  let ordinal = 2;
+  while (true) {
+    const candidate = `order_${compact.slice(0, 8)}_${ordinal}`;
+    if (!usedOrderIds.has(candidate)) {
+      usedOrderIds.add(candidate);
+      return candidate;
+    }
+    ordinal += 1;
+  }
+}
+
 function getRestaurantIdForOrder(
   order: CoachOrder,
   phantomRestaurantIds: Set<string>,
@@ -734,6 +757,7 @@ async function main() {
     await client.query("delete from agent_orders where agent_id = $1", [COACH_AGENT_ID]);
 
     const touchedRestaurants = new Set<string>();
+    const usedOrderIds = new Set<string>();
     let insertedOrders = 0;
 
     for (const row of rowsToSync) {
@@ -763,7 +787,7 @@ async function main() {
         { groupId: splitGroupId, groupIndex: splitGroupIndex, groupSize: splitGroupSize },
       );
 
-      const orderId = `coach_${row.id}`;
+      const orderId = buildShortPhantomOrderId(row.id, usedOrderIds);
       const validItems = canonicalIntent.items
         .map((item, itemIndex) => {
           const rawItem = rawItems[itemIndex];

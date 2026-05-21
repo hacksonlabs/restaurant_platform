@@ -104,7 +104,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
   const locationId = "loc_lb_main";
   const phantomAgentId = "agent_phantom";
   const coachImHungryAgentId = "agent_coachimhungry";
-  const orderId = "order_lb_demo_001";
+  const orderId = "order_lbk82p1x";
 
   const restaurant: Restaurant = {
     id: restaurantId,
