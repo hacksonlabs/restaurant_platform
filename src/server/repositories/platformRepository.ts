@@ -674,7 +674,11 @@ export class InMemoryPlatformRepository implements PlatformRepository {
 
   async listOrders(restaurantId: string) {
     return this.state.orders
-      .filter((entry) => entry.restaurantId === restaurantId)
+      .filter((entry) => entry.restaurantId === restaurantId && entry.status !== "completed")
+      .sort(
+        (a, b) =>
+          new Date(a.requestedFulfillmentTime).getTime() - new Date(b.requestedFulfillmentTime).getTime(),
+      )
       .map((entry) => this.decorateOrderAgent(entry));
   }
 

@@ -104,7 +104,7 @@ async function main() {
 
     const updatedOrders = await client.query(
       `update agent_orders
-       set status = 'approved',
+       set status = 'accepted',
            approval_required = false,
            updated_at = now(),
            order_intent = case
@@ -117,17 +117,25 @@ async function main() {
              )
            end
        where restaurant_id = any($1::text[])
-         and status = 'needs_approval'
+         and status in ('needs_approval', 'approved')
        returning id, restaurant_id`,
       [DEMO_RESTAURANT_IDS],
     );
 
     for (const row of updatedOrders.rows) {
       await client.query(
+        `update order_status_events
+         set status = 'accepted',
+             message = 'Order auto-accepted for the hosted demo.'
+         where order_id = $1
+           and status = 'approved'`,
+        [row.id],
+      );
+      await client.query(
         `insert into order_status_events (id, order_id, status, message, created_at)
-         values ($1, $2, 'approved', 'Order auto-approved for the hosted demo.', now())
+         values ($1, $2, 'accepted', 'Order auto-accepted for the hosted demo.', now())
          on conflict (id) do nothing`,
-        [`evt_auto_approved_${row.id}`, row.id],
+        [`evt_auto_accepted_${row.id}`, row.id],
       );
     }
 

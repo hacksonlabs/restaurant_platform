@@ -778,7 +778,7 @@ insert into agent_orders (
 ) values (
   'order_lb_demo_001', 'rest_lb_steakhouse', 'agent_phantom', 'phantom-team-lunch-1001',
   'Avery Chen', 'avery@phantom.example', 'Design Team', 'catering', '2026-05-02T19:30:00.000Z',
-  8, 'approved', false, 29697,
+  8, 'accepted', false, 29697,
   '{
     "restaurant_id":"rest_lb_steakhouse",
     "agent_id":"agent_phantom",
@@ -887,7 +887,7 @@ on conflict (id) do update set
 
 insert into order_status_events (id, order_id, status, message, created_at) values
   ('evt_1', 'order_lb_demo_001', 'received', 'Order received from Phantom.', '2026-05-01T18:00:00.000Z'),
-  ('evt_2', 'order_lb_demo_001', 'approved', 'Order auto-approved by restaurant rules.', '2026-05-01T18:00:00.000Z')
+  ('evt_2', 'order_lb_demo_001', 'accepted', 'Order auto-accepted by mock restaurant rules.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   order_id = excluded.order_id,
   status = excluded.status,

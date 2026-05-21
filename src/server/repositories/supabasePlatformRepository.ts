@@ -921,7 +921,8 @@ export class SupabasePlatformRepository implements PlatformRepository {
        from agent_orders ao
        left join agents a on a.id = ao.agent_id
        where ao.restaurant_id = $1
-       order by ao.created_at desc`,
+         and ao.status <> 'completed'
+       order by ao.requested_fulfillment_time asc, ao.created_at asc`,
       [restaurantId],
     );
     return result.rows.map(mapOrder);
