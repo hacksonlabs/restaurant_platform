@@ -14,11 +14,6 @@ const DEMO_OPERATOR = {
   fullName: "Restaurant Demo Operator",
   memberships: [
     {
-      membershipId: "membership_demo_rest_lb_owner",
-      restaurantId: "rest_lb_steakhouse",
-      fallbackLocationId: "loc_lb_main",
-    },
-    {
       membershipId: "membership_demo_rest_green_leaf_owner",
       restaurantId: "rest_green_leaf_salads",
       fallbackLocationId: "loc_green_leaf_salads_main",
@@ -121,6 +116,13 @@ async function main() {
            full_name = excluded.full_name,
            supabase_user_id = excluded.supabase_user_id`,
       [DEMO_OPERATOR.operatorUserId, DEMO_OPERATOR.email, DEMO_OPERATOR.fullName, user.id],
+    );
+
+    await client.query(
+      `delete from operator_memberships
+       where operator_user_id = $1
+         and restaurant_id <> all($2::text[])`,
+      [DEMO_OPERATOR.operatorUserId, DEMO_OPERATOR.memberships.map((membership) => membership.restaurantId)],
     );
 
     for (const membership of DEMO_OPERATOR.memberships) {

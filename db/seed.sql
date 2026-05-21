@@ -169,7 +169,7 @@ on conflict (id) do update set
 
 insert into operator_memberships (id, operator_user_id, restaurant_id, location_id, role, created_at) values
   ('membership_lb_owner', 'op_dev_rest', 'rest_lb_steakhouse', 'loc_lb_main', 'owner', '2026-05-01T18:00:00.000Z'),
-  ('membership_demo_rest_lb_owner', 'op_demo_rest', 'rest_lb_steakhouse', 'loc_lb_main', 'owner', '2026-05-01T18:00:00.000Z')
+  ('membership_demo_rest_green_leaf_owner', 'op_demo_rest', 'rest_green_leaf_salads', 'loc_green_leaf_salads_main', 'owner', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   operator_user_id = excluded.operator_user_id,
   restaurant_id = excluded.restaurant_id,
