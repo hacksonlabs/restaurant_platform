@@ -1291,6 +1291,12 @@ th {
   border-bottom: 1px solid rgba(63, 44, 24, 0.08);
 }
 
+.agent-directory-type-cell,
+.agent-directory-status-cell {
+  justify-self: start;
+  padding-left: 0;
+}
+
 .agent-app-cell {
   display: flex;
   align-items: center;
@@ -1436,21 +1442,26 @@ th {
 }
 
 .scope-toggle {
-  width: 48px;
-  min-width: 48px;
-  height: 28px;
+  width: 42px;
+  min-width: 42px;
+  height: 24px;
   border: none;
   border-radius: 999px;
   background: rgba(79, 94, 109, 0.18);
-  padding: 3px;
+  padding: 2px;
   cursor: pointer;
   transition: background-color 160ms ease;
 }
 
+.scope-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .scope-toggle span {
   display: block;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 999px;
   background: white;
   transition: transform 160ms ease;
@@ -1461,7 +1472,7 @@ th {
 }
 
 .scope-toggle.on span {
-  transform: translateX(20px);
+  transform: translateX(18px);
 }
 
 .agent-note-block p {

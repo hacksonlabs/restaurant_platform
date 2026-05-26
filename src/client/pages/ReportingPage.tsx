@@ -177,7 +177,7 @@ export function ReportingPage() {
       <PageHeader
         eyebrow="Reporting"
         title="Restaurant Performance"
-        description="A clean read on order flow, revenue momentum, and the customizations guests keep coming back for."
+        description="A clean read on order flow, revenue momentum, and more."
       />
 
       <div className="reporting-board">
