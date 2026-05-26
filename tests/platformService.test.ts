@@ -26,7 +26,7 @@ function futureIso(hoursFromNow = 24) {
 async function submitSampleOrder(service: PlatformService, reference: string) {
   return service.submitAgentOrder({
     restaurant_id: "rest_lb_steakhouse",
-    agent_id: "agent_phantom",
+    agent_id: "agent_coachimhungry",
     external_order_reference: reference,
     customer: { name: "Alex", email: "alex@example.com" },
     fulfillment_type: "pickup",
@@ -72,7 +72,7 @@ async function loginOperator(baseUrl: string, email = "dev@rest.com", password =
 function agentOrder(reference: string): CanonicalOrderIntent {
   return {
     restaurant_id: "rest_lb_steakhouse",
-    agent_id: "agent_phantom",
+    agent_id: "agent_coachimhungry",
     external_order_reference: reference,
     customer: { name: "Jordan", email: "jordan@example.com" },
     fulfillment_type: "pickup",
@@ -539,7 +539,7 @@ describe("PlatformService", () => {
       service.assertAgentScope(
         {
           id: "key_scope_test",
-          agentId: "agent_phantom",
+          agentId: "agent_coachimhungry",
           label: "Limited key",
           keyPrefix: "phm_test",
           keyHash: "hash",

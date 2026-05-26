@@ -19,10 +19,10 @@ export function AgentsPage() {
       <PageHeader
         eyebrow="Manage Agents"
         title="Connected Agents"
-        description="Review trusted agent applications, their credential metadata, and when they were last active."
+        description="Review trusted agent applications and their credential metadata"
       />
       {message ? <div className="inline-message success">{message}</div> : null}
-      <Card title="Application Directory" subtitle="Each connected agent gets its own management screen.">
+      <Card title="Application Directory">
         <div className="agent-directory">
           <div className="agent-directory-header">
             <span>Application</span>

@@ -138,7 +138,7 @@ on conflict (id) do update set
   status = excluded.status;
 
 insert into agents (id, name, slug, description, created_at) values
-  ('agent_phantom', 'Phantom', 'phantom', 'Default first-party agent integration.', '2026-05-01T18:00:00.000Z')
+  ('agent_coachimhungry', 'CoachImHungry', 'coachimhungry', 'First-party ordering agent acting on behalf of customers.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   name = excluded.name,
   slug = excluded.slug,
@@ -175,7 +175,6 @@ on conflict (id) do update set
   created_at = excluded.created_at;
 
 insert into restaurant_agent_permissions (id, restaurant_id, agent_id, status, notes, last_activity_at) values
-  ('perm_lb_phantom', 'rest_lb_steakhouse', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
   ('perm_lb_coachimhungry', 'rest_lb_steakhouse', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z')
 on conflict (restaurant_id, agent_id) do update set
   restaurant_id = excluded.restaurant_id,
@@ -193,7 +192,7 @@ insert into ordering_rules (
   '[{"id":"blackout_brunch","label":"Sunday Brunch Blackout","startsAt":"2026-05-03T17:00:00.000Z","endsAt":"2026-05-03T21:00:00.000Z"}]'::jsonb,
   array['pickup','delivery','catering']::text[],
   'require_approval', 'required_before_submit',
-  array['agent_phantom','agent_coachimhungry']::text[]
+  array['agent_coachimhungry']::text[]
 )
 on conflict (id) do update set
   restaurant_id = excluded.restaurant_id,
@@ -329,9 +328,7 @@ on conflict (id) do update set
   created_at = excluded.created_at;
 
 insert into restaurant_agent_permissions (id, restaurant_id, agent_id, status, notes, last_activity_at) values
-  ('perm_pizza_palace_phantom', 'rest_pizza_palace', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
   ('perm_pizza_palace_coachimhungry', 'rest_pizza_palace', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z'),
-  ('perm_green_leaf_salads_phantom', 'rest_green_leaf_salads', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
   ('perm_green_leaf_salads_coachimhungry', 'rest_green_leaf_salads', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z')
 on conflict (restaurant_id, agent_id) do update set
   restaurant_id = excluded.restaurant_id,
@@ -348,12 +345,12 @@ insert into ordering_rules (
   (
     'rules_pizza_palace_default', 'rest_pizza_palace', 45, 300, 1000, 1000, false, 5000,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
-    'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
+    'strict', 'required_before_submit', array['agent_coachimhungry']::text[]
   ),
   (
     'rules_green_leaf_salads_default', 'rest_green_leaf_salads', 45, 350, 1000, 1000, false, 5000,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
-    'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
+    'strict', 'required_before_submit', array['agent_coachimhungry']::text[]
   )
 on conflict (id) do update set
   restaurant_id = excluded.restaurant_id,
@@ -713,13 +710,9 @@ on conflict (id) do update set
   created_at = excluded.created_at;
 
 insert into restaurant_agent_permissions (id, restaurant_id, agent_id, status, notes, last_activity_at) values
-  ('perm_sakura_sushi_house_phantom', 'rest_sakura_sushi_house', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
   ('perm_sakura_sushi_house_coachimhungry', 'rest_sakura_sushi_house', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z'),
-  ('perm_sunrise_taqueria_phantom', 'rest_sunrise_taqueria', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
   ('perm_sunrise_taqueria_coachimhungry', 'rest_sunrise_taqueria', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z'),
-  ('perm_midnight_noodle_bar_phantom', 'rest_midnight_noodle_bar', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
   ('perm_midnight_noodle_bar_coachimhungry', 'rest_midnight_noodle_bar', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z'),
-  ('perm_harbor_sandwich_co_phantom', 'rest_harbor_sandwich_co', 'agent_phantom', 'allowed', 'Seeded default allow-list entry.', '2026-05-01T18:00:00.000Z'),
   ('perm_harbor_sandwich_co_coachimhungry', 'rest_harbor_sandwich_co', 'agent_coachimhungry', 'allowed', 'Seeded CoachImHungry allow-list entry.', '2026-05-01T18:00:00.000Z')
 on conflict (restaurant_id, agent_id) do update set
   restaurant_id = excluded.restaurant_id,
@@ -736,22 +729,22 @@ insert into ordering_rules (
   (
     'rules_sakura_sushi_house_default', 'rest_sakura_sushi_house', 45, 325, 1000, 1000, false, 5000,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
-    'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
+    'strict', 'required_before_submit', array['agent_coachimhungry']::text[]
   ),
   (
     'rules_sunrise_taqueria_default', 'rest_sunrise_taqueria', 45, 285, 1000, 1000, false, 5000,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
-    'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
+    'strict', 'required_before_submit', array['agent_coachimhungry']::text[]
   ),
   (
     'rules_midnight_noodle_bar_default', 'rest_midnight_noodle_bar', 45, 340, 1000, 1000, false, 5000,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
-    'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
+    'strict', 'required_before_submit', array['agent_coachimhungry']::text[]
   ),
   (
     'rules_harbor_sandwich_co_default', 'rest_harbor_sandwich_co', 45, 260, 1000, 1000, false, 5000,
     '[]'::jsonb, array['pickup','delivery','catering']::text[],
-    'strict', 'required_before_submit', array['agent_phantom','agent_coachimhungry']::text[]
+    'strict', 'required_before_submit', array['agent_coachimhungry']::text[]
   )
 on conflict (id) do update set
   restaurant_id = excluded.restaurant_id,
@@ -772,13 +765,13 @@ insert into agent_orders (
   fulfillment_type, requested_fulfillment_time, headcount, status, approval_required,
   total_estimate_cents, order_intent, packaging_instructions, dietary_constraints, created_at, updated_at
 ) values (
-  'order_lb_demo_001', 'rest_lb_steakhouse', 'agent_phantom', 'phantom-team-lunch-1001',
+  'order_lb_demo_001', 'rest_lb_steakhouse', 'agent_coachimhungry', 'coachimhungry-team-lunch-1001',
   'Avery Chen', 'avery@phantom.example', 'Design Team', 'catering', '2026-05-02T19:30:00.000Z',
   8, 'accepted', false, 29697,
   '{
     "restaurant_id":"rest_lb_steakhouse",
-    "agent_id":"agent_phantom",
-    "external_order_reference":"phantom-team-lunch-1001",
+    "agent_id":"agent_coachimhungry",
+    "external_order_reference":"coachimhungry-team-lunch-1001",
     "customer":{"name":"Avery Chen","email":"avery@phantom.example","phone":"408-555-0110","teamName":"Design Team"},
     "fulfillment_type":"catering",
     "requested_fulfillment_time":"2026-05-02T19:30:00.000Z",
@@ -870,7 +863,7 @@ insert into audit_logs (
   id, restaurant_id, actor_type, actor_id, action, target_type, target_id, summary, created_at
 ) values
   ('audit_1', 'rest_lb_steakhouse', 'system', 'seed', 'menu.synced', 'pos_connection', 'posconn_lb_toast', 'Seeded Toast sandbox menu sync completed.', '2026-05-01T18:00:00.000Z'),
-  ('audit_2', 'rest_lb_steakhouse', 'agent', 'agent_phantom', 'order.received', 'agent_order', 'order_lb_demo_001', 'Phantom submitted a catering request for the Design Team.', '2026-05-01T18:00:00.000Z')
+  ('audit_2', 'rest_lb_steakhouse', 'agent', 'agent_coachimhungry', 'order.received', 'agent_order', 'order_lb_demo_001', 'CoachImHungry submitted a catering request for the Design Team.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   restaurant_id = excluded.restaurant_id,
   actor_type = excluded.actor_type,
@@ -882,7 +875,7 @@ on conflict (id) do update set
   created_at = excluded.created_at;
 
 insert into order_status_events (id, order_id, status, message, created_at) values
-  ('evt_1', 'order_lb_demo_001', 'received', 'Order received from Phantom.', '2026-05-01T18:00:00.000Z'),
+  ('evt_1', 'order_lb_demo_001', 'received', 'Order received from CoachImHungry.', '2026-05-01T18:00:00.000Z'),
   ('evt_2', 'order_lb_demo_001', 'accepted', 'Order auto-accepted by restaurant rules.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   order_id = excluded.order_id,

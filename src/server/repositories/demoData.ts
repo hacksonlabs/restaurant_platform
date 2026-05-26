@@ -102,7 +102,6 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
   const now = new Date("2026-05-01T18:00:00.000Z").toISOString();
   const restaurantId = "rest_lb_steakhouse";
   const locationId = "loc_lb_main";
-  const phantomAgentId = "agent_phantom";
   const coachImHungryAgentId = "agent_coachimhungry";
   const orderId = "order_lb_demo_001";
 
@@ -281,14 +280,6 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     })),
   ];
 
-  const phantomAgent: Agent = {
-    id: phantomAgentId,
-    name: "Phantom",
-    slug: "phantom",
-    description: "Default first-party agent integration.",
-    createdAt: now,
-  };
-
   const coachImHungryAgent: Agent = {
     id: coachImHungryAgentId,
     name: "CoachImHungry",
@@ -332,15 +323,6 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     createdAt: now,
   };
 
-  const permission: RestaurantAgentPermission = {
-    id: "perm_lb_phantom",
-    restaurantId,
-    agentId: phantomAgentId,
-    status: "allowed",
-    notes: "Seeded default allow-list entry.",
-    lastActivityAt: now,
-  };
-
   const coachPermission: RestaurantAgentPermission = {
     id: "perm_lb_coachimhungry",
     restaurantId,
@@ -370,13 +352,13 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     allowedFulfillmentTypes: ["pickup", "delivery", "catering"],
     substitutionPolicy: "require_approval",
     paymentPolicy: "required_before_submit",
-    allowedAgentIds: [phantomAgentId, coachImHungryAgentId],
+    allowedAgentIds: [coachImHungryAgentId],
   };
 
   const orderIntent = {
     restaurant_id: restaurantId,
-    agent_id: phantomAgentId,
-    external_order_reference: "phantom-team-lunch-1001",
+    agent_id: coachImHungryAgentId,
+    external_order_reference: "coachimhungry-team-lunch-1001",
     customer: {
       name: "Avery Chen",
       email: "avery@phantom.example",
@@ -428,7 +410,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
   const order: AgentOrderRecord = {
     id: orderId,
     restaurantId,
-    agentId: phantomAgentId,
+    agentId: coachImHungryAgentId,
     externalOrderReference: orderIntent.external_order_reference,
     customerName: orderIntent.customer.name,
     customerEmail: orderIntent.customer.email,
@@ -518,11 +500,11 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       id: "audit_2",
       restaurantId,
       actorType: "agent",
-      actorId: phantomAgentId,
+      actorId: coachImHungryAgentId,
       action: "order.received",
       targetType: "agent_order",
       targetId: orderId,
-      summary: "Phantom submitted a catering request for the Design Team.",
+      summary: "CoachImHungry submitted a catering request for the Design Team.",
       createdAt: now,
     },
   ];
@@ -532,7 +514,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       id: "evt_1",
       orderId,
       status: "received",
-      message: "Order received from Phantom.",
+      message: "Order received from CoachImHungry.",
       createdAt: now,
     },
     {
@@ -711,15 +693,6 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       createdAt: now,
     };
 
-    const permission: RestaurantAgentPermission = {
-      id: `perm_${input.restaurantId.replace(/^rest_/, "")}_phantom`,
-      restaurantId: input.restaurantId,
-      agentId: phantomAgentId,
-      status: "allowed",
-      notes: "Seeded default allow-list entry.",
-      lastActivityAt: now,
-    };
-
     const coachPermission: RestaurantAgentPermission = {
       id: `perm_${input.restaurantId.replace(/^rest_/, "")}_coachimhungry`,
       restaurantId: input.restaurantId,
@@ -742,7 +715,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       allowedFulfillmentTypes: ["pickup", "delivery", "catering"],
       substitutionPolicy: "strict",
       paymentPolicy: "required_before_submit",
-      allowedAgentIds: [phantomAgentId, coachImHungryAgentId],
+      allowedAgentIds: [coachImHungryAgentId],
     };
 
     const auditLog: AuditLog = {
@@ -766,7 +739,6 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       modifiers,
       posMappings,
       membership,
-      permission,
       coachPermission,
       orderingRule,
       auditLog,
@@ -1297,7 +1269,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       ...midnightNoodleBar.posMappings,
       ...harborSandwichCo.posMappings,
     ],
-    agents: [phantomAgent, coachImHungryAgent],
+    agents: [coachImHungryAgent],
     agentApiKeys: [agentApiKey],
     operatorUsers: [operatorUser],
     operatorMemberships: [
@@ -1311,19 +1283,12 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     ],
     operatorSessions: [],
     permissions: [
-      permission,
       coachPermission,
-      pizzaPalace.permission,
       pizzaPalace.coachPermission,
-      greenLeafSalads.permission,
       greenLeafSalads.coachPermission,
-      sakuraSushiHouse.permission,
       sakuraSushiHouse.coachPermission,
-      sunriseTaqueria.permission,
       sunriseTaqueria.coachPermission,
-      midnightNoodleBar.permission,
       midnightNoodleBar.coachPermission,
-      harborSandwichCo.permission,
       harborSandwichCo.coachPermission,
     ],
     orderingRules: [
