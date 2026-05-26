@@ -12,7 +12,7 @@ insert into restaurants (
   created_at, updated_at
 ) values (
   'rest_lb_steakhouse', 'LB Steakhouse', '1533 Ashcroft Way, Sunnyvale, CA 94087', 'America/Los_Angeles', 'https://images.pexels.com/photos/67468/pexels-photo-67468.jpeg', 'Steakhouse', 'Classic steakhouse plates, polished sides, and a strong team-order catering fit.', 4.7, 299, 2500, true, 'toast', true,
-  'threshold_review', 'ops@lbsteakhouse.example', '(408) 555-0193',
+  'auto', 'ops@lbsteakhouse.example', '(408) 555-0193',
   array['pickup', 'delivery', 'catering']::text[],
   '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z'
 )
@@ -189,7 +189,7 @@ insert into ordering_rules (
   max_headcount, auto_accept_enabled, manager_approval_threshold_cents, blackout_windows,
   allowed_fulfillment_types, substitution_policy, payment_policy, allowed_agent_ids
 ) values (
-  'rules_lb_default', 'rest_lb_steakhouse', 90, 250, 1000, 1000, false, 80000,
+  'rules_lb_default', 'rest_lb_steakhouse', 90, 250, 1000, 1000, true, 2147483647,
   '[{"id":"blackout_brunch","label":"Sunday Brunch Blackout","startsAt":"2026-05-03T17:00:00.000Z","endsAt":"2026-05-03T21:00:00.000Z"}]'::jsonb,
   array['pickup','delivery','catering']::text[],
   'require_approval', 'required_before_submit',
@@ -774,7 +774,7 @@ insert into agent_orders (
 ) values (
   'order_lb_demo_001', 'rest_lb_steakhouse', 'agent_phantom', 'phantom-team-lunch-1001',
   'Avery Chen', 'avery@phantom.example', 'Design Team', 'catering', '2026-05-02T19:30:00.000Z',
-  8, 'needs_approval', true, 29697,
+  8, 'accepted', false, 29697,
   '{
     "restaurant_id":"rest_lb_steakhouse",
     "agent_id":"agent_phantom",
@@ -800,7 +800,7 @@ insert into agent_orders (
     "dietary_constraints":["nut_free"],
     "packaging_instructions":"Label each entree with guest name when possible.",
     "substitution_policy":"require_approval",
-    "approval_requirements":{"manager_approval_required":true},
+    "approval_requirements":{"manager_approval_required":false},
     "metadata":{"source":"seed_demo"}
   }'::jsonb,
   'Label each entree with guest name when possible.',
@@ -883,7 +883,7 @@ on conflict (id) do update set
 
 insert into order_status_events (id, order_id, status, message, created_at) values
   ('evt_1', 'order_lb_demo_001', 'received', 'Order received from Phantom.', '2026-05-01T18:00:00.000Z'),
-  ('evt_2', 'order_lb_demo_001', 'needs_approval', 'Order exceeded auto-accept threshold and needs manager review.', '2026-05-01T18:00:00.000Z')
+  ('evt_2', 'order_lb_demo_001', 'accepted', 'Order auto-accepted by restaurant rules.', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
   order_id = excluded.order_id,
   status = excluded.status,

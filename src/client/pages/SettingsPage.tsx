@@ -19,6 +19,7 @@ export function SettingsPage() {
     [selectedRestaurantId],
   );
   const [message, setMessage] = useState("");
+  const [updatingAutoAccept, setUpdatingAutoAccept] = useState(false);
 
   useEffect(() => {
     setMessage("");
@@ -34,6 +35,43 @@ export function SettingsPage() {
     ]);
     setData({ restaurant, rules });
     setMessage("Profile and ordering rules saved.");
+  }
+
+  async function updateAutoAccept(enabled: boolean) {
+    const previous = data;
+    const nextRestaurant =
+      enabled
+        ? { ...data.restaurant, defaultApprovalMode: "auto" as const }
+        : data.restaurant.defaultApprovalMode === "auto"
+          ? { ...data.restaurant, defaultApprovalMode: "threshold_review" as const }
+          : data.restaurant;
+    const nextData = {
+      restaurant: nextRestaurant,
+      rules: { ...data.rules, autoAcceptEnabled: enabled },
+    };
+
+    setData(nextData);
+    setUpdatingAutoAccept(true);
+    setMessage("");
+    try {
+      const tasks: Array<Promise<unknown>> = [api.updateRules(selectedRestaurantId!, { autoAcceptEnabled: enabled })];
+      if (nextRestaurant.defaultApprovalMode !== data.restaurant.defaultApprovalMode) {
+        tasks.push(api.updateRestaurant(data.restaurant.id, { defaultApprovalMode: nextRestaurant.defaultApprovalMode }));
+      }
+      const [rules, restaurant] = await Promise.all([
+        tasks[0] as Promise<typeof data.rules>,
+        tasks[1]
+          ? (tasks[1] as Promise<typeof data.restaurant>)
+          : Promise.resolve(nextRestaurant),
+      ]);
+      setData({ restaurant, rules });
+      setMessage(`Auto accept ${enabled ? "enabled" : "disabled"}.`);
+    } catch (updateError) {
+      setData(previous);
+      setMessage(updateError instanceof Error ? updateError.message : "Failed to update auto accept.");
+    } finally {
+      setUpdatingAutoAccept(false);
+    }
   }
 
   return (
@@ -190,13 +228,8 @@ export function SettingsPage() {
           <Field label="Auto Accept">
             <select
               value={String(data.rules.autoAcceptEnabled)}
-              disabled={!canManageRules}
-              onChange={(event) =>
-                setData({
-                  ...data,
-                  rules: { ...data.rules, autoAcceptEnabled: event.target.value === "true" },
-                })
-              }
+              disabled={!canManageRules || updatingAutoAccept}
+              onChange={(event) => void updateAutoAccept(event.target.value === "true")}
             >
               <option value="true">enabled</option>
               <option value="false">disabled</option>

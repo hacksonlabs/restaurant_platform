@@ -211,8 +211,25 @@ describe("PlatformService", () => {
     expect(detail.quotes[0]?.totalCents).toBeGreaterThan(0);
   });
 
+  it("skips manager approval when auto accept is enabled", async () => {
+    const service = createService();
+    await service.updateRules("rest_lb_steakhouse", {
+      autoAcceptEnabled: true,
+      managerApprovalThresholdCents: 1,
+    });
+
+    const order = await service.submitAgentOrder(agentOrder("auto-accept-enabled"));
+    const detail = await service.getOrder("rest_lb_steakhouse", order.id);
+
+    expect(order.status).toBe("accepted");
+    expect(detail.order.status).toBe("accepted");
+    expect(detail.order.approvalRequired).toBe(false);
+    expect(detail.statusEvents.at(-1)?.status).toBe("accepted");
+  });
+
   it("persists POS submission status for the order lifecycle", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     const order = await service.submitAgentOrder(agentOrder("test-submit-2"));
 
     await service.approveOrder("rest_lb_steakhouse", order.id);
@@ -226,6 +243,7 @@ describe("PlatformService", () => {
 
   it("groups split child orders into one queue entry and approves them together", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     const first = await service.submitAgentOrder({
       ...agentOrder("split-child-1"),
       headcount: 2,
@@ -291,6 +309,7 @@ describe("PlatformService", () => {
 
   it("locks the manager decision once an order is approved", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     const order = await service.submitAgentOrder(agentOrder("decision-lock-approve"));
 
     await service.approveOrder("rest_lb_steakhouse", order.id);
@@ -302,6 +321,7 @@ describe("PlatformService", () => {
 
   it("locks the manager decision once an order is rejected", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     const order = await service.submitAgentOrder(agentOrder("decision-lock-reject"));
 
     await service.rejectOrder("rest_lb_steakhouse", order.id);
@@ -337,6 +357,43 @@ describe("PlatformService", () => {
 
     expect(reporting.metrics.length).toBeGreaterThan(0);
     expect(reporting.topItems.some((item) => item.name.includes("Prime Ribeye"))).toBe(true);
+  });
+
+  it("hides completed and stale past orders from the incoming queue and sorts remaining orders by requested time", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    for (const existingOrder of repository.state.orders.filter((order) => order.restaurantId === "rest_lb_steakhouse")) {
+      await repository.updateOrder(existingOrder.id, { status: "completed" });
+    }
+
+    const lateOrder = await service.submitAgentOrder({
+      ...agentOrder("queue-late"),
+      requested_fulfillment_time: futureIso(72),
+    });
+    const earlyOrder = await service.submitAgentOrder({
+      ...agentOrder("queue-early"),
+      requested_fulfillment_time: futureIso(24),
+    });
+    const stalePastOrder = await service.submitAgentOrder({
+      ...agentOrder("queue-stale-past"),
+      requested_fulfillment_time: futureIso(30),
+    });
+    await repository.updateOrder(lateOrder.id, { status: "completed" });
+    await repository.updateOrder(stalePastOrder.id, {
+      requestedFulfillmentTime: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const orders = await service.listOrders("rest_lb_steakhouse");
+
+    expect(orders.map((order) => order.id)).toEqual([earlyOrder.id]);
+    expect(orders.some((order) => order.id === lateOrder.id)).toBe(false);
+    expect(orders.some((order) => order.id === stalePastOrder.id)).toBe(false);
+    expect(orders.findIndex((order) => order.id === earlyOrder.id)).toBeGreaterThanOrEqual(0);
+    expect(orders.map((order) => order.id)).not.toContain(lateOrder.id);
+    expect(orders.map((order) => order.id)).not.toContain(stalePastOrder.id);
+
+    const queueTimes = orders.map((order) => new Date(order.requestedFulfillmentTime).getTime());
+    expect(queueTimes).toEqual([...queueTimes].sort((a, b) => a - b));
   });
 
   it("reuses the same persisted submit result for repeated idempotent order submissions", async () => {
@@ -438,6 +495,7 @@ describe("PlatformService", () => {
 
   it("surfaces operational diagnostics for mapping gaps and stuck orders", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     await service.submitAgentOrder(agentOrder("diag-submit-1"));
 
     const diagnostics = await service.getOperationalDiagnostics("rest_lb_steakhouse");

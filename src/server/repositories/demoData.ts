@@ -120,7 +120,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     supportsCatering: true,
     posProvider: "toast",
     agentOrderingEnabled: true,
-    defaultApprovalMode: "threshold_review",
+    defaultApprovalMode: "auto",
     contactEmail: "ops@lbsteakhouse.example",
     contactPhone: "(408) 555-0193",
     fulfillmentTypesSupported: ["pickup", "delivery", "catering"],
@@ -357,8 +357,8 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     maxOrderDollarAmount: 250,
     maxItemQuantity: 25,
     maxHeadcount: 40,
-    autoAcceptEnabled: false,
-    managerApprovalThresholdCents: 80000,
+    autoAcceptEnabled: true,
+    managerApprovalThresholdCents: 2147483647,
     blackoutWindows: [
       {
         id: "blackout_brunch",
@@ -418,7 +418,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     packaging_instructions: "Label each entree with guest name when possible.",
     substitution_policy: "require_approval" as const,
     approval_requirements: {
-      manager_approval_required: true,
+      manager_approval_required: false,
     },
     metadata: {
       source: "seed_demo",
@@ -436,8 +436,8 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     fulfillmentType: orderIntent.fulfillment_type,
     requestedFulfillmentTime: orderIntent.requested_fulfillment_time,
     headcount: orderIntent.headcount,
-    status: "needs_approval",
-    approvalRequired: true,
+    status: "accepted",
+    approvalRequired: false,
     totalEstimateCents: 29697,
     createdAt: now,
     updatedAt: now,
@@ -538,8 +538,8 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     {
       id: "evt_2",
       orderId,
-      status: "needs_approval",
-      message: "Order exceeded auto-accept threshold and needs manager review.",
+      status: "accepted",
+      message: "Order auto-accepted by restaurant rules.",
       createdAt: now,
     },
   ];

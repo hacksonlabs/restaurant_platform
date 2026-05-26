@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { api } from "../lib/api";
 import { useTenant } from "../auth/AuthContext";
 import { dateTime, money } from "../lib/format";
@@ -6,7 +7,17 @@ import { useResource } from "./useResource";
 
 export function DashboardPage() {
   const { selectedRestaurantId } = useTenant();
-  const { data, loading, error } = useResource(`dashboard:${selectedRestaurantId}`, () => api.dashboard(selectedRestaurantId!), [selectedRestaurantId]);
+  const { data, loading, error, refresh } = useResource(`dashboard:${selectedRestaurantId}`, () => api.dashboard(selectedRestaurantId!), [selectedRestaurantId]);
+
+  useEffect(() => {
+    if (!selectedRestaurantId) return undefined;
+    const intervalId = window.setInterval(() => {
+      void refresh();
+    }, 5000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [refresh, selectedRestaurantId]);
 
   if (loading) return <div className="panel-state">Loading dashboard…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;

@@ -58,7 +58,7 @@
   "packaging_instructions": "Please keep sauces separate and label steak temperatures.",
   "substitution_policy": "require_approval",
   "approval_requirements": {
-    "manager_approval_required": true
+    "manager_approval_required": false
   },
   "metadata": {
     "source": "curl_demo"

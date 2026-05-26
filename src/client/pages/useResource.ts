@@ -11,6 +11,14 @@ export function useResource<T>(cacheKey: string, loader: () => Promise<T>, deps:
     setDataState(value);
   }
 
+  async function refresh() {
+    const result = await loader();
+    setData(result);
+    setError(null);
+    setLoading(false);
+    return result;
+  }
+
   useEffect(() => {
     let active = true;
     const cached = getCachedResource<T>(cacheKey);
@@ -18,17 +26,15 @@ export function useResource<T>(cacheKey: string, loader: () => Promise<T>, deps:
       setDataState(cached);
       setLoading(false);
       setError(null);
-      return () => {
-        active = false;
-      };
+    } else {
+      setLoading(true);
+      setError(null);
     }
-
-    setLoading(true);
-    setError(null);
     loader()
       .then((result) => {
         if (!active) return;
         setData(result);
+        setError(null);
       })
       .catch((err: Error) => {
         if (!active) return;
@@ -40,8 +46,8 @@ export function useResource<T>(cacheKey: string, loader: () => Promise<T>, deps:
       });
     return () => {
       active = false;
-      };
+    };
   }, deps);
 
-  return { data, setData, loading, error };
+  return { data, setData, loading, error, refresh };
 }

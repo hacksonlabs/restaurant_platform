@@ -920,6 +920,8 @@ export class PlatformService {
       );
       quote.idempotencyKey = idempotencyKey;
       const approvalRequired = await this.requiresApproval(parsed);
+      const connection = await this.repository.getPOSConnection(parsed.restaurant_id);
+      const autoAcceptedInMock = !approvalRequired && connection?.mode === "mock";
       const now = new Date().toISOString();
       const sourceQuoteTotalCents = this.readSourceQuoteTotalCents(parsed);
       const order: AgentOrderRecord = {
@@ -933,7 +935,7 @@ export class PlatformService {
         fulfillmentType: parsed.fulfillment_type,
         requestedFulfillmentTime: parsed.requested_fulfillment_time,
         headcount: parsed.headcount,
-        status: approvalRequired ? "needs_approval" : "approved",
+        status: approvalRequired ? "needs_approval" : autoAcceptedInMock ? "accepted" : "approved",
         approvalRequired,
         totalEstimateCents: sourceQuoteTotalCents ?? quote.totalCents,
         createdAt: now,
@@ -954,7 +956,11 @@ export class PlatformService {
           {
             orderId,
             status: order.status,
-            message: approvalRequired ? "Order requires approval based on restaurant rules." : "Order auto-approved by restaurant rules.",
+            message: approvalRequired
+              ? "Order requires approval based on restaurant rules."
+              : autoAcceptedInMock
+                ? "Order auto-accepted by mock restaurant rules."
+                : "Order auto-approved by restaurant rules.",
           },
         ],
         auditLog: {
@@ -1737,13 +1743,10 @@ export class PlatformService {
     if (order.approval_requirements?.manager_approval_required) {
       return true;
     }
-    const context = await this.getPOSContext(order.restaurant_id);
-    const itemMap = new Map(context.menuItems.map((entry) => [entry.id, entry]));
-    const estimatedSubtotal = order.items.reduce((sum, item) => {
-      const menuItem = itemMap.get(item.item_id);
-      return sum + (menuItem?.priceCents ?? 0) * item.quantity;
-    }, 0);
-    return !rules.autoAcceptEnabled || estimatedSubtotal >= rules.managerApprovalThresholdCents;
+    if (rules.autoAcceptEnabled) {
+      return false;
+    }
+    return true;
   }
 
   private buildOrderRelations(orderId: string, parsed: CanonicalOrderIntent) {

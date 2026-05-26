@@ -8,6 +8,7 @@ export function RulesPage() {
   const { selectedRestaurantId, canManageRules } = useTenant();
   const { data, setData, loading, error } = useResource(`rules:${selectedRestaurantId}`, () => api.rules(selectedRestaurantId!), [selectedRestaurantId]);
   const [message, setMessage] = useState("");
+  const [updatingAutoAccept, setUpdatingAutoAccept] = useState(false);
 
   if (loading) return <div className="panel-state">Loading ordering rules…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
@@ -16,6 +17,23 @@ export function RulesPage() {
     const updated = await api.updateRules(selectedRestaurantId!, data);
     setData(updated);
     setMessage("Ordering rules saved.");
+  }
+
+  async function updateAutoAccept(enabled: boolean) {
+    const previous = data;
+    setData({ ...data, autoAcceptEnabled: enabled });
+    setUpdatingAutoAccept(true);
+    setMessage("");
+    try {
+      const updated = await api.updateRules(selectedRestaurantId!, { autoAcceptEnabled: enabled });
+      setData(updated);
+      setMessage(`Auto accept ${enabled ? "enabled" : "disabled"}.`);
+    } catch (updateError) {
+      setData(previous);
+      setMessage(updateError instanceof Error ? updateError.message : "Failed to update auto accept.");
+    } finally {
+      setUpdatingAutoAccept(false);
+    }
   }
 
   return (
@@ -63,8 +81,8 @@ export function RulesPage() {
           <Field label="Auto Accept">
             <select
               value={String(data.autoAcceptEnabled)}
-              disabled={!canManageRules}
-              onChange={(event) => setData({ ...data, autoAcceptEnabled: event.target.value === "true" })}
+              disabled={!canManageRules || updatingAutoAccept}
+              onChange={(event) => void updateAutoAccept(event.target.value === "true")}
             >
               <option value="true">enabled</option>
               <option value="false">disabled</option>

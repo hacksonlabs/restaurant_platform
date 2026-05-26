@@ -8,7 +8,7 @@ import { useResource } from "./useResource";
 
 export function OrdersPage() {
   const { selectedRestaurantId, canManageOrders, isReadOnly } = useTenant();
-  const { data, setData, loading, error } = useResource(`orders:${selectedRestaurantId}`, () => api.orders(selectedRestaurantId!), [selectedRestaurantId]);
+  const { data, setData, loading, error, refresh } = useResource(`orders:${selectedRestaurantId}`, () => api.orders(selectedRestaurantId!), [selectedRestaurantId]);
   const [message, setMessage] = useState("");
   const [reviewingOrderId, setReviewingOrderId] = useState<string | null>(null);
   const [pendingDecisionOrderId, setPendingDecisionOrderId] = useState<string | null>(null);
@@ -32,7 +32,7 @@ export function OrdersPage() {
   }
 
   async function refreshOrders() {
-    const latestOrders = await api.orders(selectedRestaurantId!);
+    const latestOrders = await refresh();
     const nextPendingDecisionByOrderId = Object.fromEntries(
       Object.entries(pendingDecisionByOrderId).filter(([orderId]) => {
         const latestOrder = latestOrders.find((order) => order.id === orderId);
@@ -85,22 +85,15 @@ export function OrdersPage() {
   }
 
   useEffect(() => {
-    const hasTransitioningOrders = orders.some((order) =>
-      ["approved", "submitting_to_pos"].includes(getDisplayStatus(order)),
-    );
-    const hasPendingDecision = Object.keys(pendingDecisionByOrderId).length > 0;
-    if ((!hasTransitioningOrders && !hasPendingDecision) || !selectedRestaurantId) {
-      return undefined;
-    }
-
+    if (!selectedRestaurantId) return undefined;
     const intervalId = window.setInterval(() => {
       void refreshOrders();
-    }, 2500);
+    }, 5000);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [orders, pendingDecisionByOrderId, selectedRestaurantId]);
+  }, [pendingDecisionByOrderId, refresh, selectedRestaurantId]);
 
   if (loading) return <div className="panel-state">Loading incoming orders…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;

@@ -673,8 +673,18 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async listOrders(restaurantId: string) {
+    const cutoffTime = Date.now() - 2 * 60 * 60 * 1000;
     return this.state.orders
-      .filter((entry) => entry.restaurantId === restaurantId)
+      .filter(
+        (entry) =>
+          entry.restaurantId === restaurantId &&
+          entry.status !== "completed" &&
+          new Date(entry.requestedFulfillmentTime).getTime() >= cutoffTime,
+      )
+      .sort(
+        (a, b) =>
+          new Date(a.requestedFulfillmentTime).getTime() - new Date(b.requestedFulfillmentTime).getTime(),
+      )
       .map((entry) => this.decorateOrderAgent(entry));
   }
 
