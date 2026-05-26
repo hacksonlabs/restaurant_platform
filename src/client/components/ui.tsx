@@ -73,7 +73,7 @@ export function DataTable(props: { columns: string[]; rows: ReactNode[][] }) {
   );
 }
 
-export function Field(props: PropsWithChildren<{ label: string }>) {
+export function Field(props: PropsWithChildren<{ label: ReactNode }>) {
   return (
     <label className="field">
       <span>{props.label}</span>

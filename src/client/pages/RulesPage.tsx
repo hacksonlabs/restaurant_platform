@@ -88,14 +88,6 @@ export function RulesPage() {
               <option value="false">disabled</option>
             </select>
           </Field>
-          <Field label="Manager Approval Threshold (cents)">
-            <input
-              type="number"
-              value={data.managerApprovalThresholdCents}
-              disabled={!canManageRules}
-              onChange={(event) => setData({ ...data, managerApprovalThresholdCents: Number(event.target.value) })}
-            />
-          </Field>
           <Field label="Substitution Policy">
             <select
               value={data.substitutionPolicy}
