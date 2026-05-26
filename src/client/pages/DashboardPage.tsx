@@ -89,7 +89,7 @@ export function DashboardPage() {
         </Card>
 
         <Card className="dashboard-summary-card">
-          <div className="dashboard-kicker">Agent Revenue</div>
+          <div className="dashboard-kicker">Revenue This Week</div>
           <div className="dashboard-summary-value">{money(data.revenueFromAgentOrdersCents)}</div>
         </Card>
       </div>
