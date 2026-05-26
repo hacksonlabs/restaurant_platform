@@ -1,8 +1,81 @@
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { useTenant } from "../auth/AuthContext";
 import { money } from "../lib/format";
 import { Card, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
+
+type ReportingPreset = "this_week" | "this_month" | "past_3_months" | "ytd" | "custom";
+
+function toDateInputValue(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(value: Date, amount: number) {
+  const next = new Date(value);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function startOfWeek(value: Date) {
+  const next = new Date(value);
+  const day = next.getDay();
+  const offset = day === 0 ? -6 : 1 - day;
+  return addDays(next, offset);
+}
+
+function startOfMonth(value: Date) {
+  return new Date(value.getFullYear(), value.getMonth(), 1);
+}
+
+function startOfYear(value: Date) {
+  return new Date(value.getFullYear(), 0, 1);
+}
+
+function addMonths(value: Date, amount: number) {
+  return new Date(value.getFullYear(), value.getMonth() + amount, value.getDate());
+}
+
+function rangeForPreset(preset: ReportingPreset, customStartDate: string, customEndDate: string) {
+  const today = new Date();
+  const endDate = toDateInputValue(today);
+
+  if (preset === "custom") {
+    return {
+      startDate: customStartDate || undefined,
+      endDate: customEndDate || undefined,
+    };
+  }
+
+  if (preset === "this_week") {
+    return {
+      startDate: toDateInputValue(startOfWeek(today)),
+      endDate,
+    };
+  }
+
+  if (preset === "this_month") {
+    return {
+      startDate: toDateInputValue(startOfMonth(today)),
+      endDate,
+    };
+  }
+
+  if (preset === "past_3_months") {
+    return {
+      startDate: toDateInputValue(addMonths(today, -3)),
+      endDate,
+    };
+  }
+
+  return {
+    startDate: toDateInputValue(startOfYear(today)),
+    endDate,
+  };
+}
 
 function formatShortDate(value: string) {
   const parsed = new Date(value);
@@ -144,18 +217,49 @@ function RankingList(props: {
 
 export function ReportingPage() {
   const { selectedRestaurantId } = useTenant();
+  const [preset, setPreset] = useState<ReportingPreset>("this_week");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  useEffect(() => {
+    if (preset !== "custom") return;
+    if (customStartDate && customEndDate) return;
+    const today = new Date();
+    setCustomStartDate((current) => current || toDateInputValue(startOfWeek(today)));
+    setCustomEndDate((current) => current || toDateInputValue(today));
+  }, [preset, customEndDate, customStartDate]);
+
+  const selectedRange = useMemo(
+    () => rangeForPreset(preset, customStartDate, customEndDate),
+    [preset, customEndDate, customStartDate],
+  );
+
+  const selectedRangeLabel = useMemo(() => {
+    if (preset === "this_week") return "This Week";
+    if (preset === "this_month") return "This Month";
+    if (preset === "past_3_months") return "Past 3 Months";
+    if (preset === "ytd") return "YTD";
+    if (preset === "custom") {
+      if (selectedRange.startDate && selectedRange.endDate) {
+        return `${selectedRange.startDate} to ${selectedRange.endDate}`;
+      }
+      return "Custom";
+    }
+    return "This Week";
+  }, [preset, selectedRange.endDate, selectedRange.startDate]);
   const { data, loading, error } = useResource(
-    `reporting:${selectedRestaurantId}`,
+    `reporting:${selectedRestaurantId}:${preset}:${selectedRange.startDate ?? ""}:${selectedRange.endDate ?? ""}`,
     () =>
       selectedRestaurantId
-        ? api.reporting(selectedRestaurantId)
+        ? api.reporting(selectedRestaurantId, selectedRange)
         : Promise.resolve({
             metrics: [],
             topItems: [],
             topModifiers: [],
             failureReasons: [],
           }),
-    [selectedRestaurantId],
+    [selectedRestaurantId, preset, selectedRange.startDate, selectedRange.endDate],
   );
 
   if (!selectedRestaurantId) return <div className="panel-state">Choose a restaurant to view reporting.</div>;
@@ -179,6 +283,64 @@ export function ReportingPage() {
         title="Restaurant Performance"
         description="A clean read on order flow, revenue momentum, and more."
       />
+
+      <Card className="reporting-range-card">
+        <button
+          type="button"
+          className="reporting-range-toggle"
+          onClick={() => setFiltersOpen((open) => !open)}
+          aria-expanded={filtersOpen}
+        >
+          <div>
+            <div className="dashboard-kicker">Date Range</div>
+            <div className="reporting-range-selected">{selectedRangeLabel}</div>
+          </div>
+          <span className={`section-caret${filtersOpen ? " expanded" : ""}`} />
+        </button>
+        {filtersOpen ? (
+          <div className="reporting-filters">
+            <div className="reporting-filter-buttons">
+              <button type="button" className={`reporting-filter-chip${preset === "this_week" ? " active" : ""}`} onClick={() => setPreset("this_week")}>
+                This Week
+              </button>
+              <button type="button" className={`reporting-filter-chip${preset === "this_month" ? " active" : ""}`} onClick={() => setPreset("this_month")}>
+                This Month
+              </button>
+              <button type="button" className={`reporting-filter-chip${preset === "past_3_months" ? " active" : ""}`} onClick={() => setPreset("past_3_months")}>
+                Past 3 Months
+              </button>
+              <button type="button" className={`reporting-filter-chip${preset === "ytd" ? " active" : ""}`} onClick={() => setPreset("ytd")}>
+                YTD
+              </button>
+              <button type="button" className={`reporting-filter-chip${preset === "custom" ? " active" : ""}`} onClick={() => setPreset("custom")}>
+                Custom
+              </button>
+            </div>
+            {preset === "custom" ? (
+              <div className="reporting-custom-range">
+                <label className="field">
+                  <span>Start Date</span>
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    max={customEndDate || undefined}
+                    onChange={(event) => setCustomStartDate(event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>End Date</span>
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    min={customStartDate || undefined}
+                    onChange={(event) => setCustomEndDate(event.target.value)}
+                  />
+                </label>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </Card>
 
       <div className="reporting-board">
         <Card

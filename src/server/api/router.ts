@@ -258,7 +258,9 @@ export function createApiRouter(service: PlatformService) {
     "/restaurants/:restaurantId/reporting",
     requireRestaurantRole(service, ["owner", "manager", "viewer"]),
     asyncHandler(async (request, response) => {
-      response.json(await service.getReporting(request.params.restaurantId));
+      const startDate = typeof request.query.startDate === "string" ? request.query.startDate : undefined;
+      const endDate = typeof request.query.endDate === "string" ? request.query.endDate : undefined;
+      response.json(await service.getReporting(request.params.restaurantId, { startDate, endDate }));
     }),
   );
 

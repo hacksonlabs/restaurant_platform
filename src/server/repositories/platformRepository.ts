@@ -25,6 +25,7 @@ import type {
   POSMenuMapping,
   POSOrderSubmission,
   ReportingDailyMetric,
+  ReportingDateRange,
   Restaurant,
   RestaurantAgentPermission,
   RestaurantLocation,
@@ -78,6 +79,13 @@ export interface ReportingSnapshotRecord {
   topItems: Array<{ name: string; count: number }>;
   topModifiers: Array<{ name: string; count: number }>;
   failureReasons: Array<{ reason: string; count: number }>;
+}
+
+function isWithinReportingRange(value: string, range?: ReportingDateRange) {
+  const day = value.slice(0, 10);
+  if (range?.startDate && day < range.startDate) return false;
+  if (range?.endDate && day > range.endDate) return false;
+  return true;
 }
 
 export interface OrderGraphInput {
@@ -159,7 +167,7 @@ export interface PlatformRepository {
   authenticateAgentKey(keyHash: string): Promise<AgentApiKey | null>;
   getRecentAuditLogs(restaurantId: string, limit: number): Promise<AuditLog[]>;
   getDashboardStats(restaurantId: string): Promise<DashboardStats>;
-  getReporting(restaurantId: string): Promise<ReportingSnapshotRecord>;
+  getReporting(restaurantId: string, range?: ReportingDateRange): Promise<ReportingSnapshotRecord>;
   refreshReportingMetrics(restaurantId: string): Promise<void>;
   getIdempotencyRecord(scope: "validate" | "quote" | "submit", restaurantId: string, agentId: string, idempotencyKey: string): Promise<IdempotencyRecord | null>;
   createIdempotencyRecord(input: Omit<IdempotencyRecord, "id" | "createdAt" | "updatedAt">): Promise<IdempotencyRecord>;
@@ -180,6 +188,7 @@ function computeTopItems(
   orders: AgentOrderRecord[],
   orderItems: AgentOrderItemRecord[],
   menuItems: CanonicalMenuItem[],
+  range?: ReportingDateRange,
 ) {
   const menuById = new Map(menuItems.map((entry) => [entry.id, entry]));
   const orderById = new Map(orders.map((entry) => [entry.id, entry]));
@@ -187,7 +196,7 @@ function computeTopItems(
   orderItems.forEach((item) => {
     const order = orderById.get(item.orderId);
     const menuItem = menuById.get(item.menuItemId);
-    if (!order || order.restaurantId !== restaurantId || !menuItem) return;
+    if (!order || order.restaurantId !== restaurantId || !menuItem || !isWithinReportingRange(order.createdAt, range)) return;
     counts.set(menuItem.name, (counts.get(menuItem.name) ?? 0) + item.quantity);
   });
   return [...counts.entries()]
@@ -202,6 +211,7 @@ function computeTopModifiers(
   orderItems: AgentOrderItemRecord[],
   orderModifiers: AgentOrderModifierRecord[],
   modifiers: CanonicalModifier[],
+  range?: ReportingDateRange,
 ) {
   const orderItemById = new Map(orderItems.map((entry) => [entry.id, entry]));
   const orderById = new Map(orders.map((entry) => [entry.id, entry]));
@@ -211,7 +221,7 @@ function computeTopModifiers(
     const orderItem = orderItemById.get(entry.orderItemId);
     const order = orderItem ? orderById.get(orderItem.orderId) : null;
     const modifier = modifierById.get(entry.modifierId);
-    if (!order || order.restaurantId !== restaurantId || !modifier) return;
+    if (!order || order.restaurantId !== restaurantId || !modifier || !isWithinReportingRange(order.createdAt, range)) return;
     counts.set(modifier.name, (counts.get(modifier.name) ?? 0) + entry.quantity);
   });
   return [...counts.entries()]
@@ -225,8 +235,13 @@ function computeFailureReasons(
   orders: AgentOrderRecord[],
   validationResults: OrderValidationResult[],
   submissions: POSOrderSubmission[],
+  range?: ReportingDateRange,
 ) {
-  const orderIds = new Set(orders.filter((entry) => entry.restaurantId === restaurantId).map((entry) => entry.id));
+  const orderIds = new Set(
+    orders
+      .filter((entry) => entry.restaurantId === restaurantId && isWithinReportingRange(entry.createdAt, range))
+      .map((entry) => entry.id),
+  );
   const counts = new Map<string, number>();
 
   validationResults.forEach((result) => {
@@ -822,22 +837,26 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     };
   }
 
-  async getReporting(restaurantId: string) {
+  async getReporting(restaurantId: string, range?: ReportingDateRange) {
     return {
-      metrics: this.state.reportingMetrics.filter((entry) => entry.restaurantId === restaurantId),
-      topItems: computeTopItems(restaurantId, this.state.orders, this.state.orderItems, this.state.menuItems),
+      metrics: this.state.reportingMetrics.filter(
+        (entry) => entry.restaurantId === restaurantId && isWithinReportingRange(entry.date, range),
+      ),
+      topItems: computeTopItems(restaurantId, this.state.orders, this.state.orderItems, this.state.menuItems, range),
       topModifiers: computeTopModifiers(
         restaurantId,
         this.state.orders,
         this.state.orderItems,
         this.state.orderModifiers,
         this.state.modifiers,
+        range,
       ),
       failureReasons: computeFailureReasons(
         restaurantId,
         this.state.orders,
         this.state.validationResults,
         this.state.posSubmissions,
+        range,
       ),
     };
   }

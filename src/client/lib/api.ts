@@ -4,6 +4,7 @@ import type {
   AgentApiScope,
   DashboardSnapshot,
   OrderingRule,
+  ReportingDateRange,
   Restaurant,
 } from "@shared/types";
 import { clearResourceCache } from "./resourceCache";
@@ -122,8 +123,13 @@ export const api = {
     request(`/api/restaurants/${restaurantId}/orders/${orderId}/replay-submit`, { method: "POST" }),
   refreshOrderStatus: (restaurantId: string, orderId: string) =>
     request(`/api/restaurants/${restaurantId}/orders/${orderId}/refresh-status`, { method: "POST" }),
-  reporting: (restaurantId: string) =>
-    request(`/api/restaurants/${restaurantId}/reporting`),
+  reporting: (restaurantId: string, range?: ReportingDateRange) => {
+    const params = new URLSearchParams();
+    if (range?.startDate) params.set("startDate", range.startDate);
+    if (range?.endDate) params.set("endDate", range.endDate);
+    const query = params.toString();
+    return request(`/api/restaurants/${restaurantId}/reporting${query ? `?${query}` : ""}`);
+  },
   operationsDiagnostics: (restaurantId: string) =>
     request(`/api/restaurants/${restaurantId}/operations/diagnostics`),
 };

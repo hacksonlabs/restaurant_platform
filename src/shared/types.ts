@@ -539,3 +539,8 @@ export interface RestaurantReportingSnapshot {
   topModifiers: Array<{ name: string; count: number }>;
   failureReasons: Array<{ reason: string; count: number }>;
 }
+
+export interface ReportingDateRange {
+  startDate?: string;
+  endDate?: string;
+}

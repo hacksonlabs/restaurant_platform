@@ -19,6 +19,7 @@ import type {
   POSMenuMapping,
   POSOrderSubmission,
   ReportingDailyMetric,
+  ReportingDateRange,
   Restaurant,
   RestaurantAgentPermission,
   RestaurantLocation,
@@ -1372,20 +1373,31 @@ export class SupabasePlatformRepository implements PlatformRepository {
     };
   }
 
-  async getReporting(restaurantId: string): Promise<ReportingSnapshotRecord> {
+  async getReporting(restaurantId: string, range?: ReportingDateRange): Promise<ReportingSnapshotRecord> {
     await this.refreshReportingMetrics(restaurantId);
+    const startDate = range?.startDate ?? null;
+    const endDate = range?.endDate ?? null;
     const [metricsResult, topItemsResult, topModifiersResult, failureReasonsResult] = await Promise.all([
-      this.pool.query("select * from reporting_daily_metrics where restaurant_id = $1 order by date desc", [restaurantId]),
+      this.pool.query(
+        `select * from reporting_daily_metrics
+         where restaurant_id = $1
+           and ($2::date is null or date >= $2::date)
+           and ($3::date is null or date <= $3::date)
+         order by date desc`,
+        [restaurantId, startDate, endDate],
+      ),
       this.pool.query(
         `select m.name, sum(oi.quantity)::int as count
          from agent_order_items oi
          join agent_orders o on o.id = oi.order_id
          join canonical_menu_items m on m.id = oi.menu_item_id
          where o.restaurant_id = $1
+           and ($2::date is null or o.created_at::date >= $2::date)
+           and ($3::date is null or o.created_at::date <= $3::date)
          group by m.name
          order by count desc, m.name asc
          limit 5`,
-        [restaurantId],
+        [restaurantId, startDate, endDate],
       ),
       this.pool.query(
         `select m.name, sum(om.quantity)::int as count
@@ -1394,10 +1406,12 @@ export class SupabasePlatformRepository implements PlatformRepository {
          join agent_orders o on o.id = oi.order_id
          join canonical_modifiers m on m.id = om.modifier_id
          where o.restaurant_id = $1
+           and ($2::date is null or o.created_at::date >= $2::date)
+           and ($3::date is null or o.created_at::date <= $3::date)
          group by m.name
          order by count desc, m.name asc
          limit 5`,
-        [restaurantId],
+        [restaurantId, startDate, endDate],
       ),
       this.pool.query(
         `with validation_failures as (
@@ -1406,6 +1420,8 @@ export class SupabasePlatformRepository implements PlatformRepository {
            join agent_orders o on o.id = vr.order_id
            cross join lateral jsonb_array_elements(vr.issues) as issue
            where o.restaurant_id = $1
+             and ($2::date is null or o.created_at::date >= $2::date)
+             and ($3::date is null or o.created_at::date <= $3::date)
              and coalesce(issue->>'severity', '') = 'error'
          ),
          submission_failures as (
@@ -1413,6 +1429,8 @@ export class SupabasePlatformRepository implements PlatformRepository {
            from pos_order_submissions ps
            join agent_orders o on o.id = ps.order_id
            where o.restaurant_id = $1
+             and ($2::date is null or o.created_at::date >= $2::date)
+             and ($3::date is null or o.created_at::date <= $3::date)
              and ps.status = 'failed'
          )
          select reason, count(*)::int as count
@@ -1424,7 +1442,7 @@ export class SupabasePlatformRepository implements PlatformRepository {
          group by reason
          order by count desc, reason asc
          limit 5`,
-        [restaurantId],
+        [restaurantId, startDate, endDate],
       ),
     ]);
 
@@ -1501,7 +1519,18 @@ export class SupabasePlatformRepository implements PlatformRepository {
            )::int as upcoming_scheduled_order_volume
          from agent_orders
          where restaurant_id = $1
-         group by restaurant_id, (created_at at time zone 'UTC')::date`,
+         group by restaurant_id, (created_at at time zone 'UTC')::date
+         on conflict (id) do update set
+           restaurant_id = excluded.restaurant_id,
+           date = excluded.date,
+           total_orders = excluded.total_orders,
+           revenue_cents = excluded.revenue_cents,
+           average_order_value_cents = excluded.average_order_value_cents,
+           approval_rate = excluded.approval_rate,
+           success_rate = excluded.success_rate,
+           rejected_orders = excluded.rejected_orders,
+           average_lead_time_minutes = excluded.average_lead_time_minutes,
+           upcoming_scheduled_order_volume = excluded.upcoming_scheduled_order_volume`,
         [restaurantId],
       );
       await client.query("commit");

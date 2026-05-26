@@ -17,6 +17,7 @@ import type {
   POSDiagnosticsResult,
   POSOrderSubmission,
   Restaurant,
+  ReportingDateRange,
   RestaurantReportingSnapshot,
   ValidationIssue,
   OperatorRole,
@@ -691,8 +692,8 @@ export class PlatformService {
     return submission;
   }
 
-  async getReporting(restaurantId: string): Promise<RestaurantReportingSnapshot> {
-    return this.repository.getReporting(restaurantId);
+  async getReporting(restaurantId: string, range?: ReportingDateRange): Promise<RestaurantReportingSnapshot> {
+    return this.repository.getReporting(restaurantId, range);
   }
 
   async authenticateAgentKey(rawKey: string) {
