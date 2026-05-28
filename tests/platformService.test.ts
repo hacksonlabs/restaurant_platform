@@ -26,7 +26,7 @@ function futureIso(hoursFromNow = 24) {
 async function submitSampleOrder(service: PlatformService, reference: string) {
   return service.submitAgentOrder({
     restaurant_id: "rest_lb_steakhouse",
-    agent_id: "agent_phantom",
+    agent_id: "agent_coachimhungry",
     external_order_reference: reference,
     customer: { name: "Alex", email: "alex@example.com" },
     fulfillment_type: "pickup",
@@ -72,7 +72,7 @@ async function loginOperator(baseUrl: string, email = "dev@rest.com", password =
 function agentOrder(reference: string): CanonicalOrderIntent {
   return {
     restaurant_id: "rest_lb_steakhouse",
-    agent_id: "agent_phantom",
+    agent_id: "agent_coachimhungry",
     external_order_reference: reference,
     customer: { name: "Jordan", email: "jordan@example.com" },
     fulfillment_type: "pickup",
@@ -211,8 +211,25 @@ describe("PlatformService", () => {
     expect(detail.quotes[0]?.totalCents).toBeGreaterThan(0);
   });
 
+  it("skips manager approval when auto accept is enabled", async () => {
+    const service = createService();
+    await service.updateRules("rest_lb_steakhouse", {
+      autoAcceptEnabled: true,
+      managerApprovalThresholdCents: 1,
+    });
+
+    const order = await service.submitAgentOrder(agentOrder("auto-accept-enabled"));
+    const detail = await service.getOrder("rest_lb_steakhouse", order.id);
+
+    expect(order.status).toBe("accepted");
+    expect(detail.order.status).toBe("accepted");
+    expect(detail.order.approvalRequired).toBe(false);
+    expect(detail.statusEvents.at(-1)?.status).toBe("accepted");
+  });
+
   it("persists POS submission status for the order lifecycle", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     const order = await service.submitAgentOrder(agentOrder("test-submit-2"));
 
     await service.approveOrder("rest_lb_steakhouse", order.id);
@@ -226,6 +243,7 @@ describe("PlatformService", () => {
 
   it("groups split child orders into one queue entry and approves them together", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     const first = await service.submitAgentOrder({
       ...agentOrder("split-child-1"),
       headcount: 2,
@@ -291,6 +309,7 @@ describe("PlatformService", () => {
 
   it("locks the manager decision once an order is approved", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     const order = await service.submitAgentOrder(agentOrder("decision-lock-approve"));
 
     await service.approveOrder("rest_lb_steakhouse", order.id);
@@ -302,6 +321,7 @@ describe("PlatformService", () => {
 
   it("locks the manager decision once an order is rejected", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     const order = await service.submitAgentOrder(agentOrder("decision-lock-reject"));
 
     await service.rejectOrder("rest_lb_steakhouse", order.id);
@@ -337,6 +357,49 @@ describe("PlatformService", () => {
 
     expect(reporting.metrics.length).toBeGreaterThan(0);
     expect(reporting.topItems.some((item) => item.name.includes("Prime Ribeye"))).toBe(true);
+  });
+
+  it("only shows active incoming orders and sorts them by requested time", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    for (const existingOrder of repository.state.orders.filter((order) => order.restaurantId === "rest_lb_steakhouse")) {
+      await repository.updateOrder(existingOrder.id, { status: "completed" });
+    }
+
+    const lateOrder = await service.submitAgentOrder({
+      ...agentOrder("queue-late"),
+      requested_fulfillment_time: futureIso(72),
+    });
+    const earlyOrder = await service.submitAgentOrder({
+      ...agentOrder("queue-early"),
+      requested_fulfillment_time: futureIso(24),
+    });
+    const stalePastOrder = await service.submitAgentOrder({
+      ...agentOrder("queue-stale-past"),
+      requested_fulfillment_time: futureIso(30),
+    });
+    const rejectedOrder = await service.submitAgentOrder({
+      ...agentOrder("queue-rejected"),
+      requested_fulfillment_time: futureIso(48),
+    });
+    await repository.updateOrder(lateOrder.id, { status: "completed" });
+    await repository.updateOrder(stalePastOrder.id, {
+      requestedFulfillmentTime: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    });
+    await repository.updateOrder(rejectedOrder.id, { status: "rejected" });
+
+    const orders = await service.listOrders("rest_lb_steakhouse");
+
+    expect(orders.map((order) => order.id)).toEqual([earlyOrder.id]);
+    expect(orders.some((order) => order.id === lateOrder.id)).toBe(false);
+    expect(orders.some((order) => order.id === stalePastOrder.id)).toBe(false);
+    expect(orders.findIndex((order) => order.id === earlyOrder.id)).toBeGreaterThanOrEqual(0);
+    expect(orders.map((order) => order.id)).not.toContain(lateOrder.id);
+    expect(orders.map((order) => order.id)).not.toContain(stalePastOrder.id);
+    expect(orders.map((order) => order.id)).not.toContain(rejectedOrder.id);
+
+    const queueTimes = orders.map((order) => new Date(order.requestedFulfillmentTime).getTime());
+    expect(queueTimes).toEqual([...queueTimes].sort((a, b) => a - b));
   });
 
   it("reuses the same persisted submit result for repeated idempotent order submissions", async () => {
@@ -438,6 +501,7 @@ describe("PlatformService", () => {
 
   it("surfaces operational diagnostics for mapping gaps and stuck orders", async () => {
     const service = createService();
+    await service.updateRules("rest_lb_steakhouse", { autoAcceptEnabled: false });
     await service.submitAgentOrder(agentOrder("diag-submit-1"));
 
     const diagnostics = await service.getOperationalDiagnostics("rest_lb_steakhouse");
@@ -458,11 +522,11 @@ describe("PlatformService", () => {
     const service = createService();
 
     expect(() =>
-      service.assertOperatorAccess(authenticatedOperator("viewer"), "rest_lb_steakhouse", ["owner", "manager", "staff"]),
+      service.assertOperatorAccess(authenticatedOperator("viewer"), "rest_lb_steakhouse", ["owner", "staff"]),
     ).toThrow("Operator role does not allow this action.");
 
     expect(() =>
-      service.assertOperatorAccess(authenticatedOperator("staff"), "rest_lb_steakhouse", ["owner", "manager"]),
+      service.assertOperatorAccess(authenticatedOperator("staff"), "rest_lb_steakhouse", ["owner"]),
     ).toThrow("Operator role does not allow this action.");
   });
 
@@ -481,7 +545,7 @@ describe("PlatformService", () => {
       service.assertAgentScope(
         {
           id: "key_scope_test",
-          agentId: "agent_phantom",
+          agentId: "agent_coachimhungry",
           label: "Limited key",
           keyPrefix: "phm_test",
           keyHash: "hash",
@@ -572,6 +636,249 @@ describe("PlatformService", () => {
     expect(payload.eventType).toBe("checkout.completed");
   });
 
+  it("discovers Deliverect onboarding locations through the backend API", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+
+    const response = await fetch(`${baseUrl}/api/onboarding/discover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "deliverect", query: "Sunnyvale" }),
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.provider).toBe("deliverect");
+    expect(payload.locations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Green Leaf Salads - Sunnyvale",
+        }),
+      ]),
+    );
+  });
+
+  it("creates and fetches an onboarding access request through the backend API", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+
+    const createResponse = await fetch(`${baseUrl}/api/onboarding/request-access`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "deliverect",
+        providerAccountId: "acct_deliverect_demo_001",
+        providerLocationIds: ["deliv_loc_1", "deliv_loc_2"],
+        email: "owner@example.com",
+      }),
+    });
+    const created = await createResponse.json();
+
+    expect(createResponse.status).toBe(200);
+    expect(created.status).toBe("pending");
+
+    const getResponse = await fetch(`${baseUrl}/api/onboarding/${created.id}`);
+    const fetched = await getResponse.json();
+
+    expect(getResponse.status).toBe(200);
+    expect(fetched.email).toBe("owner@example.com");
+    expect(fetched.providerLocationIds).toEqual(["deliv_loc_1", "deliv_loc_2"]);
+  });
+
+  it("activates onboarding and signs the operator into the console", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+
+    const response = await fetch(`${baseUrl}/api/onboarding/activate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "deliverect",
+        providerAccountId: "acct_deliverect_demo_001",
+        providerLocationIds: ["deliv_loc_1", "deliv_loc_2"],
+        fullName: "Chain Owner",
+        email: "chain.owner@example.com",
+        password: "password123",
+      }),
+    });
+    const payload = await response.json();
+    const cookie = response.headers.get("set-cookie") ?? "";
+    const selectedRestaurantId = payload.selectedMembership.restaurantId;
+
+    const [posResponse, menuResponse] = await Promise.all([
+      fetch(`${baseUrl}/api/restaurants/${selectedRestaurantId}/pos-connection`, {
+        headers: { cookie },
+      }),
+      fetch(`${baseUrl}/api/restaurants/${selectedRestaurantId}/menu`, {
+        headers: { cookie },
+      }),
+    ]);
+    const posConnection = await posResponse.json();
+    const menu = await menuResponse.json();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")).toContain("phantom_restaurant_session=");
+    expect(payload.user.email).toBe("chain.owner@example.com");
+    expect(payload.memberships).toHaveLength(2);
+    expect(payload.restaurants).toHaveLength(2);
+    expect(payload.restaurants.some((restaurant: { id: string }) => restaurant.id === "rest_green_leaf_salads")).toBe(true);
+    expect(payload.selectedMembership.restaurantId).toBe("rest_green_leaf_salads");
+    expect(posResponse.status).toBe(200);
+    expect(posConnection.lastSyncedAt).toBeTruthy();
+    expect(menu.items.length).toBeGreaterThan(0);
+    expect(menu.items.some((item: { name: string }) => item.name === "Kale Caesar")).toBe(true);
+  });
+
+  it("still loads inherited menu data when an onboarding restaurant is missing explicit template metadata", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const authenticated = await repository.createOnboardingOperatorAccount({
+      activation: {
+        provider: "deliverect",
+        providerAccountId: "acct_deliverect_demo_001",
+        providerLocationIds: ["deliv_loc_3"],
+        fullName: "Chain Owner",
+        email: "fallback.owner@example.com",
+        password: "password123",
+      },
+      accountName: "Green Leaf Salads",
+      locations: [
+        {
+          id: "deliv_loc_3",
+          name: "Green Leaf Salads - Palo Alto",
+          address: "855 El Camino Real, Palo Alto, CA 94301",
+          timezone: "America/Los_Angeles",
+        },
+      ],
+    });
+
+    const createdRestaurantId = authenticated.selectedMembership.restaurantId;
+    const connection = await repository.getPOSConnection(createdRestaurantId);
+    expect(connection).not.toBeNull();
+
+    await repository.updatePOSConnection(connection!.id, {
+      metadata: {
+        source: "onboarding",
+        accountName: "Green Leaf Salads",
+        providerLocationId: "deliv_loc_3",
+      },
+    });
+
+    const menu = await service.getMenu(createdRestaurantId);
+    expect(menu.items.length).toBeGreaterThan(0);
+    expect(menu.items.some((item) => item.name === "Kale Caesar")).toBe(true);
+  });
+
+  it("lets an owner create and list team members with restaurant access assignments", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const { cookie } = await loginOperator(baseUrl);
+
+    const createResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members`, {
+      method: "POST",
+      headers: {
+        cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fullName: "Jordan Staff",
+        email: "jordan.staff@example.com",
+        password: "password123",
+        role: "staff",
+        accessScope: "selected",
+        restaurantIds: ["rest_lb_steakhouse", "rest_pizza_palace"],
+      }),
+    });
+    const created = await createResponse.json();
+
+    const listResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members`, {
+      headers: { cookie },
+    });
+    const listed = await listResponse.json();
+
+    expect(createResponse.status).toBe(200);
+    expect(created.user.email).toBe("jordan.staff@example.com");
+    expect(created.assignments).toHaveLength(2);
+    expect(listResponse.status).toBe(200);
+    expect(listed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          user: expect.objectContaining({ email: "jordan.staff@example.com" }),
+          assignments: expect.arrayContaining([
+            expect.objectContaining({ restaurantId: "rest_lb_steakhouse", role: "staff" }),
+            expect.objectContaining({ restaurantId: "rest_pizza_palace", role: "staff" }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  it("lets an owner edit and delete team members from the team access API", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const { cookie } = await loginOperator(baseUrl);
+
+    const createResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members`, {
+      method: "POST",
+      headers: {
+        cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fullName: "Taylor Viewer",
+        email: "taylor.viewer@example.com",
+        password: "password123",
+        role: "viewer",
+        accessScope: "selected",
+        restaurantIds: ["rest_lb_steakhouse"],
+      }),
+    });
+    const created = await createResponse.json();
+
+    const updateResponse = await fetch(
+      `${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members/${created.user.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          cookie,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fullName: "Taylor Staff",
+          email: "taylor.staff@example.com",
+          role: "staff",
+          accessScope: "all",
+          restaurantIds: [],
+        }),
+      },
+    );
+    const updated = await updateResponse.json();
+
+    const deleteResponse = await fetch(
+      `${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members/${created.user.id}`,
+      {
+        method: "DELETE",
+        headers: { cookie },
+      },
+    );
+
+    const listResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members`, {
+      headers: { cookie },
+    });
+    const listed = await listResponse.json();
+
+    expect(updateResponse.status).toBe(200);
+    expect(updated.user.fullName).toBe("Taylor Staff");
+    expect(updated.assignments.length).toBeGreaterThan(1);
+    expect(deleteResponse.status).toBe(204);
+    expect(listed.some((member: { user: { id: string } }) => member.user.id === created.user.id)).toBe(false);
+  });
+
   it("prevents a viewer from approving orders through the restaurant API", async () => {
     const service = createService();
     const repository = (service as any).repository as InMemoryPlatformRepository;
@@ -590,7 +897,7 @@ describe("PlatformService", () => {
     expect(await response.json()).toEqual({ error: "Operator role does not allow this action." });
   });
 
-  it("prevents staff from changing ordering rules through the restaurant API", async () => {
+  it("allows staff to change restaurant info and ordering rules through the restaurant API", async () => {
     const service = createService();
     const repository = (service as any).repository as InMemoryPlatformRepository;
     repository.state.operatorMemberships[0].role = "staff";
@@ -598,7 +905,7 @@ describe("PlatformService", () => {
     openServers.push(server);
     const { cookie } = await loginOperator(baseUrl);
 
-    const response = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/rules`, {
+    const rulesResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/rules`, {
       method: "PATCH",
       headers: {
         cookie,
@@ -607,8 +914,20 @@ describe("PlatformService", () => {
       body: JSON.stringify({ autoAcceptEnabled: false }),
     });
 
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({ error: "Operator role does not allow this action." });
+    expect(rulesResponse.status).toBe(200);
+    expect(await rulesResponse.json()).toEqual(expect.objectContaining({ autoAcceptEnabled: false }));
+
+    const restaurantResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse`, {
+      method: "PATCH",
+      headers: {
+        cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ contactPhone: "555-111-2222" }),
+    });
+
+    expect(restaurantResponse.status).toBe(200);
+    expect(await restaurantResponse.json()).toEqual(expect.objectContaining({ contactPhone: "555-111-2222" }));
   });
 
   it("returns 403 when a logged-in operator requests a restaurant outside their memberships", async () => {

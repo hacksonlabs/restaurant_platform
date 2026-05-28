@@ -1,9 +1,16 @@
 import { Router } from "express";
+import { ZodError } from "zod";
 import {
   canonicalOrderIntentSchema,
+  createTeamMemberSchema,
+  onboardingActivateSchema,
+  onboardingAccessRequestSchema,
+  onboardingDiscoverSchema,
   patchOrderingRulesSchema,
   patchPermissionSchema,
   patchRestaurantSchema,
+  restaurantSignupSchema,
+  updateTeamMemberSchema,
 } from "../../shared/schemas";
 import { phantomMcpSchemas, searchRestaurantsTool } from "../mcp/tools";
 import { requireAgentApiKey } from "../auth/middleware";
@@ -44,8 +51,46 @@ export function createApiRouter(service: PlatformService) {
 
   router.get("/auth/me", asyncHandler(restaurantAuth.me));
   router.post("/auth/login", rateLimit({ key: (request) => `auth:${request.ip ?? "local"}`, limit: 10, windowMs: 60_000, message: "Too many login attempts." }), asyncHandler(restaurantAuth.login));
+  router.post("/auth/signup", rateLimit({ key: (request) => `signup:${request.ip ?? "local"}`, limit: 5, windowMs: 60_000, message: "Too many signup attempts." }), asyncHandler(async (request, response) => {
+    const input = restaurantSignupSchema.parse(request.body);
+    response.json(await restaurantAuth.signup(request, response, input));
+  }));
   router.post("/auth/logout", asyncHandler(restaurantAuth.logout));
   router.post("/auth/select-tenant", asyncHandler(restaurantAuth.selectTenant));
+
+  router.post(
+    "/onboarding/discover",
+    rateLimit({ key: (request) => `onboarding-discover:${request.ip ?? "local"}`, limit: 20, windowMs: 60_000, message: "Too many onboarding discovery attempts." }),
+    asyncHandler(async (request, response) => {
+      const input = onboardingDiscoverSchema.parse(request.body);
+      response.json(await service.discoverOnboardingAccount(input.provider, input.query));
+    }),
+  );
+
+  router.post(
+    "/onboarding/request-access",
+    rateLimit({ key: (request) => `onboarding-request:${request.ip ?? "local"}`, limit: 10, windowMs: 60_000, message: "Too many onboarding requests." }),
+    asyncHandler(async (request, response) => {
+      const input = onboardingAccessRequestSchema.parse(request.body);
+      response.json(await service.createOnboardingAccessRequest(input));
+    }),
+  );
+
+  router.post(
+    "/onboarding/activate",
+    rateLimit({ key: (request) => `onboarding-activate:${request.ip ?? "local"}`, limit: 10, windowMs: 60_000, message: "Too many onboarding activation attempts." }),
+    asyncHandler(async (request, response) => {
+      const input = onboardingActivateSchema.parse(request.body);
+      response.json(await restaurantAuth.activateOnboarding(request, response, input));
+    }),
+  );
+
+  router.get(
+    "/onboarding/:requestId",
+    asyncHandler(async (request, response) => {
+      response.json(await service.getOnboardingRequest(request.params.requestId));
+    }),
+  );
 
   router.use("/restaurants", requireRestaurantSession(service));
 
@@ -66,10 +111,45 @@ export function createApiRouter(service: PlatformService) {
 
   router.patch(
     "/restaurants/:restaurantId",
-    requireRestaurantRole(service, ["owner"]),
+    requireRestaurantRole(service, ["owner", "staff"]),
     asyncHandler(async (request, response) => {
       const patch = patchRestaurantSchema.parse(request.body);
       response.json(await service.updateRestaurant(request.params.restaurantId, patch));
+    }),
+  );
+
+  router.get(
+    "/restaurants/:restaurantId/team-members",
+    requireRestaurantRole(service, ["owner"]),
+    asyncHandler(async (request, response) => {
+      response.json(await service.listTeamMembers(request.restaurantSession!));
+    }),
+  );
+
+  router.post(
+    "/restaurants/:restaurantId/team-members",
+    requireRestaurantRole(service, ["owner"]),
+    asyncHandler(async (request, response) => {
+      const input = createTeamMemberSchema.parse(request.body);
+      response.json(await service.createTeamMember(request.restaurantSession!, input));
+    }),
+  );
+
+  router.patch(
+    "/restaurants/:restaurantId/team-members/:operatorUserId",
+    requireRestaurantRole(service, ["owner"]),
+    asyncHandler(async (request, response) => {
+      const input = updateTeamMemberSchema.parse(request.body);
+      response.json(await service.updateTeamMember(request.restaurantSession!, request.params.operatorUserId, input));
+    }),
+  );
+
+  router.delete(
+    "/restaurants/:restaurantId/team-members/:operatorUserId",
+    requireRestaurantRole(service, ["owner"]),
+    asyncHandler(async (request, response) => {
+      await service.deleteTeamMember(request.restaurantSession!, request.params.operatorUserId);
+      response.status(204).end();
     }),
   );
 
@@ -83,7 +163,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.get(
     "/restaurants/:restaurantId/pos-connection",
-    requireRestaurantRole(service, ["owner", "manager", "viewer"]),
+    requireRestaurantRole(service),
     asyncHandler(async (request, response) => {
       response.json(await service.getPOSConnection(request.params.restaurantId));
     }),
@@ -99,7 +179,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.get(
     "/restaurants/:restaurantId/pos-diagnostics",
-    requireRestaurantRole(service, ["owner", "manager"]),
+    requireRestaurantRole(service, ["owner"]),
     asyncHandler(async (request, response) => {
       response.json(await service.getPOSDiagnostics(request.params.restaurantId));
     }),
@@ -115,7 +195,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.post(
     "/restaurants/:restaurantId/menu/sync",
-    requireRestaurantRole(service, ["owner", "manager"]),
+    requireRestaurantRole(service, ["owner"]),
     asyncHandler(async (request, response) => {
       response.json(await service.syncMenu(request.params.restaurantId));
     }),
@@ -123,7 +203,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.get(
     "/restaurants/:restaurantId/rules",
-    requireRestaurantRole(service, ["owner", "manager", "viewer"]),
+    requireRestaurantRole(service),
     asyncHandler(async (request, response) => {
       response.json(await service.getRules(request.params.restaurantId));
     }),
@@ -131,7 +211,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.patch(
     "/restaurants/:restaurantId/rules",
-    requireRestaurantRole(service, ["owner", "manager"]),
+    requireRestaurantRole(service, ["owner", "staff"]),
     asyncHandler(async (request, response) => {
       const patch = patchOrderingRulesSchema.parse(request.body);
       response.json(await service.updateRules(request.params.restaurantId, patch));
@@ -140,7 +220,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.get(
     "/restaurants/:restaurantId/agents",
-    requireRestaurantRole(service, ["owner", "manager", "viewer"]),
+    requireRestaurantRole(service),
     asyncHandler(async (request, response) => {
       response.json(await service.listAgents(request.params.restaurantId));
     }),
@@ -148,7 +228,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.patch(
     "/restaurants/:restaurantId/agents/:agentId/permission",
-    requireRestaurantRole(service, ["owner", "manager"]),
+    requireRestaurantRole(service, ["owner"]),
     asyncHandler(async (request, response) => {
       const patch = patchPermissionSchema.parse(request.body);
       response.json(
@@ -159,7 +239,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.post(
     "/restaurants/:restaurantId/agents/:agentId/keys",
-    requireRestaurantRole(service, ["owner", "manager"]),
+    requireRestaurantRole(service, ["owner"]),
     asyncHandler(async (request, response) => {
       response.json(
         await service.createAgentApiKey(
@@ -174,7 +254,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.post(
     "/restaurants/:restaurantId/agents/:agentId/keys/:keyId/rotate",
-    requireRestaurantRole(service, ["owner", "manager"]),
+    requireRestaurantRole(service, ["owner"]),
     asyncHandler(async (request, response) => {
       response.json(
         await service.rotateAgentApiKey(
@@ -189,7 +269,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.post(
     "/restaurants/:restaurantId/agents/:agentId/keys/:keyId/revoke",
-    requireRestaurantRole(service, ["owner", "manager"]),
+    requireRestaurantRole(service, ["owner"]),
     asyncHandler(async (request, response) => {
       response.json(
         await service.revokeAgentApiKey(request.params.restaurantId, request.params.agentId, request.params.keyId),
@@ -215,7 +295,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.post(
     "/restaurants/:restaurantId/orders/:orderId/approve",
-    requireRestaurantRole(service, ["owner", "manager", "staff"]),
+    requireRestaurantRole(service, ["owner", "staff"]),
     asyncHandler(async (request, response) => {
       response.json(await service.approveOrder(request.params.restaurantId, request.params.orderId));
     }),
@@ -223,7 +303,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.post(
     "/restaurants/:restaurantId/orders/:orderId/reject",
-    requireRestaurantRole(service, ["owner", "manager", "staff"]),
+    requireRestaurantRole(service, ["owner", "staff"]),
     asyncHandler(async (request, response) => {
       response.json(await service.rejectOrder(request.params.restaurantId, request.params.orderId));
     }),
@@ -232,7 +312,7 @@ export function createApiRouter(service: PlatformService) {
   router.post(
     "/restaurants/:restaurantId/orders/:orderId/submit-to-pos",
     rateLimit({ key: (request) => `submit:${request.params.restaurantId}:${request.params.orderId}`, limit: 5, windowMs: 60_000, message: "Too many POS submission attempts." }),
-    requireRestaurantRole(service, ["owner", "manager", "staff"]),
+    requireRestaurantRole(service, ["owner", "staff"]),
     asyncHandler(async (request, response) => {
       response.json(await service.submitOrderToPOS(request.params.restaurantId, request.params.orderId));
     }),
@@ -240,7 +320,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.post(
     "/restaurants/:restaurantId/orders/:orderId/replay-submit",
-    requireRestaurantRole(service, ["owner", "manager"]),
+    requireRestaurantRole(service, ["owner", "staff"]),
     asyncHandler(async (request, response) => {
       response.json(await service.replayFailedOrder(request.params.restaurantId, request.params.orderId));
     }),
@@ -248,7 +328,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.post(
     "/restaurants/:restaurantId/orders/:orderId/refresh-status",
-    requireRestaurantRole(service, ["owner", "manager", "staff"]),
+    requireRestaurantRole(service, ["owner", "staff"]),
     asyncHandler(async (request, response) => {
       response.json(await service.refreshOrderStatus(request.params.restaurantId, request.params.orderId));
     }),
@@ -256,15 +336,17 @@ export function createApiRouter(service: PlatformService) {
 
   router.get(
     "/restaurants/:restaurantId/reporting",
-    requireRestaurantRole(service, ["owner", "manager", "viewer"]),
+    requireRestaurantRole(service),
     asyncHandler(async (request, response) => {
-      response.json(await service.getReporting(request.params.restaurantId));
+      const startDate = typeof request.query.startDate === "string" ? request.query.startDate : undefined;
+      const endDate = typeof request.query.endDate === "string" ? request.query.endDate : undefined;
+      response.json(await service.getReporting(request.params.restaurantId, { startDate, endDate }));
     }),
   );
 
   router.get(
     "/restaurants/:restaurantId/operations/diagnostics",
-    requireRestaurantRole(service, ["owner", "manager"]),
+    requireRestaurantRole(service, ["owner"]),
     asyncHandler(async (request, response) => {
       response.json(await service.getOperationalDiagnostics(request.params.restaurantId));
     }),
@@ -370,6 +452,11 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.use((error: unknown, _request: any, response: any, _next: any) => {
+    if (error instanceof ZodError) {
+      const firstIssue = error.issues[0];
+      response.status(400).json({ error: firstIssue?.message ?? "Invalid request payload." });
+      return;
+    }
     const message = error instanceof Error ? error.message : "Internal server error";
     response.status(400).json({ error: message });
   });

@@ -10,6 +10,11 @@ import type {
   AgentOrderStatus,
   CanonicalOrderIntent,
   DashboardSnapshot,
+  OnboardingActivateInput,
+  OnboardingAccessRequestInput,
+  OnboardingDiscoveredAccount,
+  OnboardingProvider,
+  OnboardingRequestRecord,
   OrderQuote,
   POSPaymentSessionResult,
   OrderValidationResult,
@@ -17,10 +22,14 @@ import type {
   POSDiagnosticsResult,
   POSOrderSubmission,
   Restaurant,
+  ReportingDateRange,
   RestaurantReportingSnapshot,
+  RestaurantSignupInput,
   ValidationIssue,
   OperatorRole,
   POSProvider,
+  CreateTeamMemberInput,
+  UpdateTeamMemberInput,
 } from "../../shared/types";
 import { POSAdapterRegistry } from "../pos/registry";
 import type { OrderDetailRecord, PlatformRepository } from "../repositories/platformRepository";
@@ -46,6 +55,87 @@ function normalizeText(value: unknown): string | null {
   const text = String(value).trim();
   return text || null;
 }
+
+function extractPOSTimezone(metadata: Record<string, unknown> | undefined): string | null {
+  if (!metadata) return null;
+  const candidates = [
+    metadata.timezone,
+    metadata.restaurantTimezone,
+    metadata.locationTimezone,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
+const ONBOARDING_DISCOVERY_FIXTURES: Record<OnboardingProvider, OnboardingDiscoveredAccount> = {
+  deliverect: {
+    provider: "deliverect",
+    accountId: "acct_deliverect_demo_001",
+    name: "Green Leaf Salads",
+    locations: [
+      {
+        id: "deliv_loc_1",
+        name: "Green Leaf Salads - Sunnyvale",
+        address: "425 N Mathilda Ave, Sunnyvale, CA 94085",
+        timezone: "America/Los_Angeles",
+      },
+      {
+        id: "deliv_loc_2",
+        name: "Green Leaf Salads - Mountain View",
+        address: "301 Castro St, Mountain View, CA 94041",
+        timezone: "America/Los_Angeles",
+      },
+      {
+        id: "deliv_loc_3",
+        name: "Green Leaf Salads - Palo Alto",
+        address: "855 El Camino Real, Palo Alto, CA 94301",
+        timezone: "America/Los_Angeles",
+      },
+    ],
+  },
+  olo: {
+    provider: "olo",
+    accountId: "acct_olo_demo_001",
+    name: "Green Leaf Salads",
+    locations: [
+      {
+        id: "olo_loc_1",
+        name: "Green Leaf Salads - Palo Alto",
+        address: "251 University Ave, Palo Alto, CA 94301",
+        timezone: "America/Los_Angeles",
+      },
+      {
+        id: "olo_loc_2",
+        name: "Green Leaf Salads - Redwood City",
+        address: "1450 Broadway, Redwood City, CA 94063",
+        timezone: "America/Los_Angeles",
+      },
+    ],
+  },
+  pos: {
+    provider: "pos",
+    accountId: "acct_pos_demo_001",
+    name: "Green Leaf Salads",
+    locations: [
+      {
+        id: "pos_loc_1",
+        name: "Green Leaf Salads - Sunnyvale",
+        address: "301 Castro St, Mountain View, CA 94041",
+        timezone: "America/Los_Angeles",
+      },
+      {
+        id: "pos_loc_2",
+        name: "Green Leaf Salads - San Jose",
+        address: "3055 Olin Ave, San Jose, CA 95128",
+        timezone: "America/Los_Angeles",
+      },
+    ],
+  },
+};
 
 function buildStableIdempotencyPayload(order: CanonicalOrderIntent) {
   const payload: Record<string, unknown> = {
@@ -74,6 +164,7 @@ export class PlatformService {
     private operatorAuth?: {
       isEnabled(): boolean;
       signInWithPassword(email: string, password: string): Promise<OperatorIdentity>;
+      createUserWithPassword(email: string, password: string, fullName: string): Promise<OperatorIdentity>;
       getUserById(userId: string): Promise<OperatorIdentity | null>;
     },
   ) {}
@@ -142,6 +233,133 @@ export class PlatformService {
     return this.repository.listAccessibleRestaurants(operatorUserId);
   }
 
+  async listTeamMembers(authenticated: AuthenticatedOperator) {
+    const ownerRestaurantIds = [...new Set(
+      authenticated.memberships.filter((entry) => entry.role === "owner").map((entry) => entry.restaurantId),
+    )];
+    return this.repository.listTeamMembers(ownerRestaurantIds);
+  }
+
+  async createTeamMember(authenticated: AuthenticatedOperator, input: CreateTeamMemberInput) {
+    const ownerRestaurantIds = [...new Set(
+      authenticated.memberships.filter((entry) => entry.role === "owner").map((entry) => entry.restaurantId),
+    )];
+    if (ownerRestaurantIds.length === 0) {
+      throw new Error("Only owner accounts can manage staff.");
+    }
+
+    const selectedRestaurantIds = input.accessScope === "all" ? ownerRestaurantIds : input.restaurantIds;
+    if (selectedRestaurantIds.length === 0) {
+      throw new Error("Choose at least one restaurant for this account.");
+    }
+
+    for (const restaurantId of selectedRestaurantIds) {
+      if (!ownerRestaurantIds.includes(restaurantId)) {
+        throw new Error("You can only assign access to restaurants you own.");
+      }
+    }
+
+    const identity = this.operatorAuth?.isEnabled()
+      ? await this.operatorAuth.createUserWithPassword(input.email, input.password, input.fullName)
+      : undefined;
+
+    const created = await this.repository.createTeamMember({
+      creatorUserId: authenticated.user.id,
+      teamMember: {
+        ...input,
+        supabaseUserId: identity?.id,
+      },
+      restaurantIds: selectedRestaurantIds,
+    });
+
+    await Promise.all(
+      selectedRestaurantIds.map((restaurantId) =>
+        this.repository.appendAuditLog({
+          restaurantId,
+          actorType: "manager",
+          actorId: authenticated.user.id,
+          action: "operator.team_member_created",
+          targetType: "operator_user",
+          targetId: created.user.id,
+          summary: `Created ${input.role} account for ${created.user.email}.`,
+        }),
+      ),
+    );
+
+    return created;
+  }
+
+  async updateTeamMember(authenticated: AuthenticatedOperator, operatorUserId: string, input: UpdateTeamMemberInput) {
+    const ownerRestaurantIds = [...new Set(
+      authenticated.memberships.filter((entry) => entry.role === "owner").map((entry) => entry.restaurantId),
+    )];
+    if (ownerRestaurantIds.length === 0) {
+      throw new Error("Only owner accounts can manage staff.");
+    }
+    if (authenticated.user.id === operatorUserId && input.role !== "owner") {
+      throw new Error("You cannot remove your own owner access.");
+    }
+
+    const selectedRestaurantIds = input.accessScope === "all" ? ownerRestaurantIds : input.restaurantIds;
+    if (selectedRestaurantIds.length === 0) {
+      throw new Error("Choose at least one restaurant for this account.");
+    }
+    for (const restaurantId of selectedRestaurantIds) {
+      if (!ownerRestaurantIds.includes(restaurantId)) {
+        throw new Error("You can only assign access to restaurants you own.");
+      }
+    }
+
+    const updated = await this.repository.updateTeamMember({
+      operatorUserId,
+      teamMember: input,
+      restaurantIds: selectedRestaurantIds,
+      managedRestaurantIds: ownerRestaurantIds,
+    });
+
+    await Promise.all(
+      selectedRestaurantIds.map((restaurantId) =>
+        this.repository.appendAuditLog({
+          restaurantId,
+          actorType: "manager",
+          actorId: authenticated.user.id,
+          action: "operator.team_member_updated",
+          targetType: "operator_user",
+          targetId: operatorUserId,
+          summary: `Updated team access for ${updated.user.email}.`,
+        }),
+      ),
+    );
+
+    return updated;
+  }
+
+  async deleteTeamMember(authenticated: AuthenticatedOperator, operatorUserId: string) {
+    if (authenticated.user.id === operatorUserId) {
+      throw new Error("You cannot delete your own account.");
+    }
+    const ownerRestaurantIds = [...new Set(
+      authenticated.memberships.filter((entry) => entry.role === "owner").map((entry) => entry.restaurantId),
+    )];
+    if (ownerRestaurantIds.length === 0) {
+      throw new Error("Only owner accounts can manage staff.");
+    }
+    await this.repository.deleteTeamMember(operatorUserId, ownerRestaurantIds);
+    await Promise.all(
+      ownerRestaurantIds.map((restaurantId) =>
+        this.repository.appendAuditLog({
+          restaurantId,
+          actorType: "manager",
+          actorId: authenticated.user.id,
+          action: "operator.team_member_deleted",
+          targetType: "operator_user",
+          targetId: operatorUserId,
+          summary: `Removed team member access.`,
+        }),
+      ),
+    );
+  }
+
   async loginOperator(email: string, password: string) {
     const authenticated = await this.resolveOperatorLogin(email, password);
     const sessionToken = randomToken(32);
@@ -163,12 +381,139 @@ export class PlatformService {
       targetId: authenticated.user.id,
       summary: `Operator ${authenticated.user.email} signed in.`,
     });
+    await this.autoSyncMockRestaurantsForOperator(authenticated);
     this.operatorSessionVerificationCache.set(sessionTokenHash, Date.now());
     return {
       sessionToken,
       authenticated,
       restaurants: await this.repository.listAccessibleRestaurants(authenticated.user.id),
     };
+  }
+
+  async signupRestaurant(input: RestaurantSignupInput) {
+    const identity = this.operatorAuth?.isEnabled()
+      ? await this.operatorAuth.createUserWithPassword(input.ownerEmail, input.password, input.ownerFullName)
+      : undefined;
+    const authenticated = await this.repository.createRestaurantAccount({
+      ...input,
+      supabaseUserId: identity?.id,
+    });
+    const sessionToken = randomToken(32);
+    const sessionTokenHash = sha256(sessionToken);
+    const selectedMembership = authenticated.selectedMembership;
+    await this.repository.createOperatorSession({
+      operatorUserId: authenticated.user.id,
+      selectedRestaurantId: selectedMembership.restaurantId,
+      selectedLocationId: selectedMembership.locationId,
+      sessionTokenHash,
+      expiresAt: new Date(Date.now() + this.operatorSessionTtlMs).toISOString(),
+    });
+    await this.repository.appendAuditLog({
+      restaurantId: selectedMembership.restaurantId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "operator.signup",
+      targetType: "operator_user",
+      targetId: authenticated.user.id,
+      summary: `Restaurant account created for ${authenticated.user.email}.`,
+    });
+    this.operatorSessionVerificationCache.set(sessionTokenHash, Date.now());
+    return {
+      sessionToken,
+      authenticated,
+      restaurants: await this.repository.listAccessibleRestaurants(authenticated.user.id),
+    };
+  }
+
+  async discoverOnboardingAccount(provider: OnboardingProvider, query: string): Promise<OnboardingDiscoveredAccount> {
+    const fixture = ONBOARDING_DISCOVERY_FIXTURES[provider];
+    const normalizedQuery = query.trim().toLowerCase();
+    const matchingLocations = fixture.locations.filter((location) => {
+      const haystack = `${fixture.name} ${location.name} ${location.address}`.toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+    if (matchingLocations.length === 0) {
+      throw new Error("No matching restaurants found for that search.");
+    }
+    return {
+      ...fixture,
+      locations: matchingLocations,
+    };
+  }
+
+  async createOnboardingAccessRequest(input: OnboardingAccessRequestInput): Promise<OnboardingRequestRecord> {
+    const discovered = ONBOARDING_DISCOVERY_FIXTURES[input.provider];
+    const allowedLocationIds = new Set(discovered.locations.map((location) => location.id));
+    const invalidLocation = input.providerLocationIds.find((locationId) => !allowedLocationIds.has(locationId));
+    if (input.providerAccountId !== discovered.accountId) {
+      throw new Error("Imported account does not match the selected provider account.");
+    }
+    if (invalidLocation) {
+      throw new Error("One or more selected locations are not available for this provider account.");
+    }
+    return this.repository.createOnboardingRequest({
+      provider: input.provider,
+      providerAccountId: input.providerAccountId,
+      providerLocationIds: input.providerLocationIds,
+      accountName: discovered.name,
+      email: input.email,
+    });
+  }
+
+  async activateOnboarding(input: OnboardingActivateInput) {
+    const discovered = ONBOARDING_DISCOVERY_FIXTURES[input.provider];
+    if (input.providerAccountId !== discovered.accountId) {
+      throw new Error("Imported account does not match the selected provider account.");
+    }
+    const locations = discovered.locations.filter((location) => input.providerLocationIds.includes(location.id));
+    if (locations.length !== input.providerLocationIds.length) {
+      throw new Error("One or more selected locations are not available for this provider account.");
+    }
+    const identity = this.operatorAuth?.isEnabled()
+      ? await this.operatorAuth.createUserWithPassword(input.email, input.password, input.fullName)
+      : undefined;
+    const authenticated = await this.repository.createOnboardingOperatorAccount({
+      activation: {
+        ...input,
+        supabaseUserId: identity?.id,
+      },
+      accountName: discovered.name,
+      locations,
+    });
+    const sessionToken = randomToken(32);
+    const sessionTokenHash = sha256(sessionToken);
+    const selectedMembership = authenticated.selectedMembership;
+    await this.repository.createOperatorSession({
+      operatorUserId: authenticated.user.id,
+      selectedRestaurantId: selectedMembership.restaurantId,
+      selectedLocationId: selectedMembership.locationId,
+      sessionTokenHash,
+      expiresAt: new Date(Date.now() + this.operatorSessionTtlMs).toISOString(),
+    });
+    await this.repository.appendAuditLog({
+      restaurantId: selectedMembership.restaurantId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "operator.onboarding_activated",
+      targetType: "operator_user",
+      targetId: authenticated.user.id,
+      summary: `Operator ${authenticated.user.email} completed onboarding.`,
+    });
+    await this.autoSyncMockRestaurantsForOperator(authenticated);
+    this.operatorSessionVerificationCache.set(sessionTokenHash, Date.now());
+    return {
+      sessionToken,
+      authenticated,
+      restaurants: await this.repository.listAccessibleRestaurants(authenticated.user.id),
+    };
+  }
+
+  async getOnboardingRequest(requestId: string): Promise<OnboardingRequestRecord> {
+    const request = await this.repository.getOnboardingRequest(requestId);
+    if (!request) {
+      throw new Error("Onboarding request not found.");
+    }
+    return request;
   }
 
   async getOperatorSession(rawSessionToken: string) {
@@ -380,6 +725,22 @@ export class PlatformService {
     await this.repository.updatePOSConnection(context.connection.id, {
       lastSyncedAt: result.syncedAt,
     });
+    const posTimezone = extractPOSTimezone(context.connection.metadata);
+    if (posTimezone && posTimezone !== context.restaurant.timezone) {
+      await this.repository.updateRestaurant(restaurantId, {
+        timezone: posTimezone,
+        updatedAt: new Date().toISOString(),
+      });
+      await this.repository.appendAuditLog({
+        restaurantId,
+        actorType: "system",
+        actorId: `${context.connection.provider}_timezone_sync`,
+        action: "restaurant.timezone_synced",
+        targetType: "restaurant",
+        targetId: restaurantId,
+        summary: `Restaurant timezone synced from ${context.connection.provider}.`,
+      });
+    }
     await this.repository.appendAuditLog({
       restaurantId,
       actorType: "manager",
@@ -691,8 +1052,8 @@ export class PlatformService {
     return submission;
   }
 
-  async getReporting(restaurantId: string): Promise<RestaurantReportingSnapshot> {
-    return this.repository.getReporting(restaurantId);
+  async getReporting(restaurantId: string, range?: ReportingDateRange): Promise<RestaurantReportingSnapshot> {
+    return this.repository.getReporting(restaurantId, range);
   }
 
   async authenticateAgentKey(rawKey: string) {
@@ -771,6 +1132,20 @@ export class PlatformService {
       summary: `Failed sign-in attempt for ${email}.`,
     });
     log("warn", "auth_failure", { email });
+  }
+
+  private async autoSyncMockRestaurantsForOperator(authenticated: AuthenticatedOperator) {
+    for (const membership of authenticated.memberships) {
+      try {
+        const connection = await this.repository.getPOSConnection(membership.restaurantId);
+        if (!connection || connection.mode !== "mock") {
+          continue;
+        }
+        await this.syncMenu(membership.restaurantId);
+      } catch (error) {
+        console.warn(`Auto-sync skipped for restaurant ${membership.restaurantId}:`, error);
+      }
+    }
   }
 
   async getOperationalDiagnostics(restaurantId: string) {
@@ -1743,13 +2118,10 @@ export class PlatformService {
     if (order.approval_requirements?.manager_approval_required) {
       return true;
     }
-    const context = await this.getPOSContext(order.restaurant_id);
-    const itemMap = new Map(context.menuItems.map((entry) => [entry.id, entry]));
-    const estimatedSubtotal = order.items.reduce((sum, item) => {
-      const menuItem = itemMap.get(item.item_id);
-      return sum + (menuItem?.priceCents ?? 0) * item.quantity;
-    }, 0);
-    return !rules.autoAcceptEnabled || estimatedSubtotal >= rules.managerApprovalThresholdCents;
+    if (rules.autoAcceptEnabled) {
+      return false;
+    }
+    return true;
   }
 
   private buildOrderRelations(orderId: string, parsed: CanonicalOrderIntent) {

@@ -102,4 +102,71 @@ export const patchPermissionSchema = z.object({
   notes: z.string().optional(),
 });
 
+export const restaurantSignupSchema = z.object({
+  restaurantName: z.string().min(1),
+  address1: z.string().min(1),
+  city: z.string().min(1),
+  state: z.string().min(1),
+  postalCode: z.string().min(1),
+  timezone: z.string().min(1),
+  contactPhone: z.string().min(1),
+  ownerFullName: z.string().min(1),
+  ownerEmail: z.string().email(),
+  password: z.string().min(8),
+});
+
+export const onboardingDiscoverSchema = z.object({
+  provider: z.enum(["deliverect", "olo", "pos"]),
+  query: z.string().min(1),
+});
+
+export const onboardingAccessRequestSchema = z.object({
+  provider: z.enum(["deliverect", "olo", "pos"]),
+  providerAccountId: z.string().min(1),
+  providerLocationIds: z.array(z.string().min(1)).min(1),
+  email: z.string().email(),
+});
+
+export const onboardingActivateSchema = z.object({
+  provider: z.enum(["deliverect", "olo", "pos"]),
+  providerAccountId: z.string().min(1),
+  providerLocationIds: z.array(z.string().min(1)).min(1),
+  fullName: z.string().min(1),
+  email: z.string().email(),
+  password: z.string().min(8),
+});
+
+export const createTeamMemberSchema = z.object({
+  fullName: z.string().min(1, "Full name is required."),
+  email: z.string().email("Enter a valid email address."),
+  password: z.string().min(8, "Password must be at least 8 characters."),
+  role: z.enum(["owner", "staff", "viewer"]),
+  accessScope: z.enum(["all", "selected"]),
+  restaurantIds: z.array(z.string().min(1)),
+}).superRefine((value, ctx) => {
+  if (value.accessScope === "selected" && value.restaurantIds.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["restaurantIds"],
+      message: "Choose at least one restaurant for this account.",
+    });
+  }
+});
+
+export const updateTeamMemberSchema = z.object({
+  fullName: z.string().min(1, "Full name is required."),
+  email: z.string().email("Enter a valid email address."),
+  role: z.enum(["owner", "staff", "viewer"]),
+  accessScope: z.enum(["all", "selected"]),
+  restaurantIds: z.array(z.string().min(1)),
+}).superRefine((value, ctx) => {
+  if (value.accessScope === "selected" && value.restaurantIds.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["restaurantIds"],
+      message: "Choose at least one restaurant for this account.",
+    });
+  }
+});
+
 export type CanonicalOrderIntentInput = z.infer<typeof canonicalOrderIntentSchema>;

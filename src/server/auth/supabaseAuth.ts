@@ -96,6 +96,41 @@ export class SupabaseOperatorAuthClient {
     return toIdentity(user);
   }
 
+  async createUserWithPassword(email: string, password: string, fullName: string): Promise<OperatorIdentity> {
+    const response = await fetch(authUrl(this.env, "/admin/users"), {
+      method: "POST",
+      headers: {
+        apikey: this.env.supabaseServiceRoleKey,
+        Authorization: `Bearer ${this.env.supabaseServiceRoleKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: {
+          full_name: fullName,
+          name: fullName,
+        },
+      }),
+    });
+    const payload = await parseResponse(response);
+    if (!response.ok) {
+      const message =
+        typeof payload === "object" && payload && "msg" in payload
+          ? String((payload as any).msg)
+          : typeof payload === "object" && payload && "message" in payload
+            ? String((payload as any).message)
+            : "Unable to create operator account.";
+      throw new Error(message);
+    }
+    const user = extractUser(payload);
+    if (!user) {
+      throw new Error("Supabase Auth did not return a user.");
+    }
+    return toIdentity(user);
+  }
+
   async getUserById(userId: string): Promise<OperatorIdentity | null> {
     const headers = {
       apikey: this.env.supabaseServiceRoleKey,

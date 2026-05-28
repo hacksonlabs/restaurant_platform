@@ -2,9 +2,19 @@ import type {
   AuthenticatedOperator,
   AgentOrderRecord,
   AgentApiScope,
+  CreateTeamMemberInput,
   DashboardSnapshot,
+  OnboardingAccessRequestInput,
+  OnboardingActivateInput,
+  OnboardingDiscoveredAccount,
+  OnboardingProvider,
+  OnboardingRequestRecord,
   OrderingRule,
+  ReportingDateRange,
   Restaurant,
+  RestaurantSignupInput,
+  TeamMemberRecord,
+  UpdateTeamMemberInput,
 } from "@shared/types";
 import { clearResourceCache } from "./resourceCache";
 
@@ -62,6 +72,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
+  signupRestaurant: (body: RestaurantSignupInput) =>
+    request<OperatorAuthPayload>("/api/auth/signup", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  discoverOnboarding: (provider: OnboardingProvider, query: string) =>
+    request<OnboardingDiscoveredAccount>("/api/onboarding/discover", {
+      method: "POST",
+      body: JSON.stringify({ provider, query }),
+    }),
+  requestOnboardingAccess: (body: OnboardingAccessRequestInput) =>
+    request<OnboardingRequestRecord>("/api/onboarding/request-access", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  activateOnboarding: (body: OnboardingActivateInput) =>
+    request<OperatorAuthPayload>("/api/onboarding/activate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  onboardingRequest: (requestId: string) =>
+    request<OnboardingRequestRecord>(`/api/onboarding/${requestId}`),
   logout: () =>
     request<void>("/api/auth/logout", {
       method: "POST",
@@ -73,6 +105,22 @@ export const api = {
     }),
   restaurants: () => request<Restaurant[]>("/api/restaurants"),
   restaurant: (restaurantId: string) => request<Restaurant>(`/api/restaurants/${restaurantId}`),
+  teamMembers: (restaurantId: string) =>
+    request<TeamMemberRecord[]>(`/api/restaurants/${restaurantId}/team-members`),
+  createTeamMember: (restaurantId: string, body: CreateTeamMemberInput) =>
+    request<TeamMemberRecord>(`/api/restaurants/${restaurantId}/team-members`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateTeamMember: (restaurantId: string, operatorUserId: string, body: UpdateTeamMemberInput) =>
+    request<TeamMemberRecord>(`/api/restaurants/${restaurantId}/team-members/${operatorUserId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteTeamMember: (restaurantId: string, operatorUserId: string) =>
+    request<void>(`/api/restaurants/${restaurantId}/team-members/${operatorUserId}`, {
+      method: "DELETE",
+    }),
   updateRestaurant: (restaurantId: string, body: Partial<Restaurant>) =>
     request<Restaurant>(`/api/restaurants/${restaurantId}`, {
       method: "PATCH",
@@ -138,8 +186,13 @@ export const api = {
     request(`/api/restaurants/${restaurantId}/orders/${orderId}/replay-submit`, { method: "POST" }),
   refreshOrderStatus: (restaurantId: string, orderId: string) =>
     request(`/api/restaurants/${restaurantId}/orders/${orderId}/refresh-status`, { method: "POST" }),
-  reporting: (restaurantId: string) =>
-    request(`/api/restaurants/${restaurantId}/reporting`),
+  reporting: (restaurantId: string, range?: ReportingDateRange) => {
+    const params = new URLSearchParams();
+    if (range?.startDate) params.set("startDate", range.startDate);
+    if (range?.endDate) params.set("endDate", range.endDate);
+    const query = params.toString();
+    return request(`/api/restaurants/${restaurantId}/reporting${query ? `?${query}` : ""}`);
+  },
   operationsDiagnostics: (restaurantId: string) =>
     request(`/api/restaurants/${restaurantId}/operations/diagnostics`),
 };

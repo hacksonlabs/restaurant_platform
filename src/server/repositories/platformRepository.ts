@@ -25,6 +25,7 @@ import type {
   POSMenuMapping,
   POSOrderSubmission,
   ReportingDailyMetric,
+  ReportingDateRange,
   Restaurant,
   RestaurantAgentPermission,
   RestaurantLocation,
@@ -34,6 +35,13 @@ import type {
   OperatorMembership,
   OperatorUser,
   OrderDiagnostics,
+  OnboardingActivateInput,
+  OnboardingDiscoveredLocation,
+  OnboardingRequestRecord,
+  RestaurantSignupInput,
+  CreateTeamMemberInput,
+  TeamMemberRecord,
+  UpdateTeamMemberInput,
 } from "../../shared/types";
 
 export interface AgentListEntry {
@@ -80,6 +88,48 @@ export interface ReportingSnapshotRecord {
   failureReasons: Array<{ reason: string; count: number }>;
 }
 
+function isWithinReportingRange(value: string, range?: ReportingDateRange) {
+  const day = value.slice(0, 10);
+  if (range?.startDate && day < range.startDate) return false;
+  if (range?.endDate && day > range.endDate) return false;
+  return true;
+}
+
+function templateRestaurantNameForLocation(locationName: string) {
+  return locationName.split(" - ")[0]?.trim() || locationName.trim();
+}
+
+function onboardingLocationArea(locationName: string) {
+  const [, ...rest] = locationName.split(" - ");
+  const area = rest.join(" - ").trim();
+  return area ? area.toLowerCase() : null;
+}
+
+function templateRestaurantIdFromMetadata(metadata: Record<string, unknown> | undefined) {
+  const templateRestaurantId = metadata?.templateRestaurantId;
+  return typeof templateRestaurantId === "string" && templateRestaurantId ? templateRestaurantId : null;
+}
+
+function findExistingOnboardingRestaurantMatch(
+  restaurants: Restaurant[],
+  locations: RestaurantLocation[],
+  locationSeed: OnboardingDiscoveredLocation,
+) {
+  const templateRestaurantName = templateRestaurantNameForLocation(locationSeed.name);
+  const area = onboardingLocationArea(locationSeed.name);
+  if (!area) return null;
+  const matchedRestaurant = restaurants.find((restaurant) => {
+    if (restaurant.name !== templateRestaurantName) return false;
+    const location = locations.find((entry) => entry.restaurantId === restaurant.id);
+    const haystack = `${restaurant.location} ${location?.name ?? ""} ${location?.city ?? ""}`.toLowerCase();
+    return haystack.includes(area);
+  });
+  if (!matchedRestaurant) return null;
+  const matchedLocation = locations.find((entry) => entry.restaurantId === matchedRestaurant.id) ?? null;
+  if (!matchedLocation) return null;
+  return { restaurant: matchedRestaurant, location: matchedLocation };
+}
+
 export interface OrderGraphInput {
   order: AgentOrderRecord;
   items: AgentOrderItemRecord[];
@@ -98,6 +148,18 @@ export interface ReconcileOperatorOptions {
 
 export interface PlatformRepository {
   authenticateOperator(email: string, password: string): Promise<AuthenticatedOperator | null>;
+  createRestaurantAccount(
+    input: RestaurantSignupInput & { supabaseUserId?: string },
+  ): Promise<AuthenticatedOperator>;
+  createOnboardingOperatorAccount(input: {
+    activation: OnboardingActivateInput & { supabaseUserId?: string };
+    accountName: string;
+    locations: OnboardingDiscoveredLocation[];
+  }): Promise<AuthenticatedOperator>;
+  createOnboardingRequest(
+    input: Omit<OnboardingRequestRecord, "id" | "createdAt" | "updatedAt" | "status">,
+  ): Promise<OnboardingRequestRecord>;
+  getOnboardingRequest(requestId: string): Promise<OnboardingRequestRecord | null>;
   reconcileOperatorIdentity(
     identity: OperatorIdentity,
     options?: ReconcileOperatorOptions,
@@ -113,6 +175,19 @@ export interface PlatformRepository {
   updateOperatorSessionSelection(sessionTokenHash: string, restaurantId: string, locationId?: string): Promise<void>;
   deleteOperatorSession(sessionTokenHash: string): Promise<void>;
   listAccessibleRestaurants(operatorUserId: string): Promise<Array<Restaurant & { memberships: OperatorMembership[] }>>;
+  listTeamMembers(restaurantIds: string[]): Promise<TeamMemberRecord[]>;
+  createTeamMember(input: {
+    creatorUserId: string;
+    teamMember: CreateTeamMemberInput & { supabaseUserId?: string };
+    restaurantIds: string[];
+  }): Promise<TeamMemberRecord>;
+  updateTeamMember(input: {
+    operatorUserId: string;
+    teamMember: UpdateTeamMemberInput;
+    restaurantIds: string[];
+    managedRestaurantIds: string[];
+  }): Promise<TeamMemberRecord>;
+  deleteTeamMember(operatorUserId: string, managedRestaurantIds: string[]): Promise<void>;
   listRestaurants(): Promise<Restaurant[]>;
   getRestaurant(restaurantId: string): Promise<Restaurant | null>;
   updateRestaurant(restaurantId: string, patch: Partial<Restaurant>): Promise<Restaurant>;
@@ -159,7 +234,7 @@ export interface PlatformRepository {
   authenticateAgentKey(keyHash: string): Promise<AgentApiKey | null>;
   getRecentAuditLogs(restaurantId: string, limit: number): Promise<AuditLog[]>;
   getDashboardStats(restaurantId: string): Promise<DashboardStats>;
-  getReporting(restaurantId: string): Promise<ReportingSnapshotRecord>;
+  getReporting(restaurantId: string, range?: ReportingDateRange): Promise<ReportingSnapshotRecord>;
   refreshReportingMetrics(restaurantId: string): Promise<void>;
   getIdempotencyRecord(scope: "validate" | "quote" | "submit", restaurantId: string, agentId: string, idempotencyKey: string): Promise<IdempotencyRecord | null>;
   createIdempotencyRecord(input: Omit<IdempotencyRecord, "id" | "createdAt" | "updatedAt">): Promise<IdempotencyRecord>;
@@ -175,11 +250,19 @@ function notFound(entity: string, id: string): Error {
   return new Error(`${entity} ${id} not found.`);
 }
 
+function posProviderForOnboarding(provider: OnboardingActivateInput["provider"]): Restaurant["posProvider"] {
+  if (provider === "deliverect" || provider === "olo") {
+    return provider;
+  }
+  return "toast";
+}
+
 function computeTopItems(
   restaurantId: string,
   orders: AgentOrderRecord[],
   orderItems: AgentOrderItemRecord[],
   menuItems: CanonicalMenuItem[],
+  range?: ReportingDateRange,
 ) {
   const menuById = new Map(menuItems.map((entry) => [entry.id, entry]));
   const orderById = new Map(orders.map((entry) => [entry.id, entry]));
@@ -187,7 +270,7 @@ function computeTopItems(
   orderItems.forEach((item) => {
     const order = orderById.get(item.orderId);
     const menuItem = menuById.get(item.menuItemId);
-    if (!order || order.restaurantId !== restaurantId || !menuItem) return;
+    if (!order || order.restaurantId !== restaurantId || !menuItem || !isWithinReportingRange(order.createdAt, range)) return;
     counts.set(menuItem.name, (counts.get(menuItem.name) ?? 0) + item.quantity);
   });
   return [...counts.entries()]
@@ -202,6 +285,7 @@ function computeTopModifiers(
   orderItems: AgentOrderItemRecord[],
   orderModifiers: AgentOrderModifierRecord[],
   modifiers: CanonicalModifier[],
+  range?: ReportingDateRange,
 ) {
   const orderItemById = new Map(orderItems.map((entry) => [entry.id, entry]));
   const orderById = new Map(orders.map((entry) => [entry.id, entry]));
@@ -211,7 +295,7 @@ function computeTopModifiers(
     const orderItem = orderItemById.get(entry.orderItemId);
     const order = orderItem ? orderById.get(orderItem.orderId) : null;
     const modifier = modifierById.get(entry.modifierId);
-    if (!order || order.restaurantId !== restaurantId || !modifier) return;
+    if (!order || order.restaurantId !== restaurantId || !modifier || !isWithinReportingRange(order.createdAt, range)) return;
     counts.set(modifier.name, (counts.get(modifier.name) ?? 0) + entry.quantity);
   });
   return [...counts.entries()]
@@ -225,8 +309,13 @@ function computeFailureReasons(
   orders: AgentOrderRecord[],
   validationResults: OrderValidationResult[],
   submissions: POSOrderSubmission[],
+  range?: ReportingDateRange,
 ) {
-  const orderIds = new Set(orders.filter((entry) => entry.restaurantId === restaurantId).map((entry) => entry.id));
+  const orderIds = new Set(
+    orders
+      .filter((entry) => entry.restaurantId === restaurantId && isWithinReportingRange(entry.createdAt, range))
+      .map((entry) => entry.id),
+  );
   const counts = new Map<string, number>();
 
   validationResults.forEach((result) => {
@@ -391,20 +480,292 @@ const SEEDED_DEV_LOCATION_ID = "loc_lb_main";
 
 export class InMemoryPlatformRepository implements PlatformRepository {
   state: DemoSeedState;
+  private operatorPasswords = new Map<string, string>();
 
   constructor(demoPhantomApiKey: string) {
     this.state = createDemoSeed(demoPhantomApiKey);
+    this.operatorPasswords.set(SEEDED_DEV_OPERATOR_ID, "password");
   }
 
   async authenticateOperator(email: string, password: string) {
     const user = this.state.operatorUsers.find(
-      (entry) => entry.email.toLowerCase() === email.toLowerCase() && password === "password",
+      (entry) =>
+        entry.email.toLowerCase() === email.toLowerCase() &&
+        (this.operatorPasswords.get(entry.id) ?? "password") === password,
     );
     if (!user) return null;
     const memberships = this.state.operatorMemberships.filter((entry) => entry.operatorUserId === user.id);
     const selectedMembership = memberships[0];
     if (!selectedMembership) return null;
     return { user, memberships, selectedMembership };
+  }
+
+  async createRestaurantAccount(input: RestaurantSignupInput & { supabaseUserId?: string }) {
+    const existing = this.state.operatorUsers.find((entry) => entry.email.toLowerCase() === input.ownerEmail.toLowerCase());
+    if (existing) {
+      throw new Error("An operator account with that email already exists.");
+    }
+
+    const now = new Date().toISOString();
+    const restaurantId = createId("rest");
+    const locationId = createId("loc");
+    const operatorUserId = createId("op");
+    const membershipId = createId("membership");
+    const rulesId = createId("rules");
+    const posConnectionId = createId("posconn");
+    const permissionId = createId("perm");
+    const locationLabel = [input.address1, `${input.city}, ${input.state} ${input.postalCode}`].filter(Boolean).join(", ");
+    const allowedAgent = this.state.agents.find((entry) => entry.slug === "coachimhungry");
+
+    const user = {
+      id: operatorUserId,
+      email: input.ownerEmail,
+      fullName: input.ownerFullName,
+      supabaseUserId: input.supabaseUserId,
+      createdAt: now,
+      lastLoginAt: now,
+    };
+
+    this.state.operatorUsers.unshift(user);
+    this.operatorPasswords.set(operatorUserId, input.password);
+    this.state.operatorMemberships.unshift({
+      id: membershipId,
+      operatorUserId,
+      restaurantId,
+      locationId,
+      role: "owner",
+      createdAt: now,
+    });
+    this.state.restaurants.unshift({
+      id: restaurantId,
+      name: input.restaurantName,
+      location: locationLabel,
+      timezone: input.timezone,
+      posProvider: "deliverect",
+      agentOrderingEnabled: true,
+      defaultApprovalMode: "auto",
+      contactEmail: input.ownerEmail,
+      contactPhone: input.contactPhone,
+      fulfillmentTypesSupported: ["pickup", "delivery", "catering"],
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.state.locations.unshift({
+      id: locationId,
+      restaurantId,
+      name: `${input.restaurantName} Main Location`,
+      address1: input.address1,
+      city: input.city,
+      state: input.state,
+      postalCode: input.postalCode,
+      latitude: null,
+      longitude: null,
+    });
+    this.state.posConnections.unshift({
+      id: posConnectionId,
+      restaurantId,
+      provider: "deliverect",
+      status: "not_connected",
+      mode: "mock",
+      metadata: { source: "onboarding" },
+    });
+    this.state.orderingRules.unshift({
+      id: rulesId,
+      restaurantId,
+      minimumLeadTimeMinutes: 45,
+      maxOrderDollarAmount: 300,
+      maxItemQuantity: 1000,
+      maxHeadcount: 1000,
+      autoAcceptEnabled: true,
+      managerApprovalThresholdCents: 2147483647,
+      blackoutWindows: [],
+      allowedFulfillmentTypes: ["pickup", "delivery", "catering"],
+      substitutionPolicy: "require_approval",
+      paymentPolicy: "required_before_submit",
+      allowedAgentIds: allowedAgent ? [allowedAgent.id] : [],
+    });
+    if (allowedAgent) {
+      this.state.permissions.unshift({
+        id: permissionId,
+        restaurantId,
+        agentId: allowedAgent.id,
+        status: "allowed",
+        notes: "Enabled during restaurant onboarding.",
+        lastActivityAt: now,
+      });
+    }
+
+    return {
+      user,
+      memberships: this.state.operatorMemberships.filter((entry) => entry.operatorUserId === operatorUserId),
+      selectedMembership: this.state.operatorMemberships.find((entry) => entry.id === membershipId)!,
+    };
+  }
+
+  async createOnboardingOperatorAccount(input: {
+    activation: OnboardingActivateInput & { supabaseUserId?: string };
+    accountName: string;
+    locations: OnboardingDiscoveredLocation[];
+  }) {
+    const existing = this.state.operatorUsers.find(
+      (entry) => entry.email.toLowerCase() === input.activation.email.toLowerCase(),
+    );
+    if (existing) {
+      throw new Error("An operator account with that email already exists.");
+    }
+
+    const now = new Date().toISOString();
+    const operatorUserId = createId("op");
+    const user = {
+      id: operatorUserId,
+      email: input.activation.email,
+      fullName: input.activation.fullName,
+      supabaseUserId: input.activation.supabaseUserId,
+      createdAt: now,
+      lastLoginAt: now,
+    };
+    this.state.operatorUsers.unshift(user);
+    this.operatorPasswords.set(operatorUserId, input.activation.password);
+
+    const posProvider = posProviderForOnboarding(input.activation.provider);
+    const allowedAgent = this.state.agents.find((entry) => entry.slug === "coachimhungry");
+    const memberships: typeof this.state.operatorMemberships = [];
+
+    for (const locationSeed of input.locations) {
+      const matchedExisting = findExistingOnboardingRestaurantMatch(this.state.restaurants, this.state.locations, locationSeed);
+      if (matchedExisting) {
+        const membership = {
+          id: createId("membership"),
+          operatorUserId,
+          restaurantId: matchedExisting.restaurant.id,
+          locationId: matchedExisting.location.id,
+          role: "owner" as const,
+          createdAt: now,
+        };
+        this.state.operatorMemberships.unshift(membership);
+        memberships.push(membership);
+        continue;
+      }
+
+      const templateRestaurantName = templateRestaurantNameForLocation(locationSeed.name);
+      const templateRestaurant = this.state.restaurants.find((entry) => entry.name === templateRestaurantName);
+      const templateConnection = templateRestaurant
+        ? this.state.posConnections.find((entry) => entry.restaurantId === templateRestaurant.id)
+        : null;
+      const restaurantId = createId("rest");
+      const locationId = createId("loc");
+      const membershipId = createId("membership");
+      const rulesId = createId("rules");
+      const posConnectionId = createId("posconn");
+      const permissionId = createId("perm");
+
+      this.state.restaurants.unshift({
+        id: restaurantId,
+        name: locationSeed.name,
+        location: locationSeed.address,
+        timezone: locationSeed.timezone,
+        posProvider,
+        agentOrderingEnabled: true,
+        defaultApprovalMode: "auto",
+        contactEmail: input.activation.email,
+        contactPhone: "(000) 000-0000",
+        fulfillmentTypesSupported: ["pickup", "delivery", "catering"],
+        createdAt: now,
+        updatedAt: now,
+      });
+      this.state.locations.unshift({
+        id: locationId,
+        restaurantId,
+        name: locationSeed.name,
+        address1: locationSeed.address,
+        city: "",
+        state: "",
+        postalCode: "",
+        latitude: null,
+        longitude: null,
+      });
+      this.state.posConnections.unshift({
+        id: posConnectionId,
+        restaurantId,
+        provider: posProvider,
+        status: templateConnection?.status ?? "sandbox",
+        mode: "mock",
+        locationId: locationSeed.id,
+        lastTestedAt: templateConnection?.lastTestedAt ?? now,
+        lastSyncedAt: now,
+        metadata: {
+          ...(templateConnection?.metadata ?? {}),
+          source: "onboarding",
+          accountName: input.accountName,
+          providerLocationId: locationSeed.id,
+          templateRestaurantId: templateRestaurant?.id,
+        },
+      });
+      this.state.orderingRules.unshift({
+        id: rulesId,
+        restaurantId,
+        minimumLeadTimeMinutes: 45,
+        maxOrderDollarAmount: 300,
+        maxItemQuantity: 1000,
+        maxHeadcount: 1000,
+        autoAcceptEnabled: true,
+        managerApprovalThresholdCents: 2147483647,
+        blackoutWindows: [],
+        allowedFulfillmentTypes: ["pickup", "delivery", "catering"],
+        substitutionPolicy: "require_approval",
+        paymentPolicy: "required_before_submit",
+        allowedAgentIds: allowedAgent ? [allowedAgent.id] : [],
+      });
+      if (allowedAgent) {
+        this.state.permissions.unshift({
+          id: permissionId,
+          restaurantId,
+          agentId: allowedAgent.id,
+          status: "allowed",
+          notes: `Enabled during ${input.activation.provider} onboarding.`,
+          lastActivityAt: now,
+        });
+      }
+      const membership = {
+        id: membershipId,
+        operatorUserId,
+        restaurantId,
+        locationId,
+        role: "owner" as const,
+        createdAt: now,
+      };
+      this.state.operatorMemberships.unshift(membership);
+      memberships.push(membership);
+    }
+
+    return {
+      user,
+      memberships,
+      selectedMembership: memberships[0],
+    };
+  }
+
+  async createOnboardingRequest(
+    input: Omit<OnboardingRequestRecord, "id" | "createdAt" | "updatedAt" | "status">,
+  ) {
+    const now = new Date().toISOString();
+    const record: OnboardingRequestRecord = {
+      id: createId("onboarding"),
+      provider: input.provider,
+      providerAccountId: input.providerAccountId,
+      providerLocationIds: input.providerLocationIds,
+      accountName: input.accountName,
+      email: input.email,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.state.onboardingRequests.unshift(record);
+    return record;
+  }
+
+  async getOnboardingRequest(requestId: string) {
+    return this.state.onboardingRequests.find((entry) => entry.id === requestId) ?? null;
   }
 
   async reconcileOperatorIdentity(
@@ -515,6 +876,157 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       }));
   }
 
+  async listTeamMembers(restaurantIds: string[]) {
+    const restaurantIdSet = new Set(restaurantIds);
+    const memberships = this.state.operatorMemberships.filter((entry) => restaurantIdSet.has(entry.restaurantId));
+    const operatorUserIds = [...new Set(memberships.map((entry) => entry.operatorUserId))];
+
+    return operatorUserIds
+      .map((operatorUserId) => {
+        const user = this.state.operatorUsers.find((entry) => entry.id === operatorUserId);
+        if (!user) {
+          return null;
+        }
+        return {
+          user,
+          assignments: memberships
+            .filter((entry) => entry.operatorUserId === operatorUserId)
+            .map((entry) => ({
+              membershipId: entry.id,
+              restaurantId: entry.restaurantId,
+              restaurantName: this.state.restaurants.find((restaurant) => restaurant.id === entry.restaurantId)?.name ?? entry.restaurantId,
+              locationId: entry.locationId,
+              role: entry.role,
+            })),
+        };
+      })
+      .filter((entry): entry is TeamMemberRecord => Boolean(entry))
+      .sort((a, b) => a.user.fullName.localeCompare(b.user.fullName));
+  }
+
+  async createTeamMember(input: {
+    creatorUserId: string;
+    teamMember: CreateTeamMemberInput & { supabaseUserId?: string };
+    restaurantIds: string[];
+  }) {
+    const existing = this.state.operatorUsers.find(
+      (entry) => entry.email.toLowerCase() === input.teamMember.email.toLowerCase(),
+    );
+    if (existing) {
+      throw new Error("An operator account with that email already exists.");
+    }
+
+    const now = new Date().toISOString();
+    const userId = createId("op");
+    const user: OperatorUser = {
+      id: userId,
+      email: input.teamMember.email,
+      fullName: input.teamMember.fullName,
+      supabaseUserId: input.teamMember.supabaseUserId,
+      createdAt: now,
+      lastLoginAt: undefined,
+    };
+    this.state.operatorUsers.unshift(user);
+    this.operatorPasswords.set(userId, input.teamMember.password);
+
+    const assignments = input.restaurantIds.map((restaurantId) => {
+      const membership: OperatorMembership = {
+        id: createId("membership"),
+        operatorUserId: userId,
+        restaurantId,
+        locationId: this.state.locations.find((entry) => entry.restaurantId === restaurantId)?.id,
+        role: input.teamMember.role,
+        createdAt: now,
+      };
+      this.state.operatorMemberships.unshift(membership);
+      return {
+        membershipId: membership.id,
+        restaurantId,
+        restaurantName: this.state.restaurants.find((entry) => entry.id === restaurantId)?.name ?? restaurantId,
+        locationId: membership.locationId,
+        role: membership.role,
+      };
+    });
+
+    return { user, assignments };
+  }
+
+  async updateTeamMember(input: {
+    operatorUserId: string;
+    teamMember: UpdateTeamMemberInput;
+    restaurantIds: string[];
+    managedRestaurantIds: string[];
+  }) {
+    const user = this.state.operatorUsers.find((entry) => entry.id === input.operatorUserId);
+    if (!user) {
+      throw new Error("Team member not found.");
+    }
+
+    const duplicate = this.state.operatorUsers.find(
+      (entry) => entry.id !== input.operatorUserId && entry.email.toLowerCase() === input.teamMember.email.toLowerCase(),
+    );
+    if (duplicate) {
+      throw new Error("An operator account with that email already exists.");
+    }
+
+    user.fullName = input.teamMember.fullName;
+    user.email = input.teamMember.email;
+
+    this.state.operatorMemberships = this.state.operatorMemberships.filter(
+      (entry) =>
+        !(
+          entry.operatorUserId === input.operatorUserId &&
+          input.managedRestaurantIds.includes(entry.restaurantId) &&
+          !input.restaurantIds.includes(entry.restaurantId)
+        ),
+    );
+
+    const now = new Date().toISOString();
+    const remaining = this.state.operatorMemberships.filter((entry) => entry.operatorUserId === input.operatorUserId);
+    const remainingByRestaurant = new Map(remaining.map((entry) => [entry.restaurantId, entry]));
+
+    for (const restaurantId of input.restaurantIds) {
+      const existingMembership = remainingByRestaurant.get(restaurantId);
+      const locationId = this.state.locations.find((entry) => entry.restaurantId === restaurantId)?.id;
+      if (existingMembership) {
+        existingMembership.role = input.teamMember.role;
+        existingMembership.locationId = locationId;
+      } else {
+        this.state.operatorMemberships.unshift({
+          id: createId("membership"),
+          operatorUserId: input.operatorUserId,
+          restaurantId,
+          locationId,
+          role: input.teamMember.role,
+          createdAt: now,
+        });
+      }
+    }
+
+    const assignments = this.state.operatorMemberships
+      .filter((entry) => entry.operatorUserId === input.operatorUserId && input.restaurantIds.includes(entry.restaurantId))
+      .map((entry) => ({
+        membershipId: entry.id,
+        restaurantId: entry.restaurantId,
+        restaurantName: this.state.restaurants.find((restaurant) => restaurant.id === entry.restaurantId)?.name ?? entry.restaurantId,
+        locationId: entry.locationId,
+        role: entry.role,
+      }));
+
+    return { user, assignments };
+  }
+
+  async deleteTeamMember(operatorUserId: string, managedRestaurantIds: string[]) {
+    this.state.operatorMemberships = this.state.operatorMemberships.filter(
+      (entry) => !(entry.operatorUserId === operatorUserId && managedRestaurantIds.includes(entry.restaurantId)),
+    );
+    const stillHasMemberships = this.state.operatorMemberships.some((entry) => entry.operatorUserId === operatorUserId);
+    if (!stillHasMemberships) {
+      this.state.operatorUsers = this.state.operatorUsers.filter((entry) => entry.id !== operatorUserId);
+      this.operatorPasswords.delete(operatorUserId);
+    }
+  }
+
   async listRestaurants() {
     return this.state.restaurants;
   }
@@ -532,7 +1044,35 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async getPOSConnection(restaurantId: string) {
-    return this.state.posConnections.find((entry) => entry.restaurantId === restaurantId) ?? null;
+    const connection = this.state.posConnections.find((entry) => entry.restaurantId === restaurantId) ?? null;
+    if (!connection) {
+      return null;
+    }
+
+    const restaurant = this.state.restaurants.find((entry) => entry.id === restaurantId) ?? null;
+    const inferredTemplateRestaurantId = restaurant
+      ? this.state.restaurants.find((entry) => entry.id !== restaurantId && entry.name === templateRestaurantNameForLocation(restaurant.name))
+          ?.id ?? null
+      : null;
+    const templateRestaurantId = templateRestaurantIdFromMetadata(connection.metadata) ?? inferredTemplateRestaurantId;
+    if (!templateRestaurantId || templateRestaurantId === restaurantId) {
+      return connection;
+    }
+
+    const templateConnection = this.state.posConnections.find((entry) => entry.restaurantId === templateRestaurantId);
+    if (!templateConnection) {
+      return connection;
+    }
+
+    return {
+      ...connection,
+      lastTestedAt: connection.lastTestedAt ?? templateConnection.lastTestedAt,
+      lastSyncedAt: connection.lastSyncedAt ?? templateConnection.lastSyncedAt,
+      metadata: {
+        ...templateConnection.metadata,
+        ...connection.metadata,
+      },
+    };
   }
 
   async updatePOSConnection(connectionId: string, patch: Partial<POSConnection>) {
@@ -548,11 +1088,29 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async getMenu(restaurantId: string) {
+    const connection = this.state.posConnections.find((entry) => entry.restaurantId === restaurantId) ?? null;
+    const restaurant = this.state.restaurants.find((entry) => entry.id === restaurantId) ?? null;
+    const inferredTemplateRestaurantId = restaurant
+      ? this.state.restaurants.find((entry) => entry.id !== restaurantId && entry.name === templateRestaurantNameForLocation(restaurant.name))
+          ?.id ?? null
+      : null;
+    const templateRestaurantId = templateRestaurantIdFromMetadata(connection?.metadata) ?? inferredTemplateRestaurantId;
+    const sourceRestaurantId =
+      this.state.menuItems.some((entry) => entry.restaurantId === restaurantId) || !templateRestaurantId
+        ? restaurantId
+        : templateRestaurantId;
+
     return {
-      items: this.state.menuItems.filter((entry) => entry.restaurantId === restaurantId),
-      modifierGroups: this.state.modifierGroups.filter((entry) => entry.restaurantId === restaurantId),
+      items: this.state.menuItems
+        .filter((entry) => entry.restaurantId === sourceRestaurantId)
+        .map((entry) => ({ ...entry, restaurantId })),
+      modifierGroups: this.state.modifierGroups
+        .filter((entry) => entry.restaurantId === sourceRestaurantId)
+        .map((entry) => ({ ...entry, restaurantId })),
       modifiers: this.state.modifiers,
-      mappings: this.state.posMappings.filter((entry) => entry.restaurantId === restaurantId),
+      mappings: this.state.posMappings
+        .filter((entry) => entry.restaurantId === sourceRestaurantId)
+        .map((entry) => ({ ...entry, restaurantId })),
     };
   }
 
@@ -673,8 +1231,15 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async listOrders(restaurantId: string) {
+    const cutoffTime = Date.now() - 2 * 60 * 60 * 1000;
+    const nonIncomingStatuses = new Set(["completed", "rejected", "failed", "cancelled"]);
     return this.state.orders
-      .filter((entry) => entry.restaurantId === restaurantId && entry.status !== "completed")
+      .filter(
+        (entry) =>
+          entry.restaurantId === restaurantId &&
+          !nonIncomingStatuses.has(entry.status) &&
+          new Date(entry.requestedFulfillmentTime).getTime() >= cutoffTime,
+      )
       .sort(
         (a, b) =>
           new Date(a.requestedFulfillmentTime).getTime() - new Date(b.requestedFulfillmentTime).getTime(),
@@ -816,22 +1381,26 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     };
   }
 
-  async getReporting(restaurantId: string) {
+  async getReporting(restaurantId: string, range?: ReportingDateRange) {
     return {
-      metrics: this.state.reportingMetrics.filter((entry) => entry.restaurantId === restaurantId),
-      topItems: computeTopItems(restaurantId, this.state.orders, this.state.orderItems, this.state.menuItems),
+      metrics: this.state.reportingMetrics.filter(
+        (entry) => entry.restaurantId === restaurantId && isWithinReportingRange(entry.date, range),
+      ),
+      topItems: computeTopItems(restaurantId, this.state.orders, this.state.orderItems, this.state.menuItems, range),
       topModifiers: computeTopModifiers(
         restaurantId,
         this.state.orders,
         this.state.orderItems,
         this.state.orderModifiers,
         this.state.modifiers,
+        range,
       ),
       failureReasons: computeFailureReasons(
         restaurantId,
         this.state.orders,
         this.state.validationResults,
         this.state.posSubmissions,
+        range,
       ),
     };
   }

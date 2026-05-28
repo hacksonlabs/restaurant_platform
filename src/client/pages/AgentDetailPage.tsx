@@ -172,7 +172,7 @@ export function AgentDetailPage() {
           <div className="summary-list">
             <div className="summary-row">
               <span>Application Type</span>
-              <Badge tone="default">{data.agent.slug === "phantom" ? "First-Party Agent" : "External Agent"}</Badge>
+              <Badge tone="default">{data.agent.slug === "coachimhungry" ? "First-Party Agent" : "External Agent"}</Badge>
             </div>
             <div className="summary-row">
               <span>Status</span>

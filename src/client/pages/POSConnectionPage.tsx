@@ -6,11 +6,18 @@ import { Badge, Button, Card, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
 export function POSConnectionPage() {
-  const { selectedRestaurantId, selectedRole } = useTenant();
+  const { selectedRestaurantId, selectedRole, isAllRestaurantsScope } = useTenant();
   const canManagePos = selectedRole === "owner";
-  const { data, setData, loading, error } = useResource(`pos-connection:${selectedRestaurantId}`, () => api.posConnection(selectedRestaurantId!), [selectedRestaurantId]);
+  const canLoadPosConnection = !!selectedRestaurantId && !isAllRestaurantsScope;
+  const { data, setData, loading, error } = useResource(
+    `pos-connection:${selectedRestaurantId}`,
+    () => api.posConnection(selectedRestaurantId!),
+    [selectedRestaurantId],
+    canLoadPosConnection,
+  );
   const [message, setMessage] = useState("");
 
+  if (isAllRestaurantsScope) return <div className="panel-state">Choose a restaurant to view POS connection details.</div>;
   if (loading) return <div className="panel-state">Loading POS connection…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 

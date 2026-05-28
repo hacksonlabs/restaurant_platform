@@ -1,11 +1,9 @@
 import type { NextFunction, Request, Response } from "express";
-import type { OperatorRole } from "../../shared/types";
-import { getEnv } from "../config/env";
+import type { OnboardingActivateInput, OperatorRole, RestaurantSignupInput } from "../../shared/types";
 import type { PlatformService } from "../services/platformService";
 import { log } from "../utils/logger";
 
 const SESSION_COOKIE = "phantom_restaurant_session";
-const env = getEnv();
 
 function parseCookies(header: string | undefined) {
   if (!header) return new Map<string, string>();
@@ -27,29 +25,11 @@ function getRawSessionToken(request: Request) {
 }
 
 function sessionCookieValue(token: string) {
-  return [
-    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
-    "Path=/",
-    "HttpOnly",
-    `SameSite=${env.sessionCookieSameSite[0].toUpperCase()}${env.sessionCookieSameSite.slice(1)}`,
-    `Max-Age=${604800}`,
-    env.sessionCookieSecure ? "Secure" : null,
-  ]
-    .filter(Boolean)
-    .join("; ");
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`;
 }
 
 function clearedSessionCookie() {
-  return [
-    `${SESSION_COOKIE}=`,
-    "Path=/",
-    "HttpOnly",
-    `SameSite=${env.sessionCookieSameSite[0].toUpperCase()}${env.sessionCookieSameSite.slice(1)}`,
-    "Max-Age=0",
-    env.sessionCookieSecure ? "Secure" : null,
-  ]
-    .filter(Boolean)
-    .join("; ");
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 }
 
 export function requireRestaurantSession(service: PlatformService) {
@@ -112,6 +92,16 @@ export function restaurantAuthRoutes(service: PlatformService) {
       const { sessionToken, authenticated, restaurants } = await service.loginOperator(email, password);
       response.setHeader("Set-Cookie", sessionCookieValue(sessionToken));
       response.json({ ...authenticated, restaurants });
+    },
+    signup: async (_request: Request, response: Response, input: RestaurantSignupInput) => {
+      const { sessionToken, authenticated, restaurants } = await service.signupRestaurant(input);
+      response.setHeader("Set-Cookie", sessionCookieValue(sessionToken));
+      return { ...authenticated, restaurants };
+    },
+    activateOnboarding: async (_request: Request, response: Response, input: OnboardingActivateInput) => {
+      const { sessionToken, authenticated, restaurants } = await service.activateOnboarding(input);
+      response.setHeader("Set-Cookie", sessionCookieValue(sessionToken));
+      return { ...authenticated, restaurants };
     },
     logout: async (request: Request, response: Response) => {
       const rawSessionToken = getRawSessionToken(request);

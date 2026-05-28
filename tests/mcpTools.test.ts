@@ -192,6 +192,6 @@ describe("Phantom MCP tools", () => {
 
     expect(result.agentId).toBe("agent_coachimhungry");
     expect(result.restaurantId).toBe("rest_lb_steakhouse");
-    expect(result.status).toMatch(/needs_approval|approved/);
+    expect(result.status).toMatch(/needs_approval|approved|accepted/);
   });
 });

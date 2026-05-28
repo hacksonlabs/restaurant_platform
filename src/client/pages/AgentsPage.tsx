@@ -19,15 +19,15 @@ export function AgentsPage() {
       <PageHeader
         eyebrow="Manage Agents"
         title="Connected Agents"
-        description="Review trusted agent applications, their credential metadata, and when they were last active."
+        description="Review trusted agents and their credential metadata."
       />
       {message ? <div className="inline-message success">{message}</div> : null}
-      <Card title="Application Directory" subtitle="Each connected agent gets its own management screen.">
+      <Card title="Agent Directory">
         <div className="agent-directory">
           <div className="agent-directory-header">
-            <span>Application</span>
-            <span>Type</span>
-            <span>Status</span>
+            <span>Agent</span>
+            <span className="agent-directory-type-cell">Type</span>
+            <span className="agent-directory-status-cell">Status</span>
             <span>Last Used</span>
             <span>Actions</span>
           </div>
@@ -39,10 +39,10 @@ export function AgentsPage() {
                   <strong>{entry.agent.name}</strong>
                 </div>
               </div>
-              <div>
-                <Badge tone="default">{entry.agent.slug === "phantom" ? "First-Party Agent" : "External Agent"}</Badge>
+              <div className="agent-directory-type-cell">
+                <Badge tone="default">{entry.agent.slug === "coachimhungry" ? "First-Party Agent" : "External Agent"}</Badge>
               </div>
-              <div>
+              <div className="agent-directory-status-cell">
                 <Badge
                   tone={
                     entry.permission.status === "allowed"

@@ -6,8 +6,9 @@ import { useResource } from "./useResource";
 import { useState } from "react";
 
 export function MenuPage() {
-  const { selectedRestaurantId, selectedRole } = useTenant();
+  const { selectedRestaurantId, selectedRole, isAllRestaurantsScope } = useTenant();
   const canManagePos = selectedRole === "owner";
+  const canLoadMenu = !!selectedRestaurantId && !isAllRestaurantsScope;
   const { data, setData, loading, error } = useResource(
     `menu-page:${selectedRestaurantId}`,
     async () => {
@@ -19,9 +20,11 @@ export function MenuPage() {
       return { menu, posConnection };
     },
     [selectedRestaurantId],
+    canLoadMenu,
   );
   const [message, setMessage] = useState("");
 
+  if (isAllRestaurantsScope) return <div className="panel-state">Choose a restaurant to view menu and POS details.</div>;
   if (loading) return <div className="panel-state">Loading menu…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 

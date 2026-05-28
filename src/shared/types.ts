@@ -1,5 +1,5 @@
 export type POSProvider = "toast" | "square" | "deliverect" | "olo";
-export type OperatorRole = "owner" | "manager" | "staff" | "viewer";
+export type OperatorRole = "owner" | "staff" | "viewer";
 export type POSConnectionStatus =
   | "not_connected"
   | "sandbox"
@@ -193,6 +193,98 @@ export interface AuthenticatedOperator {
   user: OperatorUser;
   memberships: OperatorMembership[];
   selectedMembership: OperatorMembership;
+}
+
+export interface TeamMemberAssignment {
+  membershipId: string;
+  restaurantId: string;
+  restaurantName: string;
+  locationId?: string;
+  role: OperatorRole;
+}
+
+export interface TeamMemberRecord {
+  user: OperatorUser;
+  assignments: TeamMemberAssignment[];
+}
+
+export interface CreateTeamMemberInput {
+  fullName: string;
+  email: string;
+  password: string;
+  role: OperatorRole;
+  accessScope: "all" | "selected";
+  restaurantIds: string[];
+}
+
+export interface UpdateTeamMemberInput {
+  fullName: string;
+  email: string;
+  role: OperatorRole;
+  accessScope: "all" | "selected";
+  restaurantIds: string[];
+}
+
+export interface RestaurantSignupInput {
+  restaurantName: string;
+  address1: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  timezone: string;
+  contactPhone: string;
+  ownerFullName: string;
+  ownerEmail: string;
+  password: string;
+}
+
+export type OnboardingProvider = "deliverect" | "olo" | "pos";
+
+export interface OnboardingDiscoveredLocation {
+  id: string;
+  name: string;
+  address: string;
+  timezone: string;
+}
+
+export interface OnboardingDiscoveredAccount {
+  provider: OnboardingProvider;
+  accountId: string;
+  name: string;
+  locations: OnboardingDiscoveredLocation[];
+}
+
+export interface OnboardingDiscoverInput {
+  provider: OnboardingProvider;
+  query: string;
+}
+
+export interface OnboardingAccessRequestInput {
+  provider: OnboardingProvider;
+  providerAccountId: string;
+  providerLocationIds: string[];
+  email: string;
+}
+
+export interface OnboardingActivateInput {
+  provider: OnboardingProvider;
+  providerAccountId: string;
+  providerLocationIds: string[];
+  fullName: string;
+  email: string;
+  password: string;
+}
+
+export interface OnboardingRequestRecord {
+  id: string;
+  provider: OnboardingProvider;
+  providerAccountId: string;
+  providerLocationIds: string[];
+  accountName: string;
+  email: string;
+  status: "pending";
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface OrderingRule {
@@ -538,4 +630,9 @@ export interface RestaurantReportingSnapshot {
   topItems: Array<{ name: string; count: number }>;
   topModifiers: Array<{ name: string; count: number }>;
   failureReasons: Array<{ reason: string; count: number }>;
+}
+
+export interface ReportingDateRange {
+  startDate?: string;
+  endDate?: string;
 }

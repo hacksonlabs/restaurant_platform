@@ -1,8 +1,81 @@
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { useTenant } from "../auth/AuthContext";
 import { money } from "../lib/format";
 import { Card, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
+
+type ReportingPreset = "this_week" | "this_month" | "past_3_months" | "ytd" | "custom";
+
+function toDateInputValue(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(value: Date, amount: number) {
+  const next = new Date(value);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function startOfWeek(value: Date) {
+  const next = new Date(value);
+  const day = next.getDay();
+  const offset = day === 0 ? -6 : 1 - day;
+  return addDays(next, offset);
+}
+
+function startOfMonth(value: Date) {
+  return new Date(value.getFullYear(), value.getMonth(), 1);
+}
+
+function startOfYear(value: Date) {
+  return new Date(value.getFullYear(), 0, 1);
+}
+
+function addMonths(value: Date, amount: number) {
+  return new Date(value.getFullYear(), value.getMonth() + amount, value.getDate());
+}
+
+function rangeForPreset(preset: ReportingPreset, customStartDate: string, customEndDate: string) {
+  const today = new Date();
+  const endDate = toDateInputValue(today);
+
+  if (preset === "custom") {
+    return {
+      startDate: customStartDate || undefined,
+      endDate: customEndDate || undefined,
+    };
+  }
+
+  if (preset === "this_week") {
+    return {
+      startDate: toDateInputValue(startOfWeek(today)),
+      endDate,
+    };
+  }
+
+  if (preset === "this_month") {
+    return {
+      startDate: toDateInputValue(startOfMonth(today)),
+      endDate,
+    };
+  }
+
+  if (preset === "past_3_months") {
+    return {
+      startDate: toDateInputValue(addMonths(today, -3)),
+      endDate,
+    };
+  }
+
+  return {
+    startDate: toDateInputValue(startOfYear(today)),
+    endDate,
+  };
+}
 
 function formatShortDate(value: string) {
   const parsed = new Date(value);
@@ -143,22 +216,101 @@ function RankingList(props: {
 }
 
 export function ReportingPage() {
-  const { selectedRestaurantId } = useTenant();
-  const { data, loading, error } = useResource(
-    `reporting:${selectedRestaurantId}`,
-    () =>
-      selectedRestaurantId
-        ? api.reporting(selectedRestaurantId)
-        : Promise.resolve({
-            metrics: [],
-            topItems: [],
-            topModifiers: [],
-            failureReasons: [],
-          }),
-    [selectedRestaurantId],
+  const { selectedRestaurantId, selectedRestaurantIds, isAllRestaurantsScope } = useTenant();
+  const [preset, setPreset] = useState<ReportingPreset>("this_week");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  useEffect(() => {
+    if (preset !== "custom") return;
+    if (customStartDate && customEndDate) return;
+    const today = new Date();
+    setCustomStartDate((current) => current || toDateInputValue(startOfWeek(today)));
+    setCustomEndDate((current) => current || toDateInputValue(today));
+  }, [preset, customEndDate, customStartDate]);
+
+  const selectedRange = useMemo(
+    () => rangeForPreset(preset, customStartDate, customEndDate),
+    [preset, customEndDate, customStartDate],
   );
 
-  if (!selectedRestaurantId) return <div className="panel-state">Choose a restaurant to view reporting.</div>;
+  const selectedRangeLabel = useMemo(() => {
+    if (preset === "this_week") return "This Week";
+    if (preset === "this_month") return "This Month";
+    if (preset === "past_3_months") return "Past 3 Months";
+    if (preset === "ytd") return "YTD";
+    if (preset === "custom") {
+      if (selectedRange.startDate && selectedRange.endDate) {
+        return `${selectedRange.startDate} to ${selectedRange.endDate}`;
+      }
+      return "Custom";
+    }
+    return "This Week";
+  }, [preset, selectedRange.endDate, selectedRange.startDate]);
+  const { data, loading, error } = useResource(
+    `reporting:${isAllRestaurantsScope ? selectedRestaurantIds.join(",") : selectedRestaurantId}:${preset}:${selectedRange.startDate ?? ""}:${selectedRange.endDate ?? ""}`,
+    async () => {
+      if (isAllRestaurantsScope) {
+        const snapshots = await Promise.all(selectedRestaurantIds.map((restaurantId) => api.reporting(restaurantId, selectedRange)));
+        const metricsByDate = new Map<string, any>();
+        const topItems = new Map<string, number>();
+        const topModifiers = new Map<string, number>();
+        const failureReasons = new Map<string, number>();
+
+        for (const snapshot of snapshots as any[]) {
+          for (const metric of snapshot.metrics) {
+            const existing = metricsByDate.get(metric.date) ?? {
+              id: `agg_${metric.date}`,
+              restaurantId: "all",
+              date: metric.date,
+              totalOrders: 0,
+              revenueCents: 0,
+              averageOrderValueCents: 0,
+              approvalRate: 0,
+              successRate: 0,
+              rejectedOrders: 0,
+              averageLeadTimeMinutes: 0,
+              upcomingScheduledOrderVolume: 0,
+              _count: 0,
+            };
+            existing.totalOrders += metric.totalOrders;
+            existing.revenueCents += metric.revenueCents;
+            existing.rejectedOrders += metric.rejectedOrders;
+            existing.upcomingScheduledOrderVolume += metric.upcomingScheduledOrderVolume;
+            existing.averageOrderValueCents += metric.averageOrderValueCents;
+            existing.approvalRate += metric.approvalRate;
+            existing.successRate += metric.successRate;
+            existing.averageLeadTimeMinutes += metric.averageLeadTimeMinutes;
+            existing._count += 1;
+            metricsByDate.set(metric.date, existing);
+          }
+          for (const entry of snapshot.topItems) topItems.set(entry.name, (topItems.get(entry.name) ?? 0) + entry.count);
+          for (const entry of snapshot.topModifiers) topModifiers.set(entry.name, (topModifiers.get(entry.name) ?? 0) + entry.count);
+          for (const entry of snapshot.failureReasons) failureReasons.set(entry.reason, (failureReasons.get(entry.reason) ?? 0) + entry.count);
+        }
+
+        return {
+          metrics: [...metricsByDate.values()].map((metric: any) => ({
+            ...metric,
+            averageOrderValueCents: Math.round(metric.averageOrderValueCents / Math.max(metric._count, 1)),
+            approvalRate: metric.approvalRate / Math.max(metric._count, 1),
+            successRate: metric.successRate / Math.max(metric._count, 1),
+            averageLeadTimeMinutes: Math.round(metric.averageLeadTimeMinutes / Math.max(metric._count, 1)),
+          })),
+          topItems: [...topItems.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 5),
+          topModifiers: [...topModifiers.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 5),
+          failureReasons: [...failureReasons.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count).slice(0, 5),
+        };
+      }
+      return selectedRestaurantId
+        ? api.reporting(selectedRestaurantId, selectedRange)
+        : Promise.resolve({ metrics: [], topItems: [], topModifiers: [], failureReasons: [] });
+    },
+    [selectedRestaurantId, selectedRestaurantIds.join(","), isAllRestaurantsScope, preset, selectedRange.startDate, selectedRange.endDate],
+  );
+
+  if (!selectedRestaurantId && !isAllRestaurantsScope) return <div className="panel-state">Choose a restaurant to view reporting.</div>;
   if (loading) return <div className="panel-state">Loading reporting…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 
@@ -176,9 +328,67 @@ export function ReportingPage() {
     <div className="page-grid reporting-page">
       <PageHeader
         eyebrow="Reporting"
-        title="Restaurant Performance"
-        description="A clean read on order flow, revenue momentum, and the customizations guests keep coming back for."
+        title={isAllRestaurantsScope ? "Portfolio Performance" : "Restaurant Performance"}
+        description={isAllRestaurantsScope ? "A combined reporting view across all restaurants." : "A clean read on order flow, revenue momentum, and more."}
       />
+
+      <Card className="reporting-range-card">
+        <button
+          type="button"
+          className="reporting-range-toggle"
+          onClick={() => setFiltersOpen((open) => !open)}
+          aria-expanded={filtersOpen}
+        >
+          <div>
+            <div className="dashboard-kicker">Date Range</div>
+            <div className="reporting-range-selected">{selectedRangeLabel}</div>
+          </div>
+          <span className={`section-caret${filtersOpen ? " expanded" : ""}`} />
+        </button>
+        {filtersOpen ? (
+          <div className="reporting-filters">
+            <div className="reporting-filter-buttons">
+              <button type="button" className={`reporting-filter-chip${preset === "this_week" ? " active" : ""}`} onClick={() => setPreset("this_week")}>
+                This Week
+              </button>
+              <button type="button" className={`reporting-filter-chip${preset === "this_month" ? " active" : ""}`} onClick={() => setPreset("this_month")}>
+                This Month
+              </button>
+              <button type="button" className={`reporting-filter-chip${preset === "past_3_months" ? " active" : ""}`} onClick={() => setPreset("past_3_months")}>
+                Past 3 Months
+              </button>
+              <button type="button" className={`reporting-filter-chip${preset === "ytd" ? " active" : ""}`} onClick={() => setPreset("ytd")}>
+                YTD
+              </button>
+              <button type="button" className={`reporting-filter-chip${preset === "custom" ? " active" : ""}`} onClick={() => setPreset("custom")}>
+                Custom
+              </button>
+            </div>
+            {preset === "custom" ? (
+              <div className="reporting-custom-range">
+                <label className="field">
+                  <span>Start Date</span>
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    max={customEndDate || undefined}
+                    onChange={(event) => setCustomStartDate(event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>End Date</span>
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    min={customStartDate || undefined}
+                    onChange={(event) => setCustomEndDate(event.target.value)}
+                  />
+                </label>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </Card>
 
       <div className="reporting-board">
         <Card

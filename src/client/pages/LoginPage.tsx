@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { Button, Card, Field } from "../components/ui";
 
@@ -24,29 +25,37 @@ export function LoginPage() {
 
   return (
     <div className="auth-shell">
-      <Card className="auth-card">
-        <div className="eyebrow">Restaurant Access</div>
-        <h1>Sign in to Phantom</h1>
-        <p className="auth-copy">
-          Sign in with your restaurant operator account to access the correct tenant, location, and role-based controls.
-        </p>
-        <form className="auth-form" onSubmit={handleSubmit}>
-          <Field label="Email">
-            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" />
-          </Field>
-          <Field label="Password">
-            <input
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              type="password"
-              autoComplete="current-password"
-            />
-          </Field>
-          {error ? <div className="auth-error">{error}</div> : null}
-          <Button type="submit" disabled={submitting}>
-            {submitting ? "Signing In..." : "Sign In"}
-          </Button>
-        </form>
+      <Card className="auth-card auth-card-login">
+        <div className="auth-login-grid">
+          <div className="auth-login-intro">
+            <div className="eyebrow">Restaurant Access</div>
+            <h1>Sign in to Phantom</h1>
+            <p className="auth-copy">Access your restaurant console or connect a new platform.</p>
+            <Link className="button secondary auth-login-start" to="/onboarding/provider">
+              Get Started
+            </Link>
+          </div>
+          <div className="auth-login-panel">
+            <div className="auth-login-panel-title">Sign In</div>
+            <form className="auth-form" onSubmit={handleSubmit}>
+              <Field label="Email">
+                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" />
+              </Field>
+              <Field label="Password">
+                <input
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  type="password"
+                  autoComplete="current-password"
+                />
+              </Field>
+              {error ? <div className="auth-error">{error}</div> : null}
+              <Button type="submit" disabled={submitting}>
+                {submitting ? "Signing In..." : "Sign In"}
+              </Button>
+            </form>
+          </div>
+        </div>
       </Card>
     </div>
   );
