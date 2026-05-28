@@ -10,6 +10,7 @@ import type {
   CanonicalModifierGroup,
   EventIngestionRecord,
   IdempotencyRecord,
+  OnboardingRequestRecord,
   OperationalDiagnosticsSnapshot,
   OrderQuote,
   OrderTimelineEvent,
@@ -26,8 +27,14 @@ import type {
   RetryAttempt,
   StatusEvent,
   OperatorMembership,
+  RestaurantSignupInput,
   OperatorUser,
   OrderDiagnostics,
+  OnboardingActivateInput,
+  OnboardingDiscoveredLocation,
+  CreateTeamMemberInput,
+  TeamMemberRecord,
+  UpdateTeamMemberInput,
 } from "../../shared/types";
 import type { OperatorIdentity } from "../auth/supabaseAuth";
 import type {
@@ -72,6 +79,39 @@ function mapRestaurant(row: any): Restaurant {
     createdAt: isoTimestamp(row.created_at),
     updatedAt: isoTimestamp(row.updated_at),
   };
+}
+
+function posProviderForOnboarding(provider: OnboardingActivateInput["provider"]): Restaurant["posProvider"] {
+  if (provider === "deliverect" || provider === "olo") {
+    return provider;
+  }
+  return "toast";
+}
+
+function templateRestaurantNameForLocation(locationName: string) {
+  return locationName.split(" - ")[0]?.trim() || locationName.trim();
+}
+
+function templateRestaurantIdFromMetadata(metadata: Record<string, unknown> | undefined) {
+  const templateRestaurantId = metadata?.templateRestaurantId;
+  return typeof templateRestaurantId === "string" && templateRestaurantId ? templateRestaurantId : null;
+}
+
+async function inferTemplateRestaurantIdForRestaurant(pool: Pool, restaurantId: string) {
+  const restaurantResult = await pool.query("select id, name from restaurants where id = $1 limit 1", [restaurantId]);
+  const restaurant = restaurantResult.rows[0];
+  if (!restaurant?.name) {
+    return null;
+  }
+  const templateName = templateRestaurantNameForLocation(restaurant.name);
+  if (templateName === restaurant.name) {
+    return null;
+  }
+  const templateResult = await pool.query(
+    "select id from restaurants where id <> $1 and lower(name) = lower($2) limit 1",
+    [restaurantId, templateName],
+  );
+  return (templateResult.rows[0]?.id as string | undefined) ?? null;
 }
 
 function mapLocation(row: any): RestaurantLocation {
@@ -460,12 +500,270 @@ function buildTimeline(detail: {
 }
 
 export class SupabasePlatformRepository implements PlatformRepository {
+  private onboardingRequests = new Map<string, OnboardingRequestRecord>();
+
   constructor(private pool: Pool) {}
 
   async authenticateOperator(email: string, password: string): Promise<AuthenticatedOperator | null> {
     void email;
     void password;
     return null;
+  }
+
+  async createOnboardingRequest(
+    input: Omit<OnboardingRequestRecord, "id" | "createdAt" | "updatedAt" | "status">,
+  ) {
+    const now = new Date().toISOString();
+    const record: OnboardingRequestRecord = {
+      id: createId("onboarding"),
+      provider: input.provider,
+      providerAccountId: input.providerAccountId,
+      providerLocationIds: input.providerLocationIds,
+      accountName: input.accountName,
+      email: input.email,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.onboardingRequests.set(record.id, record);
+    return record;
+  }
+
+  async getOnboardingRequest(requestId: string) {
+    return this.onboardingRequests.get(requestId) ?? null;
+  }
+
+  async createRestaurantAccount(input: RestaurantSignupInput & { supabaseUserId?: string }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existingUser = await client.query(
+        "select id from operator_users where lower(email) = lower($1) limit 1",
+        [input.ownerEmail],
+      );
+      if (existingUser.rows[0]) {
+        throw new Error("An operator account with that email already exists.");
+      }
+
+      const now = new Date().toISOString();
+      const restaurantId = createId("rest");
+      const locationId = createId("loc");
+      const operatorUserId = createId("op");
+      const membershipId = createId("membership");
+      const rulesId = createId("rules");
+      const posConnectionId = createId("posconn");
+      const permissionId = createId("perm");
+      const locationLabel = [input.address1, `${input.city}, ${input.state} ${input.postalCode}`]
+        .filter(Boolean)
+        .join(", ");
+      const coachAgent = await client.query(
+        "select id from agents where slug = 'coachimhungry' limit 1",
+      );
+      const coachAgentId = coachAgent.rows[0]?.id as string | undefined;
+
+      const userResult = await client.query(
+        `insert into operator_users
+         (id, email, full_name, password_hash, supabase_user_id, created_at, last_login_at)
+         values ($1, $2, $3, null, $4::uuid, $5, $5)
+         returning *`,
+        [operatorUserId, input.ownerEmail, input.ownerFullName, input.supabaseUserId ?? null, now],
+      );
+
+      await client.query(
+        `insert into restaurants
+         (id, name, location, timezone, pos_provider, agent_ordering_enabled, default_approval_mode, contact_email, contact_phone, fulfillment_types_supported, created_at, updated_at)
+         values ($1, $2, $3, $4, 'deliverect', true, 'auto', $5, $6, $7::text[], $8, $8)`,
+        [
+          restaurantId,
+          input.restaurantName,
+          locationLabel,
+          input.timezone,
+          input.ownerEmail,
+          input.contactPhone,
+          ["pickup", "delivery", "catering"],
+          now,
+        ],
+      );
+
+      await client.query(
+        `insert into restaurant_locations
+         (id, restaurant_id, name, address1, city, state, postal_code)
+         values ($1, $2, $3, $4, $5, $6, $7)`,
+        [locationId, restaurantId, `${input.restaurantName} Main Location`, input.address1, input.city, input.state, input.postalCode],
+      );
+
+      await client.query(
+        `insert into pos_connections
+         (id, restaurant_id, provider, status, mode, metadata)
+         values ($1, $2, 'deliverect', 'not_connected', 'mock', $3::jsonb)`,
+        [posConnectionId, restaurantId, JSON.stringify({ source: "onboarding" })],
+      );
+
+      await client.query(
+        `insert into ordering_rules
+         (id, restaurant_id, minimum_lead_time_minutes, max_order_dollar_amount, max_item_quantity, max_headcount, auto_accept_enabled, manager_approval_threshold_cents, blackout_windows, allowed_fulfillment_types, substitution_policy, payment_policy, allowed_agent_ids)
+         values ($1, $2, 45, 300, 1000, 1000, true, 2147483647, '[]'::jsonb, $3::text[], 'require_approval', 'required_before_submit', $4::text[])`,
+        [rulesId, restaurantId, ["pickup", "delivery", "catering"], coachAgentId ? [coachAgentId] : []],
+      );
+
+      await client.query(
+        `insert into operator_memberships
+         (id, operator_user_id, restaurant_id, location_id, role, created_at)
+         values ($1, $2, $3, $4, 'owner', $5)`,
+        [membershipId, operatorUserId, restaurantId, locationId, now],
+      );
+
+      if (coachAgentId) {
+        await client.query(
+          `insert into restaurant_agent_permissions
+           (id, restaurant_id, agent_id, status, notes, last_activity_at)
+           values ($1, $2, $3, 'allowed', $4, $5)`,
+          [permissionId, restaurantId, coachAgentId, "Enabled during restaurant onboarding.", now],
+        );
+      }
+
+      await client.query("commit");
+      const user = mapOperatorUser(userResult.rows[0]);
+      const memberships = await this.getOperatorMemberships(user.id);
+      return { user, memberships, selectedMembership: memberships[0] };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createOnboardingOperatorAccount(input: {
+    activation: OnboardingActivateInput & { supabaseUserId?: string };
+    accountName: string;
+    locations: OnboardingDiscoveredLocation[];
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existingUser = await client.query(
+        "select id from operator_users where lower(email) = lower($1) limit 1",
+        [input.activation.email],
+      );
+      if (existingUser.rows[0]) {
+        throw new Error("An operator account with that email already exists.");
+      }
+
+      const now = new Date().toISOString();
+      const operatorUserId = createId("op");
+      const posProvider = posProviderForOnboarding(input.activation.provider);
+      const coachAgent = await client.query("select id from agents where slug = 'coachimhungry' limit 1");
+      const coachAgentId = coachAgent.rows[0]?.id as string | undefined;
+
+      const userResult = await client.query(
+        `insert into operator_users
+         (id, email, full_name, password_hash, supabase_user_id, created_at, last_login_at)
+         values ($1, $2, $3, null, $4::uuid, $5, $5)
+         returning *`,
+        [operatorUserId, input.activation.email, input.activation.fullName, input.activation.supabaseUserId ?? null, now],
+      );
+
+      for (const locationSeed of input.locations) {
+        const templateRestaurantName = templateRestaurantNameForLocation(locationSeed.name);
+        const templateRestaurant = await client.query(
+          "select id from restaurants where lower(name) = lower($1) limit 1",
+          [templateRestaurantName],
+        );
+        const templateRestaurantId = templateRestaurant.rows[0]?.id as string | undefined;
+        const templateConnection = templateRestaurantId
+          ? await client.query("select * from pos_connections where restaurant_id = $1 limit 1", [templateRestaurantId])
+          : { rows: [] };
+        const templatePOSConnection = templateConnection.rows[0] ? mapPOSConnection(templateConnection.rows[0]) : null;
+        const restaurantId = createId("rest");
+        const locationId = createId("loc");
+        const membershipId = createId("membership");
+        const rulesId = createId("rules");
+        const posConnectionId = createId("posconn");
+        const permissionId = createId("perm");
+
+        await client.query(
+          `insert into restaurants
+           (id, name, location, timezone, pos_provider, agent_ordering_enabled, default_approval_mode, contact_email, contact_phone, fulfillment_types_supported, created_at, updated_at)
+           values ($1, $2, $3, $4, $5, true, 'auto', $6, $7, $8::text[], $9, $9)`,
+          [
+            restaurantId,
+            locationSeed.name,
+            locationSeed.address,
+            locationSeed.timezone,
+            posProvider,
+            input.activation.email,
+            "(000) 000-0000",
+            ["pickup", "delivery", "catering"],
+            now,
+          ],
+        );
+
+        await client.query(
+          `insert into restaurant_locations
+           (id, restaurant_id, name, address1, city, state, postal_code)
+           values ($1, $2, $3, $4, '', '', '')`,
+          [locationId, restaurantId, locationSeed.name, locationSeed.address],
+        );
+
+        await client.query(
+          `insert into pos_connections
+           (id, restaurant_id, provider, status, mode, restaurant_guid, location_id, metadata, last_tested_at, last_synced_at)
+           values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)`,
+          [
+            posConnectionId,
+            restaurantId,
+            posProvider,
+            templatePOSConnection?.status ?? "sandbox",
+            "mock",
+            null,
+            locationSeed.id,
+            JSON.stringify({
+              ...(templatePOSConnection?.metadata ?? {}),
+              source: "onboarding",
+              accountName: input.accountName,
+              providerLocationId: locationSeed.id,
+              templateRestaurantId: templateRestaurantId ?? null,
+            }),
+            templatePOSConnection?.lastTestedAt ?? now,
+            now,
+          ],
+        );
+
+        await client.query(
+          `insert into ordering_rules
+           (id, restaurant_id, minimum_lead_time_minutes, max_order_dollar_amount, max_item_quantity, max_headcount, auto_accept_enabled, manager_approval_threshold_cents, blackout_windows, allowed_fulfillment_types, substitution_policy, payment_policy, allowed_agent_ids)
+           values ($1, $2, 45, 300, 1000, 1000, true, 2147483647, '[]'::jsonb, $3::text[], 'require_approval', 'required_before_submit', $4::text[])`,
+          [rulesId, restaurantId, ["pickup", "delivery", "catering"], coachAgentId ? [coachAgentId] : []],
+        );
+
+        await client.query(
+          `insert into operator_memberships
+           (id, operator_user_id, restaurant_id, location_id, role, created_at)
+           values ($1, $2, $3, $4, 'owner', $5)`,
+          [membershipId, operatorUserId, restaurantId, locationId, now],
+        );
+
+        if (coachAgentId) {
+          await client.query(
+            `insert into restaurant_agent_permissions
+             (id, restaurant_id, agent_id, status, notes, last_activity_at)
+             values ($1, $2, $3, 'allowed', $4, $5)`,
+            [permissionId, restaurantId, coachAgentId, `Enabled during ${input.activation.provider} onboarding.`, now],
+          );
+        }
+      }
+
+      await client.query("commit");
+      const user = mapOperatorUser(userResult.rows[0]);
+      const memberships = await this.getOperatorMemberships(user.id);
+      return { user, memberships, selectedMembership: memberships[0] };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async reconcileOperatorIdentity(
@@ -630,6 +928,213 @@ export class SupabasePlatformRepository implements PlatformRepository {
     }));
   }
 
+  async listTeamMembers(restaurantIds: string[]) {
+    if (restaurantIds.length === 0) {
+      return [];
+    }
+    const result = await this.pool.query(
+      `select
+         u.*,
+         m.id as membership_id,
+         m.restaurant_id,
+         m.location_id,
+         m.role,
+         m.created_at as membership_created_at,
+         r.name as restaurant_name
+       from operator_memberships m
+       join operator_users u on u.id = m.operator_user_id
+       join restaurants r on r.id = m.restaurant_id
+       where m.restaurant_id = any($1::text[])
+       order by u.full_name asc, r.name asc`,
+      [restaurantIds],
+    );
+
+    const byUser = new Map<string, TeamMemberRecord>();
+    for (const row of result.rows) {
+      const existing = byUser.get(row.id as string);
+      if (!existing) {
+        byUser.set(row.id as string, {
+          user: mapOperatorUser(row),
+          assignments: [],
+        });
+      }
+      byUser.get(row.id as string)!.assignments.push({
+        membershipId: row.membership_id,
+        restaurantId: row.restaurant_id,
+        restaurantName: row.restaurant_name,
+        locationId: row.location_id ?? undefined,
+        role: row.role,
+      });
+    }
+    return [...byUser.values()];
+  }
+
+  async createTeamMember(input: {
+    creatorUserId: string;
+    teamMember: CreateTeamMemberInput & { supabaseUserId?: string };
+    restaurantIds: string[];
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existingUser = await client.query(
+        "select id from operator_users where lower(email) = lower($1) limit 1",
+        [input.teamMember.email],
+      );
+      if (existingUser.rows[0]) {
+        throw new Error("An operator account with that email already exists.");
+      }
+
+      const now = new Date().toISOString();
+      const userId = createId("op");
+      const userResult = await client.query(
+        `insert into operator_users
+         (id, email, full_name, password_hash, supabase_user_id, created_at, last_login_at)
+         values ($1, $2, $3, null, $4::uuid, $5, null)
+         returning *`,
+        [userId, input.teamMember.email, input.teamMember.fullName, input.teamMember.supabaseUserId ?? null, now],
+      );
+
+      const assignments: TeamMemberRecord["assignments"] = [];
+      for (const restaurantId of input.restaurantIds) {
+        const membershipId = createId("membership");
+        const locationResult = await client.query(
+          "select id from restaurant_locations where restaurant_id = $1 order by id asc limit 1",
+          [restaurantId],
+        );
+        const restaurantResult = await client.query("select name from restaurants where id = $1 limit 1", [restaurantId]);
+        await client.query(
+          `insert into operator_memberships
+           (id, operator_user_id, restaurant_id, location_id, role, created_at)
+           values ($1, $2, $3, $4, $5, $6)`,
+          [membershipId, userId, restaurantId, locationResult.rows[0]?.id ?? null, input.teamMember.role, now],
+        );
+        assignments.push({
+          membershipId,
+          restaurantId,
+          restaurantName: restaurantResult.rows[0]?.name ?? restaurantId,
+          locationId: locationResult.rows[0]?.id ?? undefined,
+          role: input.teamMember.role,
+        });
+      }
+
+      await client.query("commit");
+      return {
+        user: mapOperatorUser(userResult.rows[0]),
+        assignments,
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateTeamMember(input: {
+    operatorUserId: string;
+    teamMember: UpdateTeamMemberInput;
+    restaurantIds: string[];
+    managedRestaurantIds: string[];
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const userResult = await client.query("select * from operator_users where id = $1 limit 1", [input.operatorUserId]);
+      if (!userResult.rows[0]) {
+        throw new Error("Team member not found.");
+      }
+      const duplicate = await client.query(
+        "select id from operator_users where id <> $1 and lower(email) = lower($2) limit 1",
+        [input.operatorUserId, input.teamMember.email],
+      );
+      if (duplicate.rows[0]) {
+        throw new Error("An operator account with that email already exists.");
+      }
+
+      await client.query(
+        `update operator_users
+         set email = $2,
+             full_name = $3
+         where id = $1`,
+        [input.operatorUserId, input.teamMember.email, input.teamMember.fullName],
+      );
+
+      await client.query(
+        `delete from operator_memberships
+         where operator_user_id = $1
+           and restaurant_id = any($2::text[])
+           and not (restaurant_id = any($3::text[]))`,
+        [input.operatorUserId, input.managedRestaurantIds, input.restaurantIds],
+      );
+
+      const now = new Date().toISOString();
+      for (const restaurantId of input.restaurantIds) {
+        const locationResult = await client.query(
+          "select id from restaurant_locations where restaurant_id = $1 order by id asc limit 1",
+          [restaurantId],
+        );
+        const existingMembership = await client.query(
+          "select id from operator_memberships where operator_user_id = $1 and restaurant_id = $2 limit 1",
+          [input.operatorUserId, restaurantId],
+        );
+        if (existingMembership.rows[0]) {
+          await client.query(
+            `update operator_memberships
+             set role = $2,
+                 location_id = $3
+             where id = $1`,
+            [existingMembership.rows[0].id, input.teamMember.role, locationResult.rows[0]?.id ?? null],
+          );
+        } else {
+          await client.query(
+            `insert into operator_memberships
+             (id, operator_user_id, restaurant_id, location_id, role, created_at)
+             values ($1, $2, $3, $4, $5, $6)`,
+            [createId("membership"), input.operatorUserId, restaurantId, locationResult.rows[0]?.id ?? null, input.teamMember.role, now],
+          );
+        }
+      }
+
+      await client.query("commit");
+      const [updatedUser, assignments] = await Promise.all([
+        this.pool.query("select * from operator_users where id = $1 limit 1", [input.operatorUserId]),
+        this.listTeamMembers(input.restaurantIds),
+      ]);
+      const record = assignments.find((entry) => entry.user.id === input.operatorUserId);
+      return record ?? { user: mapOperatorUser(updatedUser.rows[0]), assignments: [] };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deleteTeamMember(operatorUserId: string, managedRestaurantIds: string[]) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "delete from operator_memberships where operator_user_id = $1 and restaurant_id = any($2::text[])",
+        [operatorUserId, managedRestaurantIds],
+      );
+      const remainingMemberships = await client.query(
+        "select 1 from operator_memberships where operator_user_id = $1 limit 1",
+        [operatorUserId],
+      );
+      if (!remainingMemberships.rows[0]) {
+        await client.query("delete from operator_users where id = $1", [operatorUserId]);
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async listRestaurants() {
     const result = await this.pool.query("select * from restaurants order by created_at asc");
     return result.rows.map(mapRestaurant);
@@ -679,7 +1184,34 @@ export class SupabasePlatformRepository implements PlatformRepository {
 
   async getPOSConnection(restaurantId: string) {
     const result = await this.pool.query("select * from pos_connections where restaurant_id = $1 limit 1", [restaurantId]);
-    return result.rows[0] ? mapPOSConnection(result.rows[0]) : null;
+    const connection = result.rows[0] ? mapPOSConnection(result.rows[0]) : null;
+    if (!connection) {
+      return null;
+    }
+
+    const templateRestaurantId =
+      templateRestaurantIdFromMetadata(connection.metadata) ?? (await inferTemplateRestaurantIdForRestaurant(this.pool, restaurantId));
+    if (!templateRestaurantId || templateRestaurantId === restaurantId) {
+      return connection;
+    }
+
+    const templateResult = await this.pool.query("select * from pos_connections where restaurant_id = $1 limit 1", [
+      templateRestaurantId,
+    ]);
+    const templateConnection = templateResult.rows[0] ? mapPOSConnection(templateResult.rows[0]) : null;
+    if (!templateConnection) {
+      return connection;
+    }
+
+    return {
+      ...connection,
+      lastTestedAt: connection.lastTestedAt ?? templateConnection.lastTestedAt,
+      lastSyncedAt: connection.lastSyncedAt ?? templateConnection.lastSyncedAt,
+      metadata: {
+        ...templateConnection.metadata,
+        ...connection.metadata,
+      },
+    };
   }
 
   async updatePOSConnection(connectionId: string, patch: Partial<POSConnection>) {
@@ -720,24 +1252,35 @@ export class SupabasePlatformRepository implements PlatformRepository {
   }
 
   async getMenu(restaurantId: string) {
+    const connection = await this.getPOSConnection(restaurantId);
+    const itemCountResult = await this.pool.query("select count(*)::int as count from canonical_menu_items where restaurant_id = $1", [
+      restaurantId,
+    ]);
+    const templateRestaurantId =
+      templateRestaurantIdFromMetadata(connection?.metadata) ?? (await inferTemplateRestaurantIdForRestaurant(this.pool, restaurantId));
+    const sourceRestaurantId =
+      itemCountResult.rows[0]?.count > 0 || !templateRestaurantId ? restaurantId : templateRestaurantId;
+
     const [items, groups, modifiers, mappings] = await Promise.all([
-      this.pool.query("select * from canonical_menu_items where restaurant_id = $1 order by category, name", [restaurantId]),
-      this.pool.query("select * from canonical_modifier_groups where restaurant_id = $1 order by name", [restaurantId]),
+      this.pool.query("select * from canonical_menu_items where restaurant_id = $1 order by category, name", [sourceRestaurantId]),
+      this.pool.query("select * from canonical_modifier_groups where restaurant_id = $1 order by name", [sourceRestaurantId]),
       this.pool.query(
         `select m.*
          from canonical_modifiers m
          join canonical_modifier_groups g on g.id = m.modifier_group_id
          where g.restaurant_id = $1
          order by m.name`,
-        [restaurantId],
+        [sourceRestaurantId],
       ),
-      this.pool.query("select * from pos_menu_mappings where restaurant_id = $1 order by canonical_type, canonical_id", [restaurantId]),
+      this.pool.query("select * from pos_menu_mappings where restaurant_id = $1 order by canonical_type, canonical_id", [
+        sourceRestaurantId,
+      ]),
     ]);
     return {
-      items: items.rows.map(mapMenuItem),
-      modifierGroups: groups.rows.map(mapModifierGroup),
+      items: items.rows.map((row) => ({ ...mapMenuItem(row), restaurantId })),
+      modifierGroups: groups.rows.map((row) => ({ ...mapModifierGroup(row), restaurantId })),
       modifiers: modifiers.rows.map(mapModifier),
-      mappings: mappings.rows.map(mapMapping),
+      mappings: mappings.rows.map((row) => ({ ...mapMapping(row), restaurantId })),
     };
   }
 

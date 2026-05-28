@@ -104,7 +104,7 @@ export function DashboardPage() {
           >
             <div>
               <div className="dashboard-kicker">Recent Activity</div>
-              <div className="dashboard-activity-subtitle">Latest system and manager actions.</div>
+              <div className="dashboard-activity-subtitle">Latest system and team actions.</div>
             </div>
             <span className={`section-caret${activityOpen ? " expanded" : ""}`} />
           </button>
@@ -123,7 +123,7 @@ export function DashboardPage() {
                   </div>
                 ))
               ) : (
-                <div className="dashboard-empty-activity">No recent exceptions or manager actions.</div>
+                <div className="dashboard-empty-activity">No recent exceptions or team actions.</div>
               )}
             </div>
           ) : null}

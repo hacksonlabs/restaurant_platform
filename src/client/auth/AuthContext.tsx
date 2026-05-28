@@ -1,11 +1,13 @@
 import { createContext, useContext, useEffect, useState, type PropsWithChildren } from "react";
-import type { OperatorRole } from "@shared/types";
+import type { OnboardingActivateInput, OperatorRole, RestaurantSignupInput } from "@shared/types";
 import { api, type OperatorAuthPayload } from "../lib/api";
 
 interface AuthContextValue {
   session: OperatorAuthPayload | null;
   loading: boolean;
   login(email: string, password: string): Promise<void>;
+  signup(input: RestaurantSignupInput): Promise<void>;
+  completeOnboarding(input: OnboardingActivateInput): Promise<void>;
   logout(): Promise<void>;
   selectTenant(restaurantId: string, locationId?: string): Promise<void>;
   selectedRestaurantId: string | null;
@@ -35,6 +37,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setSession(await api.login(email, password));
   }
 
+  async function signup(input: RestaurantSignupInput) {
+    setSession(await api.signupRestaurant(input));
+  }
+
+  async function completeOnboarding(input: OnboardingActivateInput) {
+    setSession(await api.activateOnboarding(input));
+  }
+
   async function logout() {
     await api.logout();
     setSession(null);
@@ -50,6 +60,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
         session,
         loading,
         login,
+        signup,
+        completeOnboarding,
         logout,
         selectTenant,
         selectedRestaurantId: session?.selectedMembership.restaurantId ?? null,
@@ -71,9 +83,9 @@ export function useAuth() {
 
 export function useTenant() {
   const { session, selectedRestaurantId, selectedRole } = useAuth();
-  const canManageOrders = selectedRole === "owner" || selectedRole === "manager" || selectedRole === "staff";
-  const canManageRules = selectedRole === "owner" || selectedRole === "manager";
-  const canManageAgents = selectedRole === "owner" || selectedRole === "manager";
+  const canManageOrders = selectedRole === "owner" || selectedRole === "staff";
+  const canManageRules = selectedRole === "owner";
+  const canManageAgents = selectedRole === "owner";
   const isReadOnly = selectedRole === "viewer";
   return {
     session,

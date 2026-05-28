@@ -15,6 +15,7 @@ import type {
   CanonicalModifierGroup,
   EventIngestionRecord,
   IdempotencyRecord,
+  OnboardingRequestRecord,
   OrderingRule,
   POSConnection,
   POSMenuMapping,
@@ -53,6 +54,7 @@ export interface DemoSeedState {
   idempotencyRecords: IdempotencyRecord[];
   retryAttempts: RetryAttempt[];
   ingestedEvents: EventIngestionRecord[];
+  onboardingRequests: OnboardingRequestRecord[];
 }
 
 const FOOD_IMAGE_URLS = {
@@ -1320,5 +1322,6 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     idempotencyRecords: [],
     retryAttempts: [],
     ingestedEvents: [],
+    onboardingRequests: [],
   };
 }

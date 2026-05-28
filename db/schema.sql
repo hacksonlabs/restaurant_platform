@@ -144,7 +144,7 @@ create table if not exists operator_memberships (
   operator_user_id text not null references operator_users(id) on delete cascade,
   restaurant_id text not null references restaurants(id) on delete cascade,
   location_id text references restaurant_locations(id) on delete set null,
-  role text not null check (role in ('owner', 'manager', 'staff', 'viewer')),
+  role text not null check (role in ('owner', 'staff', 'viewer')),
   created_at timestamptz not null default now(),
   unique (operator_user_id, restaurant_id, location_id)
 );

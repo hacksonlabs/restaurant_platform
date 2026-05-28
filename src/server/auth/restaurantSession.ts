@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import type { OperatorRole } from "../../shared/types";
+import type { OnboardingActivateInput, OperatorRole, RestaurantSignupInput } from "../../shared/types";
 import type { PlatformService } from "../services/platformService";
 import { log } from "../utils/logger";
 
@@ -92,6 +92,16 @@ export function restaurantAuthRoutes(service: PlatformService) {
       const { sessionToken, authenticated, restaurants } = await service.loginOperator(email, password);
       response.setHeader("Set-Cookie", sessionCookieValue(sessionToken));
       response.json({ ...authenticated, restaurants });
+    },
+    signup: async (_request: Request, response: Response, input: RestaurantSignupInput) => {
+      const { sessionToken, authenticated, restaurants } = await service.signupRestaurant(input);
+      response.setHeader("Set-Cookie", sessionCookieValue(sessionToken));
+      return { ...authenticated, restaurants };
+    },
+    activateOnboarding: async (_request: Request, response: Response, input: OnboardingActivateInput) => {
+      const { sessionToken, authenticated, restaurants } = await service.activateOnboarding(input);
+      response.setHeader("Set-Cookie", sessionCookieValue(sessionToken));
+      return { ...authenticated, restaurants };
     },
     logout: async (request: Request, response: Response) => {
       const rawSessionToken = getRawSessionToken(request);

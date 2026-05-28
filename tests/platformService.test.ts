@@ -516,11 +516,11 @@ describe("PlatformService", () => {
     const service = createService();
 
     expect(() =>
-      service.assertOperatorAccess(authenticatedOperator("viewer"), "rest_lb_steakhouse", ["owner", "manager", "staff"]),
+      service.assertOperatorAccess(authenticatedOperator("viewer"), "rest_lb_steakhouse", ["owner", "staff"]),
     ).toThrow("Operator role does not allow this action.");
 
     expect(() =>
-      service.assertOperatorAccess(authenticatedOperator("staff"), "rest_lb_steakhouse", ["owner", "manager"]),
+      service.assertOperatorAccess(authenticatedOperator("staff"), "rest_lb_steakhouse", ["owner"]),
     ).toThrow("Operator role does not allow this action.");
   });
 
@@ -628,6 +628,248 @@ describe("PlatformService", () => {
     expect(response.status).toBe(200);
     expect(payload.provider).toBe("deliverect");
     expect(payload.eventType).toBe("checkout.completed");
+  });
+
+  it("discovers Deliverect onboarding locations through the backend API", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+
+    const response = await fetch(`${baseUrl}/api/onboarding/discover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "deliverect", query: "Sunnyvale" }),
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.provider).toBe("deliverect");
+    expect(payload.locations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Green Leaf Salads - Sunnyvale",
+        }),
+      ]),
+    );
+  });
+
+  it("creates and fetches an onboarding access request through the backend API", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+
+    const createResponse = await fetch(`${baseUrl}/api/onboarding/request-access`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "deliverect",
+        providerAccountId: "acct_deliverect_demo_001",
+        providerLocationIds: ["deliv_loc_1", "deliv_loc_2"],
+        email: "owner@example.com",
+      }),
+    });
+    const created = await createResponse.json();
+
+    expect(createResponse.status).toBe(200);
+    expect(created.status).toBe("pending");
+
+    const getResponse = await fetch(`${baseUrl}/api/onboarding/${created.id}`);
+    const fetched = await getResponse.json();
+
+    expect(getResponse.status).toBe(200);
+    expect(fetched.email).toBe("owner@example.com");
+    expect(fetched.providerLocationIds).toEqual(["deliv_loc_1", "deliv_loc_2"]);
+  });
+
+  it("activates onboarding and signs the operator into the console", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+
+    const response = await fetch(`${baseUrl}/api/onboarding/activate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "deliverect",
+        providerAccountId: "acct_deliverect_demo_001",
+        providerLocationIds: ["deliv_loc_1", "deliv_loc_2"],
+        fullName: "Chain Owner",
+        email: "chain.owner@example.com",
+        password: "password123",
+      }),
+    });
+    const payload = await response.json();
+    const cookie = response.headers.get("set-cookie") ?? "";
+    const selectedRestaurantId = payload.selectedMembership.restaurantId;
+
+    const [posResponse, menuResponse] = await Promise.all([
+      fetch(`${baseUrl}/api/restaurants/${selectedRestaurantId}/pos-connection`, {
+        headers: { cookie },
+      }),
+      fetch(`${baseUrl}/api/restaurants/${selectedRestaurantId}/menu`, {
+        headers: { cookie },
+      }),
+    ]);
+    const posConnection = await posResponse.json();
+    const menu = await menuResponse.json();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")).toContain("phantom_restaurant_session=");
+    expect(payload.user.email).toBe("chain.owner@example.com");
+    expect(payload.memberships).toHaveLength(2);
+    expect(payload.restaurants).toHaveLength(2);
+    expect(posResponse.status).toBe(200);
+    expect(posConnection.provider).toBe("deliverect");
+    expect(posConnection.lastSyncedAt).toBeTruthy();
+    expect(menu.items.length).toBeGreaterThan(0);
+    expect(menu.items.some((item: { name: string }) => item.name === "Kale Caesar")).toBe(true);
+  });
+
+  it("still loads inherited menu data when an onboarding restaurant is missing explicit template metadata", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const authenticated = await repository.createOnboardingOperatorAccount({
+      activation: {
+        provider: "deliverect",
+        providerAccountId: "acct_deliverect_demo_001",
+        providerLocationIds: ["deliv_loc_1"],
+        fullName: "Chain Owner",
+        email: "fallback.owner@example.com",
+        password: "password123",
+      },
+      accountName: "Green Leaf Salads",
+      locations: [
+        {
+          id: "deliv_loc_1",
+          name: "Green Leaf Salads - Sunnyvale",
+          address: "425 N Mathilda Ave, Sunnyvale, CA 94085",
+          timezone: "America/Los_Angeles",
+        },
+      ],
+    });
+
+    const createdRestaurantId = authenticated.selectedMembership.restaurantId;
+    const connection = await repository.getPOSConnection(createdRestaurantId);
+    expect(connection).not.toBeNull();
+
+    await repository.updatePOSConnection(connection!.id, {
+      metadata: {
+        source: "onboarding",
+        accountName: "Green Leaf Salads",
+        providerLocationId: "deliv_loc_1",
+      },
+    });
+
+    const menu = await service.getMenu(createdRestaurantId);
+    expect(menu.items.length).toBeGreaterThan(0);
+    expect(menu.items.some((item) => item.name === "Kale Caesar")).toBe(true);
+  });
+
+  it("lets an owner create and list team members with restaurant access assignments", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const { cookie } = await loginOperator(baseUrl);
+
+    const createResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members`, {
+      method: "POST",
+      headers: {
+        cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fullName: "Jordan Staff",
+        email: "jordan.staff@example.com",
+        password: "password123",
+        role: "staff",
+        accessScope: "selected",
+        restaurantIds: ["rest_lb_steakhouse", "rest_pizza_palace"],
+      }),
+    });
+    const created = await createResponse.json();
+
+    const listResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members`, {
+      headers: { cookie },
+    });
+    const listed = await listResponse.json();
+
+    expect(createResponse.status).toBe(200);
+    expect(created.user.email).toBe("jordan.staff@example.com");
+    expect(created.assignments).toHaveLength(2);
+    expect(listResponse.status).toBe(200);
+    expect(listed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          user: expect.objectContaining({ email: "jordan.staff@example.com" }),
+          assignments: expect.arrayContaining([
+            expect.objectContaining({ restaurantId: "rest_lb_steakhouse", role: "staff" }),
+            expect.objectContaining({ restaurantId: "rest_pizza_palace", role: "staff" }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  it("lets an owner edit and delete team members from the team access API", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const { cookie } = await loginOperator(baseUrl);
+
+    const createResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members`, {
+      method: "POST",
+      headers: {
+        cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fullName: "Taylor Viewer",
+        email: "taylor.viewer@example.com",
+        password: "password123",
+        role: "viewer",
+        accessScope: "selected",
+        restaurantIds: ["rest_lb_steakhouse"],
+      }),
+    });
+    const created = await createResponse.json();
+
+    const updateResponse = await fetch(
+      `${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members/${created.user.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          cookie,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fullName: "Taylor Staff",
+          email: "taylor.staff@example.com",
+          role: "staff",
+          accessScope: "all",
+          restaurantIds: [],
+        }),
+      },
+    );
+    const updated = await updateResponse.json();
+
+    const deleteResponse = await fetch(
+      `${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members/${created.user.id}`,
+      {
+        method: "DELETE",
+        headers: { cookie },
+      },
+    );
+
+    const listResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members`, {
+      headers: { cookie },
+    });
+    const listed = await listResponse.json();
+
+    expect(updateResponse.status).toBe(200);
+    expect(updated.user.fullName).toBe("Taylor Staff");
+    expect(updated.assignments.length).toBeGreaterThan(1);
+    expect(deleteResponse.status).toBe(204);
+    expect(listed.some((member: { user: { id: string } }) => member.user.id === created.user.id)).toBe(false);
   });
 
   it("prevents a viewer from approving orders through the restaurant API", async () => {
