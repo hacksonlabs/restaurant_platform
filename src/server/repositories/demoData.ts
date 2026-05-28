@@ -4,6 +4,7 @@ import type {
   Agent,
   AgentApiKey,
   OperatorMembership,
+  OnboardingRequestRecord,
   OperatorSession,
   OperatorUser,
   AgentOrderItemRecord,
@@ -39,6 +40,7 @@ export interface DemoSeedState {
   operatorUsers: OperatorUser[];
   operatorMemberships: OperatorMembership[];
   operatorSessions: OperatorSession[];
+  onboardingRequests: OnboardingRequestRecord[];
   permissions: RestaurantAgentPermission[];
   orderingRules: OrderingRule[];
   orders: AgentOrderRecord[];
@@ -1310,6 +1312,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       harborSandwichCo.membership,
     ],
     operatorSessions: [],
+    onboardingRequests: [],
     permissions: [
       permission,
       coachPermission,
