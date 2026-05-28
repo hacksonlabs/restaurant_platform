@@ -3,6 +3,7 @@ import { useAuth } from "./auth/AuthContext";
 import { ConsoleLayout } from "./layout/ConsoleLayout";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AgentDetailPage } from "./pages/AgentDetailPage";
+import { AccessPage } from "./pages/AccessPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LoginPage } from "./pages/LoginPage";
 import { MenuPage } from "./pages/MenuPage";
@@ -49,12 +50,13 @@ export function App() {
     <ConsoleLayout>
       <Routes>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/access" element={<AccessPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/menu" element={<MenuPage />} />
         <Route path="/pos-connection" element={<Navigate to="/menu" replace />} />
         <Route path="/orders" element={<OrdersPage />} />
         <Route path="/orders/:orderId" element={<OrderDetailPage />} />
-        <Route path="/agents" element={<AgentsPage />} />
+        <Route path="/agents" element={<Navigate to="/access" replace />} />
         <Route path="/agents/:agentId" element={<AgentDetailPage />} />
         <Route path="/reporting" element={<ReportingPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

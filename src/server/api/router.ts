@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { ZodError } from "zod";
 import {
   canonicalOrderIntentSchema,
   createTeamMemberSchema,
@@ -110,7 +111,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.patch(
     "/restaurants/:restaurantId",
-    requireRestaurantRole(service, ["owner"]),
+    requireRestaurantRole(service, ["owner", "staff"]),
     asyncHandler(async (request, response) => {
       const patch = patchRestaurantSchema.parse(request.body);
       response.json(await service.updateRestaurant(request.params.restaurantId, patch));
@@ -210,7 +211,7 @@ export function createApiRouter(service: PlatformService) {
 
   router.patch(
     "/restaurants/:restaurantId/rules",
-    requireRestaurantRole(service, ["owner"]),
+    requireRestaurantRole(service, ["owner", "staff"]),
     asyncHandler(async (request, response) => {
       const patch = patchOrderingRulesSchema.parse(request.body);
       response.json(await service.updateRules(request.params.restaurantId, patch));
@@ -451,6 +452,11 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.use((error: unknown, _request: any, response: any, _next: any) => {
+    if (error instanceof ZodError) {
+      const firstIssue = error.issues[0];
+      response.status(400).json({ error: firstIssue?.message ?? "Invalid request payload." });
+      return;
+    }
     const message = error instanceof Error ? error.message : "Internal server error";
     response.status(400).json({ error: message });
   });

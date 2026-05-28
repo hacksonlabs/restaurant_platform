@@ -99,9 +99,35 @@ function templateRestaurantNameForLocation(locationName: string) {
   return locationName.split(" - ")[0]?.trim() || locationName.trim();
 }
 
+function onboardingLocationArea(locationName: string) {
+  const [, ...rest] = locationName.split(" - ");
+  const area = rest.join(" - ").trim();
+  return area ? area.toLowerCase() : null;
+}
+
 function templateRestaurantIdFromMetadata(metadata: Record<string, unknown> | undefined) {
   const templateRestaurantId = metadata?.templateRestaurantId;
   return typeof templateRestaurantId === "string" && templateRestaurantId ? templateRestaurantId : null;
+}
+
+function findExistingOnboardingRestaurantMatch(
+  restaurants: Restaurant[],
+  locations: RestaurantLocation[],
+  locationSeed: OnboardingDiscoveredLocation,
+) {
+  const templateRestaurantName = templateRestaurantNameForLocation(locationSeed.name);
+  const area = onboardingLocationArea(locationSeed.name);
+  if (!area) return null;
+  const matchedRestaurant = restaurants.find((restaurant) => {
+    if (restaurant.name !== templateRestaurantName) return false;
+    const location = locations.find((entry) => entry.restaurantId === restaurant.id);
+    const haystack = `${restaurant.location} ${location?.name ?? ""} ${location?.city ?? ""}`.toLowerCase();
+    return haystack.includes(area);
+  });
+  if (!matchedRestaurant) return null;
+  const matchedLocation = locations.find((entry) => entry.restaurantId === matchedRestaurant.id) ?? null;
+  if (!matchedLocation) return null;
+  return { restaurant: matchedRestaurant, location: matchedLocation };
 }
 
 export interface OrderGraphInput {
@@ -606,6 +632,21 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const memberships: typeof this.state.operatorMemberships = [];
 
     for (const locationSeed of input.locations) {
+      const matchedExisting = findExistingOnboardingRestaurantMatch(this.state.restaurants, this.state.locations, locationSeed);
+      if (matchedExisting) {
+        const membership = {
+          id: createId("membership"),
+          operatorUserId,
+          restaurantId: matchedExisting.restaurant.id,
+          locationId: matchedExisting.location.id,
+          role: "owner" as const,
+          createdAt: now,
+        };
+        this.state.operatorMemberships.unshift(membership);
+        memberships.push(membership);
+        continue;
+      }
+
       const templateRestaurantName = templateRestaurantNameForLocation(locationSeed.name);
       const templateRestaurant = this.state.restaurants.find((entry) => entry.name === templateRestaurantName);
       const templateConnection = templateRestaurant
@@ -1191,11 +1232,12 @@ export class InMemoryPlatformRepository implements PlatformRepository {
 
   async listOrders(restaurantId: string) {
     const cutoffTime = Date.now() - 2 * 60 * 60 * 1000;
+    const nonIncomingStatuses = new Set(["completed", "rejected", "failed", "cancelled"]);
     return this.state.orders
       .filter(
         (entry) =>
           entry.restaurantId === restaurantId &&
-          entry.status !== "completed" &&
+          !nonIncomingStatuses.has(entry.status) &&
           new Date(entry.requestedFulfillmentTime).getTime() >= cutoffTime,
       )
       .sort(

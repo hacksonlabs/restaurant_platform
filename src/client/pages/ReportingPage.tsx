@@ -216,7 +216,7 @@ function RankingList(props: {
 }
 
 export function ReportingPage() {
-  const { selectedRestaurantId } = useTenant();
+  const { selectedRestaurantId, selectedRestaurantIds, isAllRestaurantsScope } = useTenant();
   const [preset, setPreset] = useState<ReportingPreset>("this_week");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
@@ -249,20 +249,68 @@ export function ReportingPage() {
     return "This Week";
   }, [preset, selectedRange.endDate, selectedRange.startDate]);
   const { data, loading, error } = useResource(
-    `reporting:${selectedRestaurantId}:${preset}:${selectedRange.startDate ?? ""}:${selectedRange.endDate ?? ""}`,
-    () =>
-      selectedRestaurantId
+    `reporting:${isAllRestaurantsScope ? selectedRestaurantIds.join(",") : selectedRestaurantId}:${preset}:${selectedRange.startDate ?? ""}:${selectedRange.endDate ?? ""}`,
+    async () => {
+      if (isAllRestaurantsScope) {
+        const snapshots = await Promise.all(selectedRestaurantIds.map((restaurantId) => api.reporting(restaurantId, selectedRange)));
+        const metricsByDate = new Map<string, any>();
+        const topItems = new Map<string, number>();
+        const topModifiers = new Map<string, number>();
+        const failureReasons = new Map<string, number>();
+
+        for (const snapshot of snapshots as any[]) {
+          for (const metric of snapshot.metrics) {
+            const existing = metricsByDate.get(metric.date) ?? {
+              id: `agg_${metric.date}`,
+              restaurantId: "all",
+              date: metric.date,
+              totalOrders: 0,
+              revenueCents: 0,
+              averageOrderValueCents: 0,
+              approvalRate: 0,
+              successRate: 0,
+              rejectedOrders: 0,
+              averageLeadTimeMinutes: 0,
+              upcomingScheduledOrderVolume: 0,
+              _count: 0,
+            };
+            existing.totalOrders += metric.totalOrders;
+            existing.revenueCents += metric.revenueCents;
+            existing.rejectedOrders += metric.rejectedOrders;
+            existing.upcomingScheduledOrderVolume += metric.upcomingScheduledOrderVolume;
+            existing.averageOrderValueCents += metric.averageOrderValueCents;
+            existing.approvalRate += metric.approvalRate;
+            existing.successRate += metric.successRate;
+            existing.averageLeadTimeMinutes += metric.averageLeadTimeMinutes;
+            existing._count += 1;
+            metricsByDate.set(metric.date, existing);
+          }
+          for (const entry of snapshot.topItems) topItems.set(entry.name, (topItems.get(entry.name) ?? 0) + entry.count);
+          for (const entry of snapshot.topModifiers) topModifiers.set(entry.name, (topModifiers.get(entry.name) ?? 0) + entry.count);
+          for (const entry of snapshot.failureReasons) failureReasons.set(entry.reason, (failureReasons.get(entry.reason) ?? 0) + entry.count);
+        }
+
+        return {
+          metrics: [...metricsByDate.values()].map((metric: any) => ({
+            ...metric,
+            averageOrderValueCents: Math.round(metric.averageOrderValueCents / Math.max(metric._count, 1)),
+            approvalRate: metric.approvalRate / Math.max(metric._count, 1),
+            successRate: metric.successRate / Math.max(metric._count, 1),
+            averageLeadTimeMinutes: Math.round(metric.averageLeadTimeMinutes / Math.max(metric._count, 1)),
+          })),
+          topItems: [...topItems.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 5),
+          topModifiers: [...topModifiers.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 5),
+          failureReasons: [...failureReasons.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count).slice(0, 5),
+        };
+      }
+      return selectedRestaurantId
         ? api.reporting(selectedRestaurantId, selectedRange)
-        : Promise.resolve({
-            metrics: [],
-            topItems: [],
-            topModifiers: [],
-            failureReasons: [],
-          }),
-    [selectedRestaurantId, preset, selectedRange.startDate, selectedRange.endDate],
+        : Promise.resolve({ metrics: [], topItems: [], topModifiers: [], failureReasons: [] });
+    },
+    [selectedRestaurantId, selectedRestaurantIds.join(","), isAllRestaurantsScope, preset, selectedRange.startDate, selectedRange.endDate],
   );
 
-  if (!selectedRestaurantId) return <div className="panel-state">Choose a restaurant to view reporting.</div>;
+  if (!selectedRestaurantId && !isAllRestaurantsScope) return <div className="panel-state">Choose a restaurant to view reporting.</div>;
   if (loading) return <div className="panel-state">Loading reporting…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 
@@ -280,8 +328,8 @@ export function ReportingPage() {
     <div className="page-grid reporting-page">
       <PageHeader
         eyebrow="Reporting"
-        title="Restaurant Performance"
-        description="A clean read on order flow, revenue momentum, and more."
+        title={isAllRestaurantsScope ? "Portfolio Performance" : "Restaurant Performance"}
+        description={isAllRestaurantsScope ? "A combined reporting view across all restaurants." : "A clean read on order flow, revenue momentum, and more."}
       />
 
       <Card className="reporting-range-card">

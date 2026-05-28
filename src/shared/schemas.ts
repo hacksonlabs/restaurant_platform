@@ -137,20 +137,36 @@ export const onboardingActivateSchema = z.object({
 });
 
 export const createTeamMemberSchema = z.object({
-  fullName: z.string().min(1),
-  email: z.string().email(),
-  password: z.string().min(8),
+  fullName: z.string().min(1, "Full name is required."),
+  email: z.string().email("Enter a valid email address."),
+  password: z.string().min(8, "Password must be at least 8 characters."),
   role: z.enum(["owner", "staff", "viewer"]),
   accessScope: z.enum(["all", "selected"]),
   restaurantIds: z.array(z.string().min(1)),
+}).superRefine((value, ctx) => {
+  if (value.accessScope === "selected" && value.restaurantIds.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["restaurantIds"],
+      message: "Choose at least one restaurant for this account.",
+    });
+  }
 });
 
 export const updateTeamMemberSchema = z.object({
-  fullName: z.string().min(1),
-  email: z.string().email(),
+  fullName: z.string().min(1, "Full name is required."),
+  email: z.string().email("Enter a valid email address."),
   role: z.enum(["owner", "staff", "viewer"]),
   accessScope: z.enum(["all", "selected"]),
   restaurantIds: z.array(z.string().min(1)),
+}).superRefine((value, ctx) => {
+  if (value.accessScope === "selected" && value.restaurantIds.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["restaurantIds"],
+      message: "Choose at least one restaurant for this account.",
+    });
+  }
 });
 
 export type CanonicalOrderIntentInput = z.infer<typeof canonicalOrderIntentSchema>;

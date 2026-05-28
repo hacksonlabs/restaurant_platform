@@ -7,8 +7,28 @@ import { Badge, Button, Card, DataTable, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
 export function OrdersPage() {
-  const { selectedRestaurantId, canManageOrders, isReadOnly } = useTenant();
-  const { data, setData, loading, error, refresh } = useResource(`orders:${selectedRestaurantId}`, () => api.orders(selectedRestaurantId!), [selectedRestaurantId]);
+  const { selectedRestaurantId, selectedRestaurantIds, canManageOrders, isReadOnly, isAllRestaurantsScope, session } = useTenant();
+  const { data, setData, loading, error, refresh } = useResource(
+    `orders:${isAllRestaurantsScope ? selectedRestaurantIds.join(",") : selectedRestaurantId}`,
+    async () => {
+      if (isAllRestaurantsScope) {
+        const responses = await Promise.all(
+          selectedRestaurantIds.map(async (restaurantId) => ({
+            restaurantId,
+            restaurantName: session?.restaurants.find((restaurant) => restaurant.id === restaurantId)?.name ?? restaurantId,
+            orders: await api.orders(restaurantId),
+          })),
+        );
+        return responses
+          .flatMap(({ restaurantId, restaurantName, orders }) =>
+            orders.map((order) => ({ ...order, restaurantId, restaurantName })),
+          )
+          .sort((left, right) => left.requestedFulfillmentTime.localeCompare(right.requestedFulfillmentTime));
+      }
+      return api.orders(selectedRestaurantId!);
+    },
+    [selectedRestaurantId, selectedRestaurantIds.join(","), isAllRestaurantsScope, session?.restaurants.length ?? 0],
+  );
   const [message, setMessage] = useState("");
   const [reviewingOrderId, setReviewingOrderId] = useState<string | null>(null);
   const [pendingDecisionOrderId, setPendingDecisionOrderId] = useState<string | null>(null);
@@ -49,8 +69,9 @@ export function OrdersPage() {
     setPendingDecisionByOrderId((current) => ({ ...current, [orderId]: "approved" }));
     setData(orders.map((order) => (order.id === orderId ? { ...order, status: "approved" } : order)));
     try {
-      const updatedOrder = await api.approveOrder(selectedRestaurantId!, orderId);
-      setData(orders.map((order) => (order.id === orderId ? updatedOrder : order)));
+      const targetRestaurantId = orders.find((entry) => entry.id === orderId)?.restaurantId ?? selectedRestaurantId!;
+      const updatedOrder = await api.approveOrder(targetRestaurantId, orderId);
+      setData(orders.map((order) => (order.id === orderId ? { ...order, ...updatedOrder } : order)));
       void refreshOrders();
     } catch (submitError) {
       setMessage(submitError instanceof Error ? submitError.message : `Failed to approve order ${orderId}.`);
@@ -66,8 +87,9 @@ export function OrdersPage() {
     setPendingDecisionByOrderId((current) => ({ ...current, [orderId]: "rejected" }));
     setData(orders.map((order) => (order.id === orderId ? { ...order, status: "rejected" } : order)));
     try {
-      const updatedOrder = await api.rejectOrder(selectedRestaurantId!, orderId);
-      setData(orders.map((order) => (order.id === orderId ? updatedOrder : order)));
+      const targetRestaurantId = orders.find((entry) => entry.id === orderId)?.restaurantId ?? selectedRestaurantId!;
+      const updatedOrder = await api.rejectOrder(targetRestaurantId, orderId);
+      setData(orders.map((order) => (order.id === orderId ? { ...order, ...updatedOrder } : order)));
       void refreshOrders();
     } catch (submitError) {
       setMessage(submitError instanceof Error ? submitError.message : `Failed to reject order ${orderId}.`);
@@ -85,7 +107,7 @@ export function OrdersPage() {
   }
 
   useEffect(() => {
-    if (!selectedRestaurantId) return undefined;
+    if (!selectedRestaurantId && !isAllRestaurantsScope) return undefined;
     const intervalId = window.setInterval(() => {
       void refreshOrders();
     }, 5000);
@@ -102,17 +124,26 @@ export function OrdersPage() {
     <div className="page-grid">
       <PageHeader
         eyebrow="Incoming Orders"
-        title="Agent Order Queue"
-        description="Review each order’s submitted details, validation, quote, and POS submission lifecycle."
+        title={isAllRestaurantsScope ? "Incoming Orders" : "Incoming Orders"}
+        description={
+          isAllRestaurantsScope
+            ? "Track active incoming orders across all restaurants, then drill into a single location when needed."
+            : "Track active incoming orders for this restaurant and step in when a review is needed."
+        }
       />
       {message ? <div className="inline-message success">{message}</div> : null}
       <Card>
         <DataTable
-          columns={["Order ID", "Agent", "Requested Time", "Status", "Total", "Headcount", "Approval", "Created"]}
+          columns={
+            isAllRestaurantsScope
+              ? ["Restaurant", "Order ID", "Agent", "Requested Time", "Status", "Total", "Headcount", "Approval", "Created"]
+              : ["Order ID", "Agent", "Requested Time", "Status", "Total", "Headcount", "Approval", "Created"]
+          }
           rows={orders.map((order) => {
             const displayStatus = getDisplayStatus(order);
             const canReview = displayStatus === "needs_approval" && canManageOrders && !isReadOnly;
-            return [
+            const row = [
+            isAllRestaurantsScope ? (order as any).restaurantName : null,
             <div key={order.id}>
               <Link to={`/orders/${order.id}`} className="order-link">
                 {order.id}
@@ -164,6 +195,7 @@ export function OrdersPage() {
             order.approvalRequired ? "required" : "not required",
             dateTime(order.createdAt),
           ];
+          return isAllRestaurantsScope ? row : row.slice(1);
           })}
         />
       </Card>

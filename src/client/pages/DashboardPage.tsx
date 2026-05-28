@@ -29,12 +29,56 @@ function isImportantDashboardActivity(action: string) {
 }
 
 export function DashboardPage() {
-  const { selectedRestaurantId } = useTenant();
-  const { data, loading, error, refresh } = useResource(`dashboard:${selectedRestaurantId}`, () => api.dashboard(selectedRestaurantId!), [selectedRestaurantId]);
+  const { selectedRestaurantId, selectedRestaurantIds, isAllRestaurantsScope, session } = useTenant();
+  const { data, loading, error, refresh } = useResource(
+    `dashboard:${isAllRestaurantsScope ? selectedRestaurantIds.join(",") : selectedRestaurantId}`,
+    async () => {
+      if (isAllRestaurantsScope) {
+        const dashboards = await Promise.all(selectedRestaurantIds.map((restaurantId) => api.dashboard(restaurantId)));
+        const statusSummary = dashboards.reduce(
+          (summary, dashboard) => {
+            if (dashboard.posConnectionStatus === "active" || dashboard.posConnectionStatus === "sandbox") {
+              summary.connected += 1;
+            } else {
+              summary.attention += 1;
+            }
+            if (dashboard.agentOrderingStatus === "enabled") {
+              summary.orderingEnabled += 1;
+            }
+            return summary;
+          },
+          { connected: 0, attention: 0, orderingEnabled: 0 },
+        );
+        return {
+          restaurant: {
+            id: "all",
+            name: "All Restaurants",
+          },
+          posConnectionStatus: `${statusSummary.connected}/${dashboards.length} connected`,
+          agentOrderingStatus: `${statusSummary.orderingEnabled}/${dashboards.length} live`,
+          ordersThisWeek: dashboards.reduce((sum, dashboard) => sum + dashboard.ordersThisWeek, 0),
+          revenueFromAgentOrdersCents: dashboards.reduce((sum, dashboard) => sum + dashboard.revenueFromAgentOrdersCents, 0),
+          topItem: "",
+          ordersNeedingReview: dashboards.reduce((sum, dashboard) => sum + dashboard.ordersNeedingReview, 0),
+          recentActivity: dashboards
+            .flatMap((dashboard) =>
+              dashboard.recentActivity.map((entry) => ({
+                ...entry,
+                summary: `${dashboard.restaurant.name}: ${entry.summary}`,
+              })),
+            )
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+            .slice(0, 8),
+        } as any;
+      }
+      return api.dashboard(selectedRestaurantId!);
+    },
+    [selectedRestaurantId, selectedRestaurantIds.join(","), isAllRestaurantsScope],
+  );
   const [activityOpen, setActivityOpen] = useState(false);
 
   useEffect(() => {
-    if (!selectedRestaurantId) return undefined;
+    if (!selectedRestaurantId && !isAllRestaurantsScope) return undefined;
     const intervalId = window.setInterval(() => {
       void refresh();
     }, 5000);
@@ -47,26 +91,31 @@ export function DashboardPage() {
   if (error || !data) return <div className="panel-state error">{error}</div>;
 
   const importantActivity = data.recentActivity.filter((entry) => isImportantDashboardActivity(entry.action));
+  const restaurantCount = session?.restaurants.length ?? 0;
 
   return (
     <div className="page-grid dashboard-page">
       <PageHeader
-        eyebrow="Restaurant Dashboard"
+        eyebrow={isAllRestaurantsScope ? "Account Overview" : "Restaurant Dashboard"}
         title={data.restaurant.name}
-        description="A quick view of queue health and agent ordering performance."
+        description={
+          isAllRestaurantsScope
+            ? `A portfolio view across ${restaurantCount} restaurants.`
+            : "A quick view of queue health and agent ordering performance."
+        }
         actions={
           <Card className="dashboard-header-status">
             <div className="dashboard-kicker">System Status</div>
             <div className="dashboard-status-list">
               <div className="dashboard-status-row">
-                <span>POS connection</span>
-                <strong className={`dashboard-status-value ${statusTone(data.posConnectionStatus)}`}>
+                <span>{isAllRestaurantsScope ? "POS connections" : "POS connection"}</span>
+                <strong className={`dashboard-status-value ${isAllRestaurantsScope ? "neutral" : statusTone(data.posConnectionStatus)}`}>
                   {formatStatus(data.posConnectionStatus)}
                 </strong>
               </div>
               <div className="dashboard-status-row">
-                <span>Agent ordering</span>
-                <strong className={`dashboard-status-value ${statusTone(data.agentOrderingStatus)}`}>
+                <span>{isAllRestaurantsScope ? "Ordering live" : "Agent ordering"}</span>
+                <strong className={`dashboard-status-value ${isAllRestaurantsScope ? "neutral" : statusTone(data.agentOrderingStatus)}`}>
                   {formatStatus(data.agentOrderingStatus)}
                 </strong>
               </div>

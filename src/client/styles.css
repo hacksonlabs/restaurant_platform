@@ -1859,6 +1859,22 @@ textarea {
   overflow: auto;
 }
 
+.access-agents-card td {
+  vertical-align: middle;
+}
+
+.access-agents-card td,
+.access-agents-card th {
+  padding-top: 18px;
+  padding-bottom: 18px;
+}
+
+.access-agents-cell {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -1916,8 +1932,16 @@ th {
 }
 
 .agent-directory-row {
-  padding: 22px 6px;
+  padding: 24px 6px 22px;
   border-bottom: 1px solid rgba(63, 44, 24, 0.08);
+  align-items: start;
+}
+
+.agent-directory-row > div {
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  padding-top: 6px;
 }
 
 .agent-directory-type-cell,
@@ -1927,22 +1951,29 @@ th {
 }
 
 .agent-app-cell {
-  display: flex;
+  display: grid;
+  grid-template-columns: 44px auto;
   align-items: center;
   gap: 14px;
+  padding-top: 0;
+}
+
+.agent-app-cell strong {
+  display: block;
+  line-height: 1.08;
 }
 
 .agent-app-icon {
-  width: 52px;
-  height: 52px;
-  min-width: 52px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
   display: grid;
   place-items: center;
-  border-radius: 18px;
+  border-radius: 16px;
   background: linear-gradient(135deg, rgba(110, 159, 255, 0.18), rgba(79, 108, 191, 0.08));
   color: #3f5fb7;
   font-weight: 700;
-  font-size: 1.1rem;
+  font-size: 0.95rem;
 }
 
 .manage-link {

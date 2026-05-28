@@ -359,7 +359,7 @@ describe("PlatformService", () => {
     expect(reporting.topItems.some((item) => item.name.includes("Prime Ribeye"))).toBe(true);
   });
 
-  it("hides completed and stale past orders from the incoming queue and sorts remaining orders by requested time", async () => {
+  it("only shows active incoming orders and sorts them by requested time", async () => {
     const service = createService();
     const repository = (service as any).repository as InMemoryPlatformRepository;
     for (const existingOrder of repository.state.orders.filter((order) => order.restaurantId === "rest_lb_steakhouse")) {
@@ -378,10 +378,15 @@ describe("PlatformService", () => {
       ...agentOrder("queue-stale-past"),
       requested_fulfillment_time: futureIso(30),
     });
+    const rejectedOrder = await service.submitAgentOrder({
+      ...agentOrder("queue-rejected"),
+      requested_fulfillment_time: futureIso(48),
+    });
     await repository.updateOrder(lateOrder.id, { status: "completed" });
     await repository.updateOrder(stalePastOrder.id, {
       requestedFulfillmentTime: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
     });
+    await repository.updateOrder(rejectedOrder.id, { status: "rejected" });
 
     const orders = await service.listOrders("rest_lb_steakhouse");
 
@@ -391,6 +396,7 @@ describe("PlatformService", () => {
     expect(orders.findIndex((order) => order.id === earlyOrder.id)).toBeGreaterThanOrEqual(0);
     expect(orders.map((order) => order.id)).not.toContain(lateOrder.id);
     expect(orders.map((order) => order.id)).not.toContain(stalePastOrder.id);
+    expect(orders.map((order) => order.id)).not.toContain(rejectedOrder.id);
 
     const queueTimes = orders.map((order) => new Date(order.requestedFulfillmentTime).getTime());
     expect(queueTimes).toEqual([...queueTimes].sort((a, b) => a - b));
@@ -718,8 +724,9 @@ describe("PlatformService", () => {
     expect(payload.user.email).toBe("chain.owner@example.com");
     expect(payload.memberships).toHaveLength(2);
     expect(payload.restaurants).toHaveLength(2);
+    expect(payload.restaurants.some((restaurant: { id: string }) => restaurant.id === "rest_green_leaf_salads")).toBe(true);
+    expect(payload.selectedMembership.restaurantId).toBe("rest_green_leaf_salads");
     expect(posResponse.status).toBe(200);
-    expect(posConnection.provider).toBe("deliverect");
     expect(posConnection.lastSyncedAt).toBeTruthy();
     expect(menu.items.length).toBeGreaterThan(0);
     expect(menu.items.some((item: { name: string }) => item.name === "Kale Caesar")).toBe(true);
@@ -732,7 +739,7 @@ describe("PlatformService", () => {
       activation: {
         provider: "deliverect",
         providerAccountId: "acct_deliverect_demo_001",
-        providerLocationIds: ["deliv_loc_1"],
+        providerLocationIds: ["deliv_loc_3"],
         fullName: "Chain Owner",
         email: "fallback.owner@example.com",
         password: "password123",
@@ -740,9 +747,9 @@ describe("PlatformService", () => {
       accountName: "Green Leaf Salads",
       locations: [
         {
-          id: "deliv_loc_1",
-          name: "Green Leaf Salads - Sunnyvale",
-          address: "425 N Mathilda Ave, Sunnyvale, CA 94085",
+          id: "deliv_loc_3",
+          name: "Green Leaf Salads - Palo Alto",
+          address: "855 El Camino Real, Palo Alto, CA 94301",
           timezone: "America/Los_Angeles",
         },
       ],
@@ -756,7 +763,7 @@ describe("PlatformService", () => {
       metadata: {
         source: "onboarding",
         accountName: "Green Leaf Salads",
-        providerLocationId: "deliv_loc_1",
+        providerLocationId: "deliv_loc_3",
       },
     });
 
@@ -890,7 +897,7 @@ describe("PlatformService", () => {
     expect(await response.json()).toEqual({ error: "Operator role does not allow this action." });
   });
 
-  it("prevents staff from changing ordering rules through the restaurant API", async () => {
+  it("allows staff to change restaurant info and ordering rules through the restaurant API", async () => {
     const service = createService();
     const repository = (service as any).repository as InMemoryPlatformRepository;
     repository.state.operatorMemberships[0].role = "staff";
@@ -898,7 +905,7 @@ describe("PlatformService", () => {
     openServers.push(server);
     const { cookie } = await loginOperator(baseUrl);
 
-    const response = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/rules`, {
+    const rulesResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/rules`, {
       method: "PATCH",
       headers: {
         cookie,
@@ -907,8 +914,20 @@ describe("PlatformService", () => {
       body: JSON.stringify({ autoAcceptEnabled: false }),
     });
 
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({ error: "Operator role does not allow this action." });
+    expect(rulesResponse.status).toBe(200);
+    expect(await rulesResponse.json()).toEqual(expect.objectContaining({ autoAcceptEnabled: false }));
+
+    const restaurantResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse`, {
+      method: "PATCH",
+      headers: {
+        cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ contactPhone: "555-111-2222" }),
+    });
+
+    expect(restaurantResponse.status).toBe(200);
+    expect(await restaurantResponse.json()).toEqual(expect.objectContaining({ contactPhone: "555-111-2222" }));
   });
 
   it("returns 403 when a logged-in operator requests a restaurant outside their memberships", async () => {

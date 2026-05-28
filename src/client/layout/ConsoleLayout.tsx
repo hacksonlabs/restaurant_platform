@@ -1,20 +1,20 @@
 import { NavLink } from "react-router-dom";
 import { useState } from "react";
 import type { PropsWithChildren } from "react";
-import { useAuth } from "../auth/AuthContext";
+import { ALL_RESTAURANTS_SCOPE, useAuth } from "../auth/AuthContext";
 
 const navItems = [
-  { label: "Dashboard", to: "/" },
-  { label: "Profile", to: "/settings" },
-  { label: "POS & Menu", to: "/menu" },
+  { label: "Overview", to: "/" },
   { label: "Incoming Orders", to: "/orders" },
-  { label: "Manage Agents", to: "/agents" },
   { label: "Reporting", to: "/reporting" },
+  { label: "Access", to: "/access" },
+  { label: "Restaurant", to: "/settings" },
+  { label: "POS & Menu", to: "/menu" },
 ];
 
 export function ConsoleLayout({ children }: PropsWithChildren) {
   const [collapsed, setCollapsed] = useState(false);
-  const { session, logout, selectTenant } = useAuth();
+  const { session, logout, selectScope, selectedScope } = useAuth();
   const selectedRestaurant = session?.restaurants.find(
     (restaurant) => restaurant.id === session.selectedMembership.restaurantId,
   );
@@ -57,11 +57,12 @@ export function ConsoleLayout({ children }: PropsWithChildren) {
           {session ? (
             session.restaurants.length > 1 ? (
               <label className="tenant-switcher">
-                <span>Restaurant</span>
+                <span>Scope</span>
                 <select
-                  value={session.selectedMembership.restaurantId}
-                  onChange={(event) => void selectTenant(event.target.value)}
+                  value={selectedScope ?? session.selectedMembership.restaurantId}
+                  onChange={(event) => void selectScope(event.target.value)}
                 >
+                  <option value={ALL_RESTAURANTS_SCOPE}>All Restaurants</option>
                   {session.restaurants.map((restaurant) => (
                     <option key={restaurant.id} value={restaurant.id}>
                       {restaurant.name}

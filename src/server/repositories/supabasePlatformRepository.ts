@@ -92,9 +92,36 @@ function templateRestaurantNameForLocation(locationName: string) {
   return locationName.split(" - ")[0]?.trim() || locationName.trim();
 }
 
+function onboardingLocationArea(locationName: string) {
+  const [, ...rest] = locationName.split(" - ");
+  const area = rest.join(" - ").trim();
+  return area ? area.toLowerCase() : null;
+}
+
 function templateRestaurantIdFromMetadata(metadata: Record<string, unknown> | undefined) {
   const templateRestaurantId = metadata?.templateRestaurantId;
   return typeof templateRestaurantId === "string" && templateRestaurantId ? templateRestaurantId : null;
+}
+
+async function findExistingOnboardingRestaurantMatch(pool: Pool, locationSeed: OnboardingDiscoveredLocation) {
+  const templateRestaurantName = templateRestaurantNameForLocation(locationSeed.name);
+  const area = onboardingLocationArea(locationSeed.name);
+  if (!area) return null;
+  const result = await pool.query(
+    `select r.id as restaurant_id, l.id as location_id
+     from restaurants r
+     join restaurant_locations l on l.restaurant_id = r.id
+     where lower(r.name) = lower($1)
+       and lower(concat_ws(' ', r.location, l.name, l.city)) like $2
+     limit 1`,
+    [templateRestaurantName, `%${area}%`],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    restaurantId: row.restaurant_id as string,
+    locationId: row.location_id as string,
+  };
 }
 
 async function inferTemplateRestaurantIdForRestaurant(pool: Pool, restaurantId: string) {
@@ -665,6 +692,17 @@ export class SupabasePlatformRepository implements PlatformRepository {
       );
 
       for (const locationSeed of input.locations) {
+        const matchedExisting = await findExistingOnboardingRestaurantMatch(client as unknown as Pool, locationSeed);
+        if (matchedExisting) {
+          await client.query(
+            `insert into operator_memberships
+             (id, operator_user_id, restaurant_id, location_id, role, created_at)
+             values ($1, $2, $3, $4, 'owner', $5)`,
+            [createId("membership"), operatorUserId, matchedExisting.restaurantId, matchedExisting.locationId, now],
+          );
+          continue;
+        }
+
         const templateRestaurantName = templateRestaurantNameForLocation(locationSeed.name);
         const templateRestaurant = await client.query(
           "select id from restaurants where lower(name) = lower($1) limit 1",
@@ -1465,7 +1503,7 @@ export class SupabasePlatformRepository implements PlatformRepository {
        from agent_orders ao
        left join agents a on a.id = ao.agent_id
        where ao.restaurant_id = $1
-         and ao.status <> 'completed'
+         and ao.status not in ('completed', 'rejected', 'failed', 'cancelled')
          and ao.requested_fulfillment_time >= now() - interval '2 hours'
        order by ao.requested_fulfillment_time asc, ao.created_at asc`,
       [restaurantId],
