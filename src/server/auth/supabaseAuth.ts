@@ -157,4 +157,31 @@ export class SupabaseOperatorAuthClient {
     }
     return null;
   }
+
+  async deleteUserById(userId: string): Promise<boolean> {
+    const response = await fetch(authUrl(this.env, `/admin/users/${userId}`), {
+      method: "DELETE",
+      headers: {
+        apikey: this.env.supabaseServiceRoleKey,
+        Authorization: `Bearer ${this.env.supabaseServiceRoleKey}`,
+      },
+    });
+
+    if (response.status === 404) {
+      return false;
+    }
+
+    const payload = await parseResponse(response);
+    if (!response.ok) {
+      throw new Error(
+        typeof payload === "object" && payload && "msg" in payload
+          ? String((payload as any).msg)
+          : typeof payload === "object" && payload && "message" in payload
+            ? String((payload as any).message)
+            : "Unable to delete operator account.",
+      );
+    }
+
+    return true;
+  }
 }

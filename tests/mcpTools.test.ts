@@ -10,6 +10,7 @@ import {
   submitOrderTool,
   validateOrderTool,
 } from "../src/server/mcp/tools";
+import type { OnboardingDiscoveredLocation } from "../src/shared/types";
 
 function createContext() {
   const service = new PlatformService(new InMemoryPlatformRepository("coachimhungry_demo_live_local_key"));
@@ -96,6 +97,53 @@ describe("Phantom MCP tools", () => {
         "rest_green_leaf_salads",
       ]),
     );
+  });
+
+  it("hides onboarding-created pizza duplicates from the demo MCP key", async () => {
+    const repository = new InMemoryPlatformRepository("coachimhungry_demo_live_local_key");
+    await repository.createOnboardingOperatorAccount({
+      activation: {
+        provider: "deliverect",
+        providerAccountId: "acct_deliverect_demo_001",
+        providerLocationIds: ["deliv_loc_duplicate_pizza"],
+        fullName: "Chain Owner",
+        email: "chain.owner@example.com",
+        password: "password123",
+      },
+      accountName: "Pizza Palace",
+      locations: [
+        {
+          id: "deliv_loc_duplicate_pizza",
+          name: "Pizza Palace",
+          address: "1325 Sunnyvale Saratoga Rd, Sunnyvale, CA 94087",
+          timezone: "America/Los_Angeles",
+        } satisfies OnboardingDiscoveredLocation,
+      ],
+    });
+    const service = new PlatformService(repository);
+    const agentKey = await authenticateMcpAgent(service, "coachimhungry_demo_live_local_key");
+
+    const result = await searchRestaurantsTool(
+      {
+        service,
+        agentKey,
+      },
+      {
+        query: "pizza",
+        address: "1325 Sunnyvale Saratoga Rd, Sunnyvale, CA 94087",
+        latitude: 37.3385,
+        longitude: -122.0322,
+        radius_miles: 3,
+        fulfillment_type: "pickup",
+        limit: 10,
+      },
+    );
+
+    expect(result.restaurants.filter((restaurant) => restaurant.name === "Pizza Palace")).toEqual([
+      expect.objectContaining({
+        id: "rest_pizza_palace",
+      }),
+    ]);
   });
 
   it("returns the canonical menu for an allowed restaurant", async () => {

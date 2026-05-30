@@ -310,6 +310,14 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.post(
+    "/restaurants/:restaurantId/orders/mock",
+    requireRestaurantRole(service, ["owner", "staff"]),
+    asyncHandler(async (request, response) => {
+      response.json(await service.createMockOrderForRestaurant(request.params.restaurantId));
+    }),
+  );
+
+  router.post(
     "/restaurants/:restaurantId/orders/:orderId/submit-to-pos",
     rateLimit({ key: (request) => `submit:${request.params.restaurantId}:${request.params.orderId}`, limit: 5, windowMs: 60_000, message: "Too many POS submission attempts." }),
     requireRestaurantRole(service, ["owner", "staff"]),

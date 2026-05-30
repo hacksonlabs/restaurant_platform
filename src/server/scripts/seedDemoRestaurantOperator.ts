@@ -86,21 +86,44 @@ async function createAuthUser(env: ReturnType<typeof getEnv>) {
   return user;
 }
 
+async function updateAuthUser(env: ReturnType<typeof getEnv>, userId: string) {
+  const response = await fetch(authUrl(env.supabaseUrl, `/admin/users/${userId}`), {
+    method: "PUT",
+    headers: authHeaders(env.supabaseServiceRoleKey),
+    body: JSON.stringify({
+      email: DEMO_OPERATOR.email,
+      password: DEMO_OPERATOR.password,
+      email_confirm: true,
+      user_metadata: { full_name: DEMO_OPERATOR.fullName },
+    }),
+  });
+  const payload = await parseResponse(response);
+  if (!response.ok) {
+    throw new Error(`Unable to update Supabase Auth user: ${response.status} ${JSON.stringify(payload)}`);
+  }
+  const user = normalizeAuthUser(payload);
+  if (!user?.id) {
+    throw new Error("Supabase Auth update user response did not include a user id.");
+  }
+  return user;
+}
+
 async function ensureAuthUser(env: ReturnType<typeof getEnv>) {
   const users = await listAuthUsers(env);
   const existing = users.find((user) => user.email?.toLowerCase() === DEMO_OPERATOR.email);
   if (existing?.id) {
-    return { user: existing, created: false };
+    const updated = await updateAuthUser(env, existing.id);
+    return { user: updated, created: false, passwordReset: true };
   }
   const created = await createAuthUser(env);
-  return { user: created, created: true };
+  return { user: created, created: true, passwordReset: false };
 }
 
 async function main() {
   const env = getEnv();
   await assertSupabaseReady(env);
 
-  const { user, created } = await ensureAuthUser(env);
+  const { user, created, passwordReset } = await ensureAuthUser(env);
   const client = new Client({ connectionString: env.databaseUrl });
   await client.connect();
 
@@ -164,6 +187,7 @@ async function main() {
         {
           ok: true,
           createdAuthUser: created,
+          resetAuthPassword: passwordReset,
           email: DEMO_OPERATOR.email,
           password: DEMO_OPERATOR.password,
           operatorUserId: DEMO_OPERATOR.operatorUserId,

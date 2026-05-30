@@ -139,6 +139,24 @@ create table if not exists operator_users (
   last_login_at timestamptz
 );
 
+alter table operator_users add column if not exists supabase_user_id uuid;
+
+do $$
+begin
+  if to_regclass('auth.users') is not null and not exists (
+    select 1
+    from pg_constraint
+    where conname = 'operator_users_supabase_user_id_fkey'
+      and conrelid = 'public.operator_users'::regclass
+  ) then
+    alter table public.operator_users
+      add constraint operator_users_supabase_user_id_fkey
+      foreign key (supabase_user_id)
+      references auth.users(id)
+      on delete cascade;
+  end if;
+end $$;
+
 create table if not exists operator_memberships (
   id text primary key,
   operator_user_id text not null references operator_users(id) on delete cascade,

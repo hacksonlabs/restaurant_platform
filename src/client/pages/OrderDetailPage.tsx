@@ -278,7 +278,7 @@ export function OrderDetailPage() {
       <PageHeader
         eyebrow="Order Detail"
         title={displayData.order.id}
-        description="Managers make a one-time approve or reject decision. Phantom handles the POS workflow after approval."
+        description=""
         actions={
           canDecide ? (
             <div className="page-actions">
@@ -409,7 +409,7 @@ export function OrderDetailPage() {
         </Card>
       ) : null}
 
-      <Card title="Items" subtitle="Identical item configurations are grouped together so managers can review the actual order composition quickly.">
+      <Card title="Items" subtitle="">
         <DataTable
           columns={
             hasSplitBundle

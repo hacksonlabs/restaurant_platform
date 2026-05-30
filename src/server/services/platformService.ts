@@ -37,6 +37,7 @@ import type { OperatorIdentity } from "../auth/supabaseAuth";
 import { randomToken, sha256 } from "../utils/crypto";
 import { createId } from "../utils/ids";
 import { log } from "../utils/logger";
+import { appNow } from "../utils/time";
 import type { RestaurantLocation } from "../../shared/types";
 
 function formatRestaurantAddress(location: RestaurantLocation | null, fallback: string) {
@@ -75,23 +76,23 @@ const ONBOARDING_DISCOVERY_FIXTURES: Record<OnboardingProvider, OnboardingDiscov
   deliverect: {
     provider: "deliverect",
     accountId: "acct_deliverect_demo_001",
-    name: "Green Leaf Salads",
+    name: "Pizza Palace",
     locations: [
       {
         id: "deliv_loc_1",
-        name: "Green Leaf Salads - Sunnyvale",
-        address: "425 N Mathilda Ave, Sunnyvale, CA 94085",
+        name: "Pizza Palace - Sunnyvale",
+        address: "1325 Sunnyvale Saratoga Rd, Sunnyvale, CA 94087",
         timezone: "America/Los_Angeles",
       },
       {
         id: "deliv_loc_2",
-        name: "Green Leaf Salads - Mountain View",
+        name: "Pizza Palace - Mountain View",
         address: "301 Castro St, Mountain View, CA 94041",
         timezone: "America/Los_Angeles",
       },
       {
         id: "deliv_loc_3",
-        name: "Green Leaf Salads - Palo Alto",
+        name: "Pizza Palace - Palo Alto",
         address: "855 El Camino Real, Palo Alto, CA 94301",
         timezone: "America/Los_Angeles",
       },
@@ -100,17 +101,17 @@ const ONBOARDING_DISCOVERY_FIXTURES: Record<OnboardingProvider, OnboardingDiscov
   olo: {
     provider: "olo",
     accountId: "acct_olo_demo_001",
-    name: "Green Leaf Salads",
+    name: "Pizza Palace",
     locations: [
       {
         id: "olo_loc_1",
-        name: "Green Leaf Salads - Palo Alto",
+        name: "Pizza Palace - Palo Alto",
         address: "251 University Ave, Palo Alto, CA 94301",
         timezone: "America/Los_Angeles",
       },
       {
         id: "olo_loc_2",
-        name: "Green Leaf Salads - Redwood City",
+        name: "Pizza Palace - Redwood City",
         address: "1450 Broadway, Redwood City, CA 94063",
         timezone: "America/Los_Angeles",
       },
@@ -119,17 +120,17 @@ const ONBOARDING_DISCOVERY_FIXTURES: Record<OnboardingProvider, OnboardingDiscov
   pos: {
     provider: "pos",
     accountId: "acct_pos_demo_001",
-    name: "Green Leaf Salads",
+    name: "Pizza Palace",
     locations: [
       {
         id: "pos_loc_1",
-        name: "Green Leaf Salads - Sunnyvale",
-        address: "301 Castro St, Mountain View, CA 94041",
+        name: "Pizza Palace - Sunnyvale",
+        address: "1325 Sunnyvale Saratoga Rd, Sunnyvale, CA 94087",
         timezone: "America/Los_Angeles",
       },
       {
         id: "pos_loc_2",
-        name: "Green Leaf Salads - San Jose",
+        name: "Pizza Palace - San Jose",
         address: "3055 Olin Ave, San Jose, CA 95128",
         timezone: "America/Los_Angeles",
       },
@@ -173,7 +174,7 @@ export class PlatformService {
     return this.repository.listRestaurants();
   }
 
-  async listAgentRestaurants(agentId: string) {
+  async listAgentRestaurants(agentId: string, options?: { demoOnly?: boolean }) {
     const [restaurants, agent] = await Promise.all([this.repository.listRestaurants(), this.getAgent(agentId)]);
     const allowedEntries = await Promise.all(
       restaurants.map(async (restaurant) => {
@@ -184,6 +185,9 @@ export class PlatformService {
           this.repository.getRules(restaurant.id),
         ]);
         if (!permission || permission.status !== "allowed" || !restaurant.agentOrderingEnabled) {
+          return null;
+        }
+        if (options?.demoOnly && connection?.metadata?.source !== "demo") {
           return null;
         }
         return {
@@ -344,6 +348,22 @@ export class PlatformService {
     if (ownerRestaurantIds.length === 0) {
       throw new Error("Only owner accounts can manage staff.");
     }
+
+    const target = await this.repository.getTeamMemberRecord(operatorUserId);
+    if (!target) {
+      throw new Error("Team member not found.");
+    }
+
+    const managedAssignments = target.assignments.filter((entry) => ownerRestaurantIds.includes(entry.restaurantId));
+    if (managedAssignments.length === 0) {
+      throw new Error("You can only remove access to restaurants you own.");
+    }
+
+    const removesEntireOperator = target.assignments.every((entry) => ownerRestaurantIds.includes(entry.restaurantId));
+    if (removesEntireOperator && this.operatorAuth?.isEnabled() && target.user.supabaseUserId) {
+      await this.operatorAuth.deleteUserById(target.user.supabaseUserId);
+    }
+
     await this.repository.deleteTeamMember(operatorUserId, ownerRestaurantIds);
     await Promise.all(
       ownerRestaurantIds.map((restaurantId) =>
@@ -886,6 +906,80 @@ export class PlatformService {
     return this.groupOrdersForReview(orders);
   }
 
+  async createMockOrderForRestaurant(restaurantId: string) {
+    const [restaurant, menu, rules, agents] = await Promise.all([
+      this.getRestaurant(restaurantId),
+      this.getMenu(restaurantId),
+      this.getRules(restaurantId),
+      this.listAgents(restaurantId),
+    ]);
+
+    const preferredAllowedAgent = agents.find(
+      (entry) => entry.permission.status === "allowed" && entry.agent.id === "agent_coachimhungry",
+    );
+    const allowedAgentId =
+      preferredAllowedAgent?.agent.id ??
+      rules.allowedAgentIds.find((agentId) =>
+        agents.some((entry) => entry.permission.status === "allowed" && entry.agent.id === agentId),
+      ) ??
+      agents.find((entry) => entry.permission.status === "allowed")?.agent.id ??
+      null;
+    if (!allowedAgentId) {
+      throw new Error("No allowed agent is configured for this restaurant.");
+    }
+
+    const availableItems = menu.items.filter((item) => item.availability === "available");
+    if (availableItems.length === 0) {
+      throw new Error("No available menu items are configured for this restaurant.");
+    }
+
+    const selectedItems = availableItems.slice(0, Math.min(2, availableItems.length)).map((item) => ({
+      item_id: item.id,
+      quantity: 1,
+      modifiers: [],
+    }));
+    const headcount = selectedItems.reduce((sum, item) => sum + item.quantity, 0);
+
+    const requestedFulfillmentTime = new Date(appNow().getTime() + 2 * 24 * 60 * 60 * 1000).toISOString();
+    const externalOrderReference = `demo-mock-${restaurantId}-${randomToken(6).toLowerCase()}`;
+    const fulfillmentType = rules.allowedFulfillmentTypes.includes("pickup")
+      ? "pickup"
+      : rules.allowedFulfillmentTypes[0] ?? "pickup";
+
+    return this.submitAgentOrder({
+      restaurant_id: restaurantId,
+      agent_id: allowedAgentId,
+      external_order_reference: externalOrderReference,
+      customer: {
+        name: "Demo Catering Team",
+        email: "demo-orders@phantom.local",
+        teamName: `${restaurant.name} Demo Account`,
+      },
+      fulfillment_type: fulfillmentType,
+      requested_fulfillment_time: requestedFulfillmentTime,
+      fulfillment_address:
+        fulfillmentType === "delivery" || fulfillmentType === "catering"
+          ? {
+              address1: restaurant.location,
+              city: "Demo City",
+              state: "CA",
+              postal_code: "94000",
+              notes: "Auto-generated demo order.",
+            }
+          : undefined,
+      headcount,
+      payment_policy: rules.paymentPolicy,
+      items: selectedItems,
+      dietary_constraints: [],
+      packaging_instructions: "Auto-generated mock order for the demo console.",
+      substitution_policy: rules.substitutionPolicy,
+      metadata: {
+        source: "demo_add_mock_order",
+        created_by: "restaurant_console",
+      },
+    });
+  }
+
   async getOrder(restaurantId: string, orderId: string) {
     const detail = await this.getSingleOrderDetail(restaurantId, orderId);
     if (!detail) {
@@ -1426,7 +1520,7 @@ export class PlatformService {
     const rules = await this.getRules(order.restaurant_id);
     const context = await this.getPOSContext(order.restaurant_id);
     const issues: ValidationIssue[] = [];
-    const minutesUntil = (new Date(order.requested_fulfillment_time).getTime() - Date.now()) / 60000;
+    const minutesUntil = (new Date(order.requested_fulfillment_time).getTime() - appNow().getTime()) / 60000;
 
     if (!restaurant.agentOrderingEnabled) {
       issues.push({
@@ -1862,7 +1956,7 @@ export class PlatformService {
       throw new Error("Order external reference must be unique before POS submission.");
     }
     const requestedAt = new Date(order.requestedFulfillmentTime).getTime();
-    if (Number.isNaN(requestedAt) || requestedAt <= Date.now()) {
+    if (Number.isNaN(requestedAt) || requestedAt <= appNow().getTime()) {
       throw new Error("Order requested fulfillment time must be a valid future timestamp.");
     }
 

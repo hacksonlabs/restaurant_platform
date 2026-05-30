@@ -12,22 +12,22 @@ const COPY: Record<
     title: "Find your Deliverect restaurants",
     body: "Search by restaurant or brand name. In mock mode, we’ve loaded a small chain example so you can see how a multi-location import would feel.",
     placeholder: "Search by restaurant or brand name",
-    defaultQuery: "Green Leaf Salads",
-    hint: "Mock example prefilled: Green Leaf Salads",
+    defaultQuery: "Pizza Palace",
+    hint: "Mock example prefilled: Pizza Palace",
   },
   olo: {
     title: "Find your Olo restaurants",
     body: "Search by restaurant or brand name. The mock data is set up to feel like a small multi-location Olo brand.",
     placeholder: "Search by restaurant or brand name",
-    defaultQuery: "Green Leaf Salads",
-    hint: "Mock example prefilled: Green Leaf Salads",
+    defaultQuery: "Pizza Palace",
+    hint: "Mock example prefilled: Pizza Palace",
   },
   pos: {
     title: "Find your POS restaurants",
     body: "Search by restaurant or brand name to continue the direct POS setup.",
     placeholder: "Search by restaurant or brand name",
-    defaultQuery: "Green Leaf Salads",
-    hint: "Mock example prefilled: Green Leaf Salads",
+    defaultQuery: "Pizza Palace",
+    hint: "Mock example prefilled: Pizza Palace",
   },
 };
 

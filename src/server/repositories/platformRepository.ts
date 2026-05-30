@@ -1,6 +1,7 @@
 import { createDemoSeed, type DemoSeedState } from "./demoData";
 import { createId } from "../utils/ids";
 import { sha256 } from "../utils/crypto";
+import { appNow, endOfDay, startOfDay } from "../utils/time";
 import type { OperatorIdentity } from "../auth/supabaseAuth";
 import type {
   Agent,
@@ -176,6 +177,7 @@ export interface PlatformRepository {
   deleteOperatorSession(sessionTokenHash: string): Promise<void>;
   listAccessibleRestaurants(operatorUserId: string): Promise<Array<Restaurant & { memberships: OperatorMembership[] }>>;
   listTeamMembers(restaurantIds: string[]): Promise<TeamMemberRecord[]>;
+  getTeamMemberRecord(operatorUserId: string): Promise<TeamMemberRecord | null>;
   createTeamMember(input: {
     creatorUserId: string;
     teamMember: CreateTeamMemberInput & { supabaseUserId?: string };
@@ -270,7 +272,7 @@ function computeTopItems(
   orderItems.forEach((item) => {
     const order = orderById.get(item.orderId);
     const menuItem = menuById.get(item.menuItemId);
-    if (!order || order.restaurantId !== restaurantId || !menuItem || !isWithinReportingRange(order.createdAt, range)) return;
+    if (!order || order.restaurantId !== restaurantId || !menuItem || !isWithinReportingRange(order.requestedFulfillmentTime, range)) return;
     counts.set(menuItem.name, (counts.get(menuItem.name) ?? 0) + item.quantity);
   });
   return [...counts.entries()]
@@ -295,7 +297,7 @@ function computeTopModifiers(
     const orderItem = orderItemById.get(entry.orderItemId);
     const order = orderItem ? orderById.get(orderItem.orderId) : null;
     const modifier = modifierById.get(entry.modifierId);
-    if (!order || order.restaurantId !== restaurantId || !modifier || !isWithinReportingRange(order.createdAt, range)) return;
+    if (!order || order.restaurantId !== restaurantId || !modifier || !isWithinReportingRange(order.requestedFulfillmentTime, range)) return;
     counts.set(modifier.name, (counts.get(modifier.name) ?? 0) + entry.quantity);
   });
   return [...counts.entries()]
@@ -313,7 +315,8 @@ function computeFailureReasons(
 ) {
   const orderIds = new Set(
     orders
-      .filter((entry) => entry.restaurantId === restaurantId && isWithinReportingRange(entry.createdAt, range))
+      .filter((entry) => entry.restaurantId === restaurantId)
+      .filter((entry) => isWithinReportingRange(entry.requestedFulfillmentTime, range))
       .map((entry) => entry.id),
   );
   const counts = new Map<string, number>();
@@ -350,7 +353,7 @@ function computeReportingMetricsForState(
   const relevantOrders = orders.filter((entry) => entry.restaurantId === restaurantId);
   const grouped = new Map<string, AgentOrderRecord[]>();
   relevantOrders.forEach((order) => {
-    const date = order.createdAt.slice(0, 10);
+    const date = order.requestedFulfillmentTime.slice(0, 10);
     const list = grouped.get(date) ?? [];
     list.push(order);
     grouped.set(date, list);
@@ -378,9 +381,10 @@ function computeReportingMetricsForState(
                 return sum + Math.max(0, delta / 60000);
               }, 0) / dateOrders.length,
             );
+      const nowTime = appNow().getTime();
       const upcomingScheduledOrderVolume = dateOrders.filter(
         (order) =>
-          new Date(order.requestedFulfillmentTime).getTime() > Date.now() &&
+          new Date(order.requestedFulfillmentTime).getTime() > nowTime &&
           !["rejected", "failed", "cancelled", "completed"].includes(order.status),
       ).length;
       return {
@@ -632,21 +636,6 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const memberships: typeof this.state.operatorMemberships = [];
 
     for (const locationSeed of input.locations) {
-      const matchedExisting = findExistingOnboardingRestaurantMatch(this.state.restaurants, this.state.locations, locationSeed);
-      if (matchedExisting) {
-        const membership = {
-          id: createId("membership"),
-          operatorUserId,
-          restaurantId: matchedExisting.restaurant.id,
-          locationId: matchedExisting.location.id,
-          role: "owner" as const,
-          createdAt: now,
-        };
-        this.state.operatorMemberships.unshift(membership);
-        memberships.push(membership);
-        continue;
-      }
-
       const templateRestaurantName = templateRestaurantNameForLocation(locationSeed.name);
       const templateRestaurant = this.state.restaurants.find((entry) => entry.name === templateRestaurantName);
       const templateConnection = templateRestaurant
@@ -804,7 +793,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     if (!user) return null;
 
     if (options?.linkIdentity !== false && user.supabaseUserId && user.supabaseUserId !== identity.id) {
-      throw new Error("Operator account is already linked to a different Supabase Auth user.");
+      throw new Error("Operator account is already linked to a different user.");
     }
 
     user.email = identity.email;
@@ -902,6 +891,26 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       })
       .filter((entry): entry is TeamMemberRecord => Boolean(entry))
       .sort((a, b) => a.user.fullName.localeCompare(b.user.fullName));
+  }
+
+  async getTeamMemberRecord(operatorUserId: string) {
+    const user = this.state.operatorUsers.find((entry) => entry.id === operatorUserId);
+    if (!user) {
+      return null;
+    }
+
+    const assignments = this.state.operatorMemberships
+      .filter((entry) => entry.operatorUserId === operatorUserId)
+      .map((entry) => ({
+        membershipId: entry.id,
+        restaurantId: entry.restaurantId,
+        restaurantName: this.state.restaurants.find((restaurant) => restaurant.id === entry.restaurantId)?.name ?? entry.restaurantId,
+        locationId: entry.locationId,
+        role: entry.role,
+      }))
+      .sort((a, b) => a.restaurantName.localeCompare(b.restaurantName));
+
+    return { user, assignments };
   }
 
   async createTeamMember(input: {
@@ -1231,7 +1240,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async listOrders(restaurantId: string) {
-    const cutoffTime = Date.now() - 2 * 60 * 60 * 1000;
+    const cutoffTime = appNow().getTime() - 2 * 60 * 60 * 1000;
     const nonIncomingStatuses = new Set(["completed", "rejected", "failed", "cancelled"]);
     return this.state.orders
       .filter(
@@ -1369,9 +1378,14 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async getDashboardStats(restaurantId: string) {
-    const orders = await this.listOrders(restaurantId);
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const weeklyOrders = orders.filter((entry) => new Date(entry.createdAt).getTime() >= sevenDaysAgo);
+    const orders = this.state.orders.filter((entry) => entry.restaurantId === restaurantId);
+    const now = appNow();
+    const weekStart = startOfDay(now).getTime();
+    const weekEnd = endOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 6)).getTime();
+    const weeklyOrders = orders.filter((entry) => {
+      const requestedAt = new Date(entry.requestedFulfillmentTime).getTime();
+      return requestedAt >= weekStart && requestedAt <= weekEnd;
+    });
     const topItems = computeTopItems(restaurantId, this.state.orders, this.state.orderItems, this.state.menuItems);
     return {
       ordersThisWeek: weeklyOrders.length,

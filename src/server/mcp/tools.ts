@@ -45,6 +45,10 @@ export interface PhantomMcpContext {
   agentKey: AgentApiKey;
 }
 
+function isDemoCoachImHungryKey(agentKey: AgentApiKey) {
+  return agentKey.id === "key_coachimhungry_demo";
+}
+
 function normalizeOrderForAgent(input: OrderToolInput, agentId: string): CanonicalOrderIntent {
   if (input.order.restaurant_id !== input.restaurant_id) {
     throw new Error("Tool input restaurant_id must match order.restaurant_id.");
@@ -262,7 +266,9 @@ export async function authenticateMcpAgent(service: PlatformService, rawApiKey: 
 
 export async function searchRestaurantsTool(context: PhantomMcpContext, input: SearchRestaurantsInput) {
   context.service.assertAgentScope(context.agentKey, "restaurants:read");
-  const restaurants = await context.service.listAgentRestaurants(context.agentKey.agentId);
+  const restaurants = await context.service.listAgentRestaurants(context.agentKey.agentId, {
+    demoOnly: isDemoCoachImHungryKey(context.agentKey),
+  });
   return {
     restaurants: filterRestaurants(restaurants, input),
   };

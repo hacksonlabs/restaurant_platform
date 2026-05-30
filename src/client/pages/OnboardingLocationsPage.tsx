@@ -59,7 +59,7 @@ export function OnboardingLocationsPage() {
             );
           })}
         </div>
-        <div className="auth-actions">
+        <div className="auth-actions onboarding-location-footer">
           <Button type="button" onClick={() => navigate("/onboarding/access")} disabled={selectedLocationIds.length === 0}>
             Continue
           </Button>

@@ -180,6 +180,8 @@ export const api = {
     request(`/api/restaurants/${restaurantId}/orders/${orderId}/approve`, { method: "POST" }),
   rejectOrder: (restaurantId: string, orderId: string) =>
     request(`/api/restaurants/${restaurantId}/orders/${orderId}/reject`, { method: "POST" }),
+  addMockOrder: (restaurantId: string) =>
+    request<AgentOrderRecord>(`/api/restaurants/${restaurantId}/orders/mock`, { method: "POST" }),
   submitOrderToPOS: (restaurantId: string, orderId: string) =>
     request(`/api/restaurants/${restaurantId}/orders/${orderId}/submit-to-pos`, { method: "POST" }),
   replayOrderSubmit: (restaurantId: string, orderId: string) =>

@@ -47,6 +47,7 @@ import type {
   ReportingSnapshotRecord,
 } from "./platformRepository";
 import { createId } from "../utils/ids";
+import { appNow, endOfDay, startOfDay } from "../utils/time";
 
 function required<T>(value: T | null, message: string): T {
   if (!value) throw new Error(message);
@@ -101,6 +102,10 @@ function onboardingLocationArea(locationName: string) {
 function templateRestaurantIdFromMetadata(metadata: Record<string, unknown> | undefined) {
   const templateRestaurantId = metadata?.templateRestaurantId;
   return typeof templateRestaurantId === "string" && templateRestaurantId ? templateRestaurantId : null;
+}
+
+function isUuidLike(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 async function findExistingOnboardingRestaurantMatch(pool: Pool, locationSeed: OnboardingDiscoveredLocation) {
@@ -692,17 +697,6 @@ export class SupabasePlatformRepository implements PlatformRepository {
       );
 
       for (const locationSeed of input.locations) {
-        const matchedExisting = await findExistingOnboardingRestaurantMatch(client as unknown as Pool, locationSeed);
-        if (matchedExisting) {
-          await client.query(
-            `insert into operator_memberships
-             (id, operator_user_id, restaurant_id, location_id, role, created_at)
-             values ($1, $2, $3, $4, 'owner', $5)`,
-            [createId("membership"), operatorUserId, matchedExisting.restaurantId, matchedExisting.locationId, now],
-          );
-          continue;
-        }
-
         const templateRestaurantName = templateRestaurantNameForLocation(locationSeed.name);
         const templateRestaurant = await client.query(
           "select id from restaurants where lower(name) = lower($1) limit 1",
@@ -808,14 +802,15 @@ export class SupabasePlatformRepository implements PlatformRepository {
     identity: OperatorIdentity,
     options?: ReconcileOperatorOptions,
   ) {
+    const identityUuid = isUuidLike(identity.id) ? identity.id : null;
     const existingResult = await this.pool.query(
       `select *
        from operator_users
-       where supabase_user_id = $1::uuid
+       where ($1::uuid is not null and supabase_user_id = $1::uuid)
           or lower(email) = lower($2)
-       order by case when supabase_user_id = $1::uuid then 0 else 1 end
+       order by case when $1::uuid is not null and supabase_user_id = $1::uuid then 0 else 1 end
        limit 1`,
-      [identity.id, identity.email],
+      [identityUuid, identity.email],
     );
     let operatorUserId = existingResult.rows[0]?.id as string | undefined;
 
@@ -834,7 +829,7 @@ export class SupabasePlatformRepository implements PlatformRepository {
           "op_dev_rest",
           identity.email,
           identity.fullName ?? "Restaurant Dev Operator",
-          identity.id,
+          identityUuid,
           options?.updateLastLoginAt ? new Date().toISOString() : null,
         ],
       );
@@ -868,14 +863,14 @@ export class SupabasePlatformRepository implements PlatformRepository {
 
     const existingLinkedId = existingResult.rows[0]?.supabase_user_id as string | undefined;
     if (options?.linkIdentity !== false && existingLinkedId && existingLinkedId !== identity.id) {
-      throw new Error("Operator account is already linked to a different Supabase Auth user.");
+      throw new Error("Operator account is already linked to a different user.");
     }
 
     const updatedResult = await this.pool.query(
       `update operator_users
        set email = $2,
            full_name = $3,
-           supabase_user_id = case when $6 then $4 else supabase_user_id end,
+           supabase_user_id = case when $6 then $4::uuid else supabase_user_id end,
            last_login_at = case when $5 then now() else last_login_at end
        where id = $1
        returning *`,
@@ -883,7 +878,7 @@ export class SupabasePlatformRepository implements PlatformRepository {
         operatorUserId,
         identity.email,
         identity.fullName ?? "Restaurant Operator",
-        identity.id,
+        identityUuid,
         options?.updateLastLoginAt === true,
         options?.linkIdentity !== false,
       ],
@@ -1005,6 +1000,42 @@ export class SupabasePlatformRepository implements PlatformRepository {
       });
     }
     return [...byUser.values()];
+  }
+
+  async getTeamMemberRecord(operatorUserId: string) {
+    const result = await this.pool.query(
+      `select
+         u.*,
+         m.id as membership_id,
+         m.restaurant_id,
+         m.location_id,
+         m.role,
+         r.name as restaurant_name
+       from operator_users u
+       left join operator_memberships m on m.operator_user_id = u.id
+       left join restaurants r on r.id = m.restaurant_id
+       where u.id = $1
+       order by r.name asc nulls last`,
+      [operatorUserId],
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    return {
+      user: mapOperatorUser(row),
+      assignments: result.rows
+        .filter((entry) => entry.membership_id)
+        .map((entry) => ({
+          membershipId: entry.membership_id,
+          restaurantId: entry.restaurant_id,
+          restaurantName: entry.restaurant_name ?? entry.restaurant_id,
+          locationId: entry.location_id ?? undefined,
+          role: entry.role,
+        })),
+    };
   }
 
   async createTeamMember(input: {
@@ -1498,15 +1529,16 @@ export class SupabasePlatformRepository implements PlatformRepository {
   }
 
   async listOrders(restaurantId: string) {
+    const cutoffTime = new Date(appNow().getTime() - 2 * 60 * 60 * 1000).toISOString();
     const result = await this.pool.query(
       `select ao.*, a.name as agent_name
        from agent_orders ao
        left join agents a on a.id = ao.agent_id
        where ao.restaurant_id = $1
          and ao.status not in ('completed', 'rejected', 'failed', 'cancelled')
-         and ao.requested_fulfillment_time >= now() - interval '2 hours'
+         and ao.requested_fulfillment_time >= $2::timestamptz
        order by ao.requested_fulfillment_time asc, ao.created_at asc`,
-      [restaurantId],
+      [restaurantId, cutoffTime],
     );
     return result.rows.map(mapOrder);
   }
@@ -1926,14 +1958,17 @@ export class SupabasePlatformRepository implements PlatformRepository {
   }
 
   async getDashboardStats(restaurantId: string): Promise<DashboardStats> {
+    const now = appNow();
+    const weekStart = startOfDay(now).toISOString();
+    const weekEnd = endOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 6)).toISOString();
     const ordersResult = await this.pool.query(
       `select
-         count(*) filter (where created_at >= now() - interval '7 day')::int as orders_this_week,
-         coalesce(sum(total_estimate_cents) filter (where created_at >= now() - interval '7 day'), 0)::int as revenue_from_agent_orders_cents,
+         count(*) filter (where requested_fulfillment_time >= $2::timestamptz and requested_fulfillment_time <= $3::timestamptz)::int as orders_this_week,
+         coalesce(sum(total_estimate_cents) filter (where requested_fulfillment_time >= $2::timestamptz and requested_fulfillment_time <= $3::timestamptz), 0)::int as revenue_from_agent_orders_cents,
          count(*) filter (where status = 'needs_approval')::int as orders_needing_review
        from agent_orders
        where restaurant_id = $1`,
-      [restaurantId],
+      [restaurantId, weekStart, weekEnd],
     );
     const topItemResult = await this.pool.query(
       `select m.name, sum(oi.quantity)::int as count
@@ -1973,8 +2008,8 @@ export class SupabasePlatformRepository implements PlatformRepository {
          join agent_orders o on o.id = oi.order_id
          join canonical_menu_items m on m.id = oi.menu_item_id
          where o.restaurant_id = $1
-           and ($2::date is null or o.created_at::date >= $2::date)
-           and ($3::date is null or o.created_at::date <= $3::date)
+           and ($2::date is null or o.requested_fulfillment_time::date >= $2::date)
+           and ($3::date is null or o.requested_fulfillment_time::date <= $3::date)
          group by m.name
          order by count desc, m.name asc
          limit 5`,
@@ -1987,8 +2022,8 @@ export class SupabasePlatformRepository implements PlatformRepository {
          join agent_orders o on o.id = oi.order_id
          join canonical_modifiers m on m.id = om.modifier_id
          where o.restaurant_id = $1
-           and ($2::date is null or o.created_at::date >= $2::date)
-           and ($3::date is null or o.created_at::date <= $3::date)
+           and ($2::date is null or o.requested_fulfillment_time::date >= $2::date)
+           and ($3::date is null or o.requested_fulfillment_time::date <= $3::date)
          group by m.name
          order by count desc, m.name asc
          limit 5`,
@@ -2001,8 +2036,8 @@ export class SupabasePlatformRepository implements PlatformRepository {
            join agent_orders o on o.id = vr.order_id
            cross join lateral jsonb_array_elements(vr.issues) as issue
            where o.restaurant_id = $1
-             and ($2::date is null or o.created_at::date >= $2::date)
-             and ($3::date is null or o.created_at::date <= $3::date)
+             and ($2::date is null or o.requested_fulfillment_time::date >= $2::date)
+             and ($3::date is null or o.requested_fulfillment_time::date <= $3::date)
              and coalesce(issue->>'severity', '') = 'error'
          ),
          submission_failures as (
@@ -2010,8 +2045,8 @@ export class SupabasePlatformRepository implements PlatformRepository {
            from pos_order_submissions ps
            join agent_orders o on o.id = ps.order_id
            where o.restaurant_id = $1
-             and ($2::date is null or o.created_at::date >= $2::date)
-             and ($3::date is null or o.created_at::date <= $3::date)
+             and ($2::date is null or o.requested_fulfillment_time::date >= $2::date)
+             and ($3::date is null or o.requested_fulfillment_time::date <= $3::date)
              and ps.status = 'failed'
          )
          select reason, count(*)::int as count
@@ -2037,6 +2072,7 @@ export class SupabasePlatformRepository implements PlatformRepository {
 
   async refreshReportingMetrics(restaurantId: string) {
     const client = await this.pool.connect();
+    const nowIso = appNow().toISOString();
     try {
       await client.query("begin");
       await client.query("delete from reporting_daily_metrics where restaurant_id = $1", [restaurantId]);
@@ -2055,9 +2091,9 @@ export class SupabasePlatformRepository implements PlatformRepository {
            upcoming_scheduled_order_volume
          )
          select
-           'metric_' || restaurant_id || '_' || to_char((created_at at time zone 'UTC')::date, 'YYYY_MM_DD') as id,
+           'metric_' || restaurant_id || '_' || to_char((requested_fulfillment_time at time zone 'UTC')::date, 'YYYY_MM_DD') as id,
            restaurant_id,
-           (created_at at time zone 'UTC')::date as date,
+           (requested_fulfillment_time at time zone 'UTC')::date as date,
            count(*)::int as total_orders,
            coalesce(sum(total_estimate_cents), 0)::int as revenue_cents,
            round(coalesce(avg(total_estimate_cents), 0))::int as average_order_value_cents,
@@ -2095,12 +2131,12 @@ export class SupabasePlatformRepository implements PlatformRepository {
              )
            )::int as average_lead_time_minutes,
            count(*) filter (
-             where requested_fulfillment_time > now()
+             where requested_fulfillment_time > $2::timestamptz
                and status not in ('rejected', 'failed', 'cancelled', 'completed')
            )::int as upcoming_scheduled_order_volume
          from agent_orders
          where restaurant_id = $1
-         group by restaurant_id, (created_at at time zone 'UTC')::date
+         group by restaurant_id, (requested_fulfillment_time at time zone 'UTC')::date
          on conflict (id) do update set
            restaurant_id = excluded.restaurant_id,
            date = excluded.date,
@@ -2112,7 +2148,7 @@ export class SupabasePlatformRepository implements PlatformRepository {
            rejected_orders = excluded.rejected_orders,
            average_lead_time_minutes = excluded.average_lead_time_minutes,
            upcoming_scheduled_order_volume = excluded.upcoming_scheduled_order_volume`,
-        [restaurantId],
+        [restaurantId, nowIso],
       );
       await client.query("commit");
     } catch (error) {

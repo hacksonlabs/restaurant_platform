@@ -330,6 +330,39 @@ textarea {
   gap: 16px;
 }
 
+.password-field-wrap {
+  position: relative;
+}
+
+.password-field-wrap input {
+  padding-right: 46px;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  transform: translateY(-50%);
+}
+
+.password-toggle:hover {
+  color: var(--accent-dark);
+}
+
+.password-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
 .auth-grid {
   display: grid;
   gap: 18px;
@@ -540,6 +573,12 @@ textarea {
 
 .onboarding-row-actions {
   align-items: center;
+  margin: 6px 0 10px;
+}
+
+.onboarding-location-footer {
+  margin-top: 18px;
+  padding-top: 6px;
 }
 
 .onboarding-search-results {
@@ -2442,6 +2481,16 @@ textarea:focus {
 .inline-message.success {
   background: rgba(45, 122, 91, 0.12);
   color: var(--success);
+}
+
+.inline-message.warning {
+  background: rgba(190, 147, 60, 0.14);
+  color: #8a5a0a;
+}
+
+.inline-message.danger {
+  background: rgba(182, 76, 66, 0.12);
+  color: var(--danger);
 }
 
 .panel-state.error {

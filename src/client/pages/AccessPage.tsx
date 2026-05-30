@@ -183,7 +183,7 @@ export function AccessPage() {
   return (
     <div className="page-grid">
       <PageHeader
-        eyebrow="Access"
+        eyebrow="Access Management"
         title={isAllRestaurantsScope ? "Account Access" : "Restaurant Access"}
         description={isAllRestaurantsScope ? "Manage people and agents across your restaurants." : "Manage people and agents for this restaurant."}
       />

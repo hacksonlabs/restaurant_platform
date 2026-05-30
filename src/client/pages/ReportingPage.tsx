@@ -7,6 +7,17 @@ import { useResource } from "./useResource";
 
 type ReportingPreset = "this_week" | "this_month" | "past_3_months" | "ytd" | "custom";
 
+function reportingNow() {
+  const configured = import.meta.env.VITE_DEMO_NOW?.trim();
+  if (configured) {
+    const parsed = new Date(configured);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return new Date();
+}
+
 function toDateInputValue(value: Date) {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, "0");
@@ -20,19 +31,20 @@ function addDays(value: Date, amount: number) {
   return next;
 }
 
-function startOfWeek(value: Date) {
-  const next = new Date(value);
-  const day = next.getDay();
-  const offset = day === 0 ? -6 : 1 - day;
-  return addDays(next, offset);
-}
-
 function startOfMonth(value: Date) {
   return new Date(value.getFullYear(), value.getMonth(), 1);
 }
 
+function endOfMonth(value: Date) {
+  return new Date(value.getFullYear(), value.getMonth() + 1, 0);
+}
+
 function startOfYear(value: Date) {
   return new Date(value.getFullYear(), 0, 1);
+}
+
+function endOfYear(value: Date) {
+  return new Date(value.getFullYear(), 11, 31);
 }
 
 function addMonths(value: Date, amount: number) {
@@ -40,7 +52,7 @@ function addMonths(value: Date, amount: number) {
 }
 
 function rangeForPreset(preset: ReportingPreset, customStartDate: string, customEndDate: string) {
-  const today = new Date();
+  const today = reportingNow();
   const endDate = toDateInputValue(today);
 
   if (preset === "custom") {
@@ -52,28 +64,28 @@ function rangeForPreset(preset: ReportingPreset, customStartDate: string, custom
 
   if (preset === "this_week") {
     return {
-      startDate: toDateInputValue(startOfWeek(today)),
-      endDate,
+      startDate: toDateInputValue(today),
+      endDate: toDateInputValue(addDays(today, 6)),
     };
   }
 
   if (preset === "this_month") {
     return {
       startDate: toDateInputValue(startOfMonth(today)),
-      endDate,
+      endDate: toDateInputValue(endOfMonth(today)),
     };
   }
 
   if (preset === "past_3_months") {
     return {
-      startDate: toDateInputValue(addMonths(today, -3)),
-      endDate,
+      startDate: toDateInputValue(startOfMonth(addMonths(today, -2))),
+      endDate: toDateInputValue(endOfMonth(today)),
     };
   }
 
   return {
     startDate: toDateInputValue(startOfYear(today)),
-    endDate,
+    endDate: toDateInputValue(endOfYear(today)),
   };
 }
 
@@ -225,9 +237,9 @@ export function ReportingPage() {
   useEffect(() => {
     if (preset !== "custom") return;
     if (customStartDate && customEndDate) return;
-    const today = new Date();
-    setCustomStartDate((current) => current || toDateInputValue(startOfWeek(today)));
-    setCustomEndDate((current) => current || toDateInputValue(today));
+    const today = reportingNow();
+    setCustomStartDate((current) => current || toDateInputValue(startOfMonth(today)));
+    setCustomEndDate((current) => current || toDateInputValue(endOfMonth(today)));
   }, [preset, customEndDate, customStartDate]);
 
   const selectedRange = useMemo(

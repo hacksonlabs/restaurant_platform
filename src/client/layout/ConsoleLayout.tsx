@@ -7,8 +7,8 @@ const navItems = [
   { label: "Overview", to: "/" },
   { label: "Incoming Orders", to: "/orders" },
   { label: "Reporting", to: "/reporting" },
-  { label: "Access", to: "/access" },
-  { label: "Restaurant", to: "/settings" },
+  { label: "Access Management", to: "/access" },
+  { label: "Restaurant Settings", to: "/settings" },
   { label: "POS & Menu", to: "/menu" },
 ];
 

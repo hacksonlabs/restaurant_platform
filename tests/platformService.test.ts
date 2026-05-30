@@ -359,6 +359,82 @@ describe("PlatformService", () => {
     expect(reporting.topItems.some((item) => item.name.includes("Prime Ribeye"))).toBe(true);
   });
 
+  it("aligns dashboard weekly totals to the current week window", async () => {
+    const previousDemoNow = process.env.VITE_DEMO_NOW;
+    process.env.VITE_DEMO_NOW = "2026-10-17T18:00:00.000Z";
+    try {
+      const service = createService();
+      const repository = (service as any).repository as InMemoryPlatformRepository;
+      const firstWeekOrder = await service.submitAgentOrder({
+        ...agentOrder("dashboard-week-1"),
+        approval_requirements: { manager_approval_required: false },
+        requested_fulfillment_time: "2026-10-18T18:00:00.000Z",
+      });
+      const secondWeekOrder = await service.submitAgentOrder({
+        ...agentOrder("dashboard-week-2"),
+        approval_requirements: { manager_approval_required: false },
+        requested_fulfillment_time: "2026-10-17T20:00:00.000Z",
+      });
+      const olderOrder = await service.submitAgentOrder({
+        ...agentOrder("dashboard-week-old"),
+        approval_requirements: { manager_approval_required: false },
+        requested_fulfillment_time: "2026-10-19T18:00:00.000Z",
+      });
+
+      await repository.updateOrder(firstWeekOrder.id, { createdAt: "2026-10-17T12:00:00.000Z" });
+      await repository.updateOrder(secondWeekOrder.id, { createdAt: "2026-10-14T09:00:00.000Z" });
+      await repository.updateOrder(olderOrder.id, {
+        createdAt: "2026-10-10T18:00:00.000Z",
+        requestedFulfillmentTime: "2026-10-11T18:00:00.000Z",
+      });
+
+      const dashboard = await service.getDashboard("rest_lb_steakhouse");
+
+      expect(dashboard.ordersThisWeek).toBe(2);
+      expect(dashboard.revenueFromAgentOrdersCents).toBe(
+        firstWeekOrder.totalEstimateCents + secondWeekOrder.totalEstimateCents,
+      );
+    } finally {
+      if (previousDemoNow === undefined) {
+        delete process.env.VITE_DEMO_NOW;
+      } else {
+        process.env.VITE_DEMO_NOW = previousDemoNow;
+      }
+    }
+  });
+
+  it("filters reporting by fulfillment date instead of creation date", async () => {
+    const previousDemoNow = process.env.VITE_DEMO_NOW;
+    process.env.VITE_DEMO_NOW = "2026-10-17T18:00:00.000Z";
+    try {
+      const service = createService();
+      const repository = (service as any).repository as InMemoryPlatformRepository;
+      const order = await service.submitAgentOrder({
+        ...agentOrder("reporting-fulfillment-date"),
+        approval_requirements: { manager_approval_required: false },
+        requested_fulfillment_time: "2026-10-18T18:00:00.000Z",
+        items: [{ item_id: "item_ribeye", quantity: 2, modifiers: [] }],
+      });
+
+      await repository.updateOrder(order.id, { createdAt: "2026-10-10T12:00:00.000Z" });
+      await repository.refreshReportingMetrics("rest_lb_steakhouse");
+
+      const reporting = await service.getReporting("rest_lb_steakhouse", {
+        startDate: "2026-10-12",
+        endDate: "2026-10-19",
+      });
+
+      expect(reporting.metrics.some((metric) => metric.date.startsWith("2026-10-18"))).toBe(true);
+      expect(reporting.topItems.some((item) => item.name.includes("Prime Ribeye"))).toBe(true);
+    } finally {
+      if (previousDemoNow === undefined) {
+        delete process.env.VITE_DEMO_NOW;
+      } else {
+        process.env.VITE_DEMO_NOW = previousDemoNow;
+      }
+    }
+  });
+
   it("only shows active incoming orders and sorts them by requested time", async () => {
     const service = createService();
     const repository = (service as any).repository as InMemoryPlatformRepository;
@@ -400,6 +476,33 @@ describe("PlatformService", () => {
 
     const queueTimes = orders.map((order) => new Date(order.requestedFulfillmentTime).getTime());
     expect(queueTimes).toEqual([...queueTimes].sort((a, b) => a - b));
+  });
+
+  it("creates a mock order that lands inside the current demo week window", async () => {
+    const previousDemoNow = process.env.VITE_DEMO_NOW;
+    process.env.VITE_DEMO_NOW = "2026-10-17T18:00:00.000Z";
+
+    try {
+      const service = createService();
+      const order = await service.createMockOrderForRestaurant("rest_pizza_palace");
+      const orders = await service.listOrders("rest_pizza_palace");
+      const requestedTime = new Date(order.requestedFulfillmentTime).getTime();
+      const demoNow = new Date("2026-10-17T18:00:00.000Z").getTime();
+      const endOfWeekWindow = demoNow + 7 * 24 * 60 * 60 * 1000;
+
+      expect(order.restaurantId).toBe("rest_pizza_palace");
+      expect(order.agentId).toBe("agent_coachimhungry");
+      expect(order.orderIntent.metadata.source).toBe("demo_add_mock_order");
+      expect(requestedTime).toBeGreaterThan(demoNow);
+      expect(requestedTime).toBeLessThan(endOfWeekWindow);
+      expect(orders.some((entry) => entry.id === order.id)).toBe(true);
+    } finally {
+      if (previousDemoNow === undefined) {
+        delete process.env.VITE_DEMO_NOW;
+      } else {
+        process.env.VITE_DEMO_NOW = previousDemoNow;
+      }
+    }
   });
 
   it("reuses the same persisted submit result for repeated idempotent order submissions", async () => {
@@ -653,7 +756,7 @@ describe("PlatformService", () => {
     expect(payload.locations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          name: "Green Leaf Salads - Sunnyvale",
+          name: "Pizza Palace - Sunnyvale",
         }),
       ]),
     );
@@ -724,12 +827,12 @@ describe("PlatformService", () => {
     expect(payload.user.email).toBe("chain.owner@example.com");
     expect(payload.memberships).toHaveLength(2);
     expect(payload.restaurants).toHaveLength(2);
-    expect(payload.restaurants.some((restaurant: { id: string }) => restaurant.id === "rest_green_leaf_salads")).toBe(true);
-    expect(payload.selectedMembership.restaurantId).toBe("rest_green_leaf_salads");
+    expect(payload.restaurants.every((restaurant: { id: string }) => restaurant.id !== "rest_pizza_palace")).toBe(true);
+    expect(payload.selectedMembership.restaurantId).not.toBe("rest_pizza_palace");
     expect(posResponse.status).toBe(200);
     expect(posConnection.lastSyncedAt).toBeTruthy();
     expect(menu.items.length).toBeGreaterThan(0);
-    expect(menu.items.some((item: { name: string }) => item.name === "Kale Caesar")).toBe(true);
+    expect(menu.items.some((item: { name: string }) => item.name === "Margherita Pizza")).toBe(true);
   });
 
   it("still loads inherited menu data when an onboarding restaurant is missing explicit template metadata", async () => {
@@ -744,11 +847,11 @@ describe("PlatformService", () => {
         email: "fallback.owner@example.com",
         password: "password123",
       },
-      accountName: "Green Leaf Salads",
+      accountName: "Pizza Palace",
       locations: [
         {
           id: "deliv_loc_3",
-          name: "Green Leaf Salads - Palo Alto",
+          name: "Pizza Palace - Palo Alto",
           address: "855 El Camino Real, Palo Alto, CA 94301",
           timezone: "America/Los_Angeles",
         },
@@ -762,14 +865,14 @@ describe("PlatformService", () => {
     await repository.updatePOSConnection(connection!.id, {
       metadata: {
         source: "onboarding",
-        accountName: "Green Leaf Salads",
+        accountName: "Pizza Palace",
         providerLocationId: "deliv_loc_3",
       },
     });
 
     const menu = await service.getMenu(createdRestaurantId);
     expect(menu.items.length).toBeGreaterThan(0);
-    expect(menu.items.some((item) => item.name === "Kale Caesar")).toBe(true);
+    expect(menu.items.some((item) => item.name === "Margherita Pizza")).toBe(true);
   });
 
   it("lets an owner create and list team members with restaurant access assignments", async () => {

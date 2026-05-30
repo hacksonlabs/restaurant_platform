@@ -10,14 +10,19 @@ export function OnboardingAccessPage() {
   const [fullName, setFullName] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   if (!provider || !discoveredAccount || selectedLocationIds.length === 0) {
     return <Navigate to="/onboarding/provider" replace />;
   }
 
+  const accountExists =
+    submitError === "An operator account with that email already exists.";
+
   async function handleContinue(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
+    setSubmitError(null);
     try {
       await completeOnboarding({
         provider,
@@ -27,6 +32,10 @@ export function OnboardingAccessPage() {
         email,
         password,
       });
+    } catch (activationError) {
+      setSubmitError(
+        activationError instanceof Error ? activationError.message : "Could not create your account.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -60,7 +69,15 @@ export function OnboardingAccessPage() {
               {selectedLocationIds.length === 1 ? "" : "s"}
             </p>
           </div>
-          {error ? <div className="auth-error">{error}</div> : null}
+          {accountExists ? (
+            <div className="auth-error">
+              That email already has a Phantom account. Please <Link to="/login">sign in</Link> instead.
+            </div>
+          ) : submitError ? (
+            <div className="auth-error">{submitError}</div>
+          ) : error ? (
+            <div className="auth-error">{error}</div>
+          ) : null}
           <div className="auth-actions">
             <Button type="submit" disabled={!fullName || !email || password.length < 8 || submitting || status === "submitting"}>
               {submitting ? "Creating Account..." : "Create Account"}

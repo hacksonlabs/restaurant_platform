@@ -15,6 +15,7 @@ Phantom now uses server-side operator sessions backed by the platform repository
 
 - `operator_users.supabase_user_id` links a Phantom operator record to `auth.users.id`.
 - `operator_users` is now an application profile and tenancy table, not a live password store.
+- Deleting the linked Supabase Auth user cascades through `operator_users`, which in turn cascades related memberships and sessions.
 - Live sessions are checked against the linked Supabase Auth user when Phantom resolves `GET /api/auth/me` and other authenticated requests.
 - Phantom never uses editable `user_metadata` for authorization; restaurant access still comes only from `operator_memberships`.
 - If a Supabase Auth user can sign in but has no matching Phantom membership, Phantom rejects access.

@@ -8,6 +8,7 @@ import { useResource } from "./useResource";
 
 export function OrdersPage() {
   const { selectedRestaurantId, selectedRestaurantIds, canManageOrders, isReadOnly, isAllRestaurantsScope, session } = useTenant();
+  const isDemoMode = import.meta.env.MODE === "demo";
   const { data, setData, loading, error, refresh } = useResource(
     `orders:${isAllRestaurantsScope ? selectedRestaurantIds.join(",") : selectedRestaurantId}`,
     async () => {
@@ -33,6 +34,7 @@ export function OrdersPage() {
   const [reviewingOrderId, setReviewingOrderId] = useState<string | null>(null);
   const [pendingDecisionOrderId, setPendingDecisionOrderId] = useState<string | null>(null);
   const [pendingDecisionByOrderId, setPendingDecisionByOrderId] = useState<Record<string, "approved" | "rejected">>({});
+  const [creatingMockOrder, setCreatingMockOrder] = useState(false);
   const orders = Array.isArray(data) ? data : [];
 
   function getDisplayStatus(order: any) {
@@ -99,11 +101,36 @@ export function OrdersPage() {
     }
   }
 
+  async function addMockOrder() {
+    if (!selectedRestaurantId) return;
+    setMessage("");
+    setCreatingMockOrder(true);
+    try {
+      const order = await api.addMockOrder(selectedRestaurantId);
+      setMessage(`Added mock order ${order.id}.`);
+      await refreshOrders();
+    } catch (submitError) {
+      setMessage(submitError instanceof Error ? submitError.message : "Failed to add a mock order.");
+    } finally {
+      setCreatingMockOrder(false);
+    }
+  }
+
   function statusLabel(status: string) {
     if (status === "needs_approval") {
       return "Needs review";
     }
     return status.replaceAll("_", " ");
+  }
+
+  function messageTone(value: string) {
+    if (value === "Restaurant has agent ordering disabled.") {
+      return "warning";
+    }
+    if (value.toLowerCase().includes("failed")) {
+      return "danger";
+    }
+    return "success";
   }
 
   useEffect(() => {
@@ -117,6 +144,12 @@ export function OrdersPage() {
     };
   }, [pendingDecisionByOrderId, refresh, selectedRestaurantId]);
 
+  useEffect(() => {
+    if (!message) return undefined;
+    const timeoutId = window.setTimeout(() => setMessage(""), 7000);
+    return () => window.clearTimeout(timeoutId);
+  }, [message]);
+
   if (loading) return <div className="panel-state">Loading incoming orders…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 
@@ -128,10 +161,17 @@ export function OrdersPage() {
         description={
           isAllRestaurantsScope
             ? "Track active incoming orders across all restaurants, then drill into a single location when needed."
-            : "Track active incoming orders for this restaurant and step in when a review is needed."
+            : "Track active incoming orders and step in when a review is needed."
+        }
+        actions={
+          isDemoMode && selectedRestaurantId && canManageOrders && !isReadOnly ? (
+            <Button onClick={() => void addMockOrder()} disabled={creatingMockOrder}>
+              {creatingMockOrder ? "Adding…" : "Add Mock Order"}
+            </Button>
+          ) : null
         }
       />
-      {message ? <div className="inline-message success">{message}</div> : null}
+      {message ? <div className={`inline-message ${messageTone(message)}`}>{message}</div> : null}
       <Card>
         <DataTable
           columns={
