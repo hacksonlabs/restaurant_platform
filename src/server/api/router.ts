@@ -17,6 +17,7 @@ import { requireAgentApiKey } from "../auth/middleware";
 import { requireRestaurantRole, requireRestaurantSession, restaurantAuthRoutes } from "../auth/restaurantSession";
 import { rateLimit } from "../middleware/rateLimit";
 import type { PlatformService } from "../services/platformService";
+import type { AppEnv } from "../config/env";
 
 function asyncHandler(fn: Parameters<Router["get"]>[1]) {
   return (request: any, response: any, next: any) => Promise.resolve(fn(request, response, next)).catch(next);
@@ -41,9 +42,15 @@ function parseOptionalNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-export function createApiRouter(service: PlatformService) {
+export function createApiRouter(
+  service: PlatformService,
+  env: Pick<AppEnv, "sessionCookieSameSite" | "sessionCookieSecure"> = {
+    sessionCookieSameSite: "lax",
+    sessionCookieSecure: false,
+  },
+) {
   const router = Router();
-  const restaurantAuth = restaurantAuthRoutes(service);
+  const restaurantAuth = restaurantAuthRoutes(service, env);
 
   router.get("/health", (_request, response) => {
     response.json({ ok: true, service: "phantom" });

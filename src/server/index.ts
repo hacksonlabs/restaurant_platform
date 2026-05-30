@@ -42,7 +42,7 @@ async function main() {
   });
   app.use(express.json());
   app.use(attachRequestContext);
-  app.use("/api", createApiRouter(service));
+  app.use("/api", createApiRouter(service, env));
 
   app.listen(env.port, () => {
     const modeLabel = env.demoMode ? "demo/in-memory" : "supabase";
