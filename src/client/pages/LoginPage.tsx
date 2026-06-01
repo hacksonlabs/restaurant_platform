@@ -5,7 +5,7 @@ import { Button, Card, Field } from "../components/ui";
 
 export function LoginPage() {
   const { login } = useAuth();
-  const [email, setEmail] = useState("dev@rest.com");
+  const [email, setEmail] = useState("demo@restaurant.com");
   const [password, setPassword] = useState("password");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
