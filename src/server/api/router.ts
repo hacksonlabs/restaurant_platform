@@ -318,7 +318,7 @@ export function createApiRouter(
 
   router.post(
     "/restaurants/:restaurantId/orders/mock",
-    requireRestaurantRole(service, ["owner", "staff"]),
+    requireRestaurantRole(service),
     asyncHandler(async (request, response) => {
       response.json(await service.createMockOrderForRestaurant(request.params.restaurantId));
     }),

@@ -9,6 +9,8 @@ import { useResource } from "./useResource";
 export function OrdersPage() {
   const { selectedRestaurantId, selectedRestaurantIds, canManageOrders, isReadOnly, isAllRestaurantsScope, session } = useTenant();
   const isDemoMode = import.meta.env.MODE === "demo";
+  const mockOrderRestaurantId = selectedRestaurantId ?? selectedRestaurantIds[0] ?? null;
+  const canAddMockOrder = isDemoMode && Boolean(mockOrderRestaurantId);
   const { data, setData, loading, error, refresh } = useResource(
     `orders:${isAllRestaurantsScope ? selectedRestaurantIds.join(",") : selectedRestaurantId}`,
     async () => {
@@ -102,11 +104,11 @@ export function OrdersPage() {
   }
 
   async function addMockOrder() {
-    if (!selectedRestaurantId) return;
+    if (!mockOrderRestaurantId) return;
     setMessage("");
     setCreatingMockOrder(true);
     try {
-      const order = await api.addMockOrder(selectedRestaurantId);
+      const order = await api.addMockOrder(mockOrderRestaurantId);
       setMessage(`Added mock order ${order.id}.`);
       await refreshOrders();
     } catch (submitError) {
@@ -164,7 +166,7 @@ export function OrdersPage() {
             : "Track active incoming orders and step in when a review is needed."
         }
         actions={
-          isDemoMode && selectedRestaurantId && canManageOrders && !isReadOnly ? (
+          canAddMockOrder ? (
             <Button onClick={() => void addMockOrder()} disabled={creatingMockOrder}>
               {creatingMockOrder ? "Adding…" : "Add Mock Order"}
             </Button>

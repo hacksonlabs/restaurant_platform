@@ -1000,6 +1000,25 @@ describe("PlatformService", () => {
     expect(await response.json()).toEqual({ error: "Operator role does not allow this action." });
   });
 
+  it("allows a viewer with restaurant access to add a demo mock order", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    repository.state.operatorMemberships[0].role = "viewer";
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const { cookie } = await loginOperator(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/orders/mock`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.restaurantId).toBe("rest_lb_steakhouse");
+    expect(payload.orderIntent.metadata.source).toBe("demo_add_mock_order");
+  });
+
   it("allows staff to change restaurant info and ordering rules through the restaurant API", async () => {
     const service = createService();
     const repository = (service as any).repository as InMemoryPlatformRepository;
