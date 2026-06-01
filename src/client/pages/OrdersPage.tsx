@@ -162,7 +162,7 @@ export function OrdersPage() {
         title={isAllRestaurantsScope ? "Incoming Orders" : "Incoming Orders"}
         description={
           isAllRestaurantsScope
-            ? "Track active incoming orders across all restaurants, then drill into a single location when needed."
+            ? "Track active incoming orders across all restaurants."
             : "Track active incoming orders and step in when a review is needed."
         }
         actions={
