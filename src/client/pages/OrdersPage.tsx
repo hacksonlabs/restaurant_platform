@@ -7,7 +7,7 @@ import { Badge, Button, Card, DataTable, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
 export function OrdersPage() {
-  const { selectedRestaurantId, selectedRestaurantIds, canManageOrders, isReadOnly, isAllRestaurantsScope, session } = useTenant();
+  const { selectedRestaurantId, selectedRestaurantIds, isAllRestaurantsScope, session } = useTenant();
   const { data, setData, loading, error, refresh } = useResource(
     `orders:${isAllRestaurantsScope ? selectedRestaurantIds.join(",") : selectedRestaurantId}`,
     async () => {
@@ -106,6 +106,14 @@ export function OrdersPage() {
     return status.replaceAll("_", " ");
   }
 
+  function canReviewOrder(order: any) {
+    const targetRestaurantId = order.restaurantId ?? selectedRestaurantId;
+    const membership = session?.restaurants
+      .find((restaurant) => restaurant.id === targetRestaurantId)
+      ?.memberships.find((entry) => entry.restaurantId === targetRestaurantId);
+    return membership?.role === "owner" || membership?.role === "staff";
+  }
+
   useEffect(() => {
     if (!selectedRestaurantId && !isAllRestaurantsScope) return undefined;
     const intervalId = window.setInterval(() => {
@@ -141,7 +149,7 @@ export function OrdersPage() {
           }
           rows={orders.map((order) => {
             const displayStatus = getDisplayStatus(order);
-            const canReview = displayStatus === "needs_approval" && canManageOrders && !isReadOnly;
+            const canReview = displayStatus === "needs_approval" && canReviewOrder(order);
             const row = [
             isAllRestaurantsScope ? (order as any).restaurantName : null,
             <div key={order.id}>
