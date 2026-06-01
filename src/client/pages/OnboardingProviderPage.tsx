@@ -6,17 +6,12 @@ import { Card } from "../components/ui";
 const PROVIDERS: Array<{ id: OnboardingProvider; label: string; description: string }> = [
   {
     id: "deliverect",
-    label: "Deliverect",
-    description: "Import restaurant, location, and menu context from your Deliverect account.",
-  },
-  {
-    id: "olo",
-    label: "Olo",
-    description: "Bring in your Olo-managed restaurant footprint with the same onboarding flow.",
+    label: "Aggregator platform",
+    description: "Import restaurant, location, and menu context from your aggregator platform.",
   },
   {
     id: "pos",
-    label: "POS System",
+    label: "Direct POS systems",
     description: "Start a direct POS connection when you are not using an aggregator platform.",
   },
 ];
@@ -38,8 +33,8 @@ export function OnboardingProviderPage() {
         </Link>
         <div className="eyebrow">Get Started</div>
         <h1>Connect your restaurant platform</h1>
-        <p className="auth-copy">Choose the how you want to connect.</p>
-        <div className="provider-grid">
+        <p className="auth-copy">Choose how you want to connect.</p>
+        <div className="provider-grid provider-grid-two">
           {PROVIDERS.map((provider) => (
             <button key={provider.id} className="provider-card" type="button" onClick={() => handleSelect(provider.id)}>
               <div className="provider-card-head">

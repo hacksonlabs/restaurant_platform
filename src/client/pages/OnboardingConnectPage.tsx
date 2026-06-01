@@ -9,15 +9,15 @@ const COPY: Record<
   { title: string; body: string; placeholder: string; defaultQuery: string; hint: string }
 > = {
   deliverect: {
-    title: "Find your Deliverect restaurants",
+    title: "Find your aggregator restaurants",
     body: "Search by restaurant or brand name. In mock mode, we’ve loaded a small chain example so you can see how a multi-location import would feel.",
     placeholder: "Search by restaurant or brand name",
     defaultQuery: "Pizza Palace",
     hint: "Mock example prefilled: Pizza Palace",
   },
   olo: {
-    title: "Find your Olo restaurants",
-    body: "Search by restaurant or brand name. The mock data is set up to feel like a small multi-location Olo brand.",
+    title: "Find your aggregator restaurants",
+    body: "Search by restaurant or brand name. The mock data is set up to feel like a small multi-location brand.",
     placeholder: "Search by restaurant or brand name",
     defaultQuery: "Pizza Palace",
     hint: "Mock example prefilled: Pizza Palace",
