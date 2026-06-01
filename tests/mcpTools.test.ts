@@ -98,6 +98,53 @@ describe("Phantom MCP tools", () => {
     );
   });
 
+  it("does not give onboarding restaurants seeded coordinates just because they share a demo address", async () => {
+    const result = await searchRestaurantsTool(
+      {
+        agentKey: {
+          id: "key_test",
+          agentId: "agent_coachimhungry",
+          label: "test",
+          keyPrefix: "test",
+          keyHash: "hash",
+          scopes: ["restaurants:read"],
+          createdAt: new Date().toISOString(),
+        },
+        service: {
+          assertAgentScope: () => undefined,
+          listAgentRestaurants: async () => [
+            {
+              id: "rest_pizza_palace",
+              name: "Pizza Palace",
+              location: "1325 Sunnyvale Saratoga Rd, Sunnyvale, CA 94087",
+              latitude: null,
+              longitude: null,
+              fulfillmentTypesSupported: ["delivery"],
+            },
+            {
+              id: "rest_jlc3hzu8",
+              name: "Pizza Palace - Sunnyvale",
+              location: "1325 Sunnyvale Saratoga Rd, Sunnyvale, CA 94087",
+              latitude: null,
+              longitude: null,
+              fulfillmentTypesSupported: ["delivery"],
+            },
+          ],
+        } as any,
+      },
+      {
+        fulfillment_type: "delivery",
+        address: "1533 Ashcroft Way, Sunnyvale, CA 94087",
+        latitude: 37.3509,
+        longitude: -122.0378,
+        radius_miles: 6,
+        limit: 10,
+      },
+    );
+
+    expect(result.restaurants.map((restaurant) => restaurant.id)).toEqual(["rest_pizza_palace"]);
+  });
+
   it("returns the canonical menu for an allowed restaurant", async () => {
     const context = await createContext();
 

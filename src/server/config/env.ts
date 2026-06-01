@@ -9,9 +9,18 @@ function bool(value: string | undefined, fallback = false): boolean {
   return TRUE_VALUES.has(value.trim().toLowerCase());
 }
 
+function csv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 export interface AppEnv {
   port: number;
   appUrl: string;
+  mcpAllowedHosts: string[];
   demoMode: boolean;
   databaseUrl: string;
   supabaseUrl: string;
@@ -48,6 +57,7 @@ export function getEnv(): AppEnv {
   return {
     port: Number.parseInt(process.env.PORT ?? "3030", 10),
     appUrl: text(process.env.VITE_APP_URL, "http://localhost:5173"),
+    mcpAllowedHosts: csv(process.env.MCP_ALLOWED_HOSTS),
     demoMode: bool(process.env.DEMO_MODE, true),
     databaseUrl: text(process.env.DATABASE_URL),
     supabaseUrl: text(process.env.SUPABASE_URL),
