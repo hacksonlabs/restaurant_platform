@@ -808,15 +808,23 @@ export class SupabasePlatformRepository implements PlatformRepository {
     identity: OperatorIdentity,
     options?: ReconcileOperatorOptions,
   ) {
-    const existingResult = await this.pool.query(
-      `select *
-       from operator_users
-       where supabase_user_id = $1::uuid
-          or lower(email) = lower($2)
-       order by case when supabase_user_id = $1::uuid then 0 else 1 end
-       limit 1`,
-      [identity.id, identity.email],
-    );
+    const existingResult = options?.linkIdentity === false
+      ? await this.pool.query(
+        `select *
+         from operator_users
+         where lower(email) = lower($1)
+         limit 1`,
+        [identity.email],
+      )
+      : await this.pool.query(
+        `select *
+         from operator_users
+         where supabase_user_id = $1::uuid
+            or lower(email) = lower($2)
+         order by case when supabase_user_id = $1::uuid then 0 else 1 end
+         limit 1`,
+        [identity.id, identity.email],
+      );
     let operatorUserId = existingResult.rows[0]?.id as string | undefined;
 
     if (!operatorUserId && options?.allowSeededDevBootstrap && identity.email.toLowerCase() === "dev@rest.com") {

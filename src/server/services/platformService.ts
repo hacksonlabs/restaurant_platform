@@ -1115,22 +1115,29 @@ export class PlatformService {
   }
 
   private async auditFailedOperatorLogin(email: string) {
-    const operator = await this.repository.reconcileOperatorIdentity(
-      { id: "audit-only", email, fullName: "Restaurant Operator" },
-      { allowSeededDevBootstrap: false, updateLastLoginAt: false, linkIdentity: false },
-    );
-    if (!operator) {
-      return;
+    try {
+      const operator = await this.repository.reconcileOperatorIdentity(
+        { id: "audit-only", email, fullName: "Restaurant Operator" },
+        { allowSeededDevBootstrap: false, updateLastLoginAt: false, linkIdentity: false },
+      );
+      if (!operator) {
+        return;
+      }
+      await this.repository.appendAuditLog({
+        restaurantId: operator.selectedMembership.restaurantId,
+        actorType: "manager",
+        actorId: operator.user.id,
+        action: "operator.login_failed",
+        targetType: "operator_user",
+        targetId: operator.user.id,
+        summary: `Failed sign-in attempt for ${email}.`,
+      });
+    } catch (error) {
+      log("warn", "auth_failure_audit_skipped", {
+        email,
+        reason: error instanceof Error ? error.message : String(error),
+      });
     }
-    await this.repository.appendAuditLog({
-      restaurantId: operator.selectedMembership.restaurantId,
-      actorType: "manager",
-      actorId: operator.user.id,
-      action: "operator.login_failed",
-      targetType: "operator_user",
-      targetId: operator.user.id,
-      summary: `Failed sign-in attempt for ${email}.`,
-    });
     log("warn", "auth_failure", { email });
   }
 

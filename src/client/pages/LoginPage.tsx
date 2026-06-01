@@ -5,8 +5,8 @@ import { Button, Card, Field } from "../components/ui";
 
 export function LoginPage() {
   const { login } = useAuth();
-  const [email, setEmail] = useState("dev@rest.com");
-  const [password, setPassword] = useState("password");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,16 +37,16 @@ export function LoginPage() {
           </div>
           <div className="auth-login-panel">
             <div className="auth-login-panel-title">Sign In</div>
-            <form className="auth-form" onSubmit={handleSubmit}>
+            <form className="auth-form" onSubmit={handleSubmit} autoComplete="off">
               <Field label="Email">
-                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" />
+                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="off" />
               </Field>
               <Field label="Password">
                 <input
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   type="password"
-                  autoComplete="current-password"
+                  autoComplete="off"
                 />
               </Field>
               {error ? <div className="auth-error">{error}</div> : null}
