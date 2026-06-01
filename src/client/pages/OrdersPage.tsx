@@ -147,9 +147,10 @@ export function OrdersPage() {
               ? ["Restaurant", "Order ID", "Agent", "Requested Time", "Status", "Total", "Headcount", "Approval", "Created"]
               : ["Order ID", "Agent", "Requested Time", "Status", "Total", "Headcount", "Approval", "Created"]
           }
-          rows={orders.map((order) => {
+          rows={orders.map((order, index) => {
             const displayStatus = getDisplayStatus(order);
             const canReview = displayStatus === "needs_approval" && canReviewOrder(order);
+            const shouldOpenReviewMenuUpward = index >= orders.length - 2;
             const row = [
             isAllRestaurantsScope ? (order as any).restaurantName : null,
             <div key={order.id}>
@@ -176,7 +177,7 @@ export function OrdersPage() {
                   <Badge tone="warning">{statusLabel(displayStatus)}</Badge>
                 </button>
                 {reviewingOrderId === order.id ? (
-                  <div className="review-popover">
+                  <div className={`review-popover ${shouldOpenReviewMenuUpward ? "open-up" : ""}`.trim()}>
                     <Button
                       className="button-small"
                       tone="secondary"

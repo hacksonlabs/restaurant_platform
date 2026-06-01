@@ -2027,6 +2027,11 @@ th {
   box-shadow: 0 14px 26px rgba(70, 51, 29, 0.12);
 }
 
+.review-popover.open-up {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
 .agent-detail-topline {
   display: flex;
   align-items: center;
