@@ -540,6 +540,12 @@ textarea {
 
 .onboarding-row-actions {
   align-items: center;
+  margin: 6px 0 10px;
+}
+
+.onboarding-location-footer {
+  margin-top: 18px;
+  padding-top: 6px;
 }
 
 .onboarding-search-results {
