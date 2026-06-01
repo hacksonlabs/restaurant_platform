@@ -145,7 +145,10 @@ export function OrdersPage() {
             const row = [
             isAllRestaurantsScope ? (order as any).restaurantName : null,
             <div key={order.id}>
-              <Link to={`/orders/${order.id}`} className="order-link">
+              <Link
+                to={`/orders/${order.id}?restaurantId=${encodeURIComponent(order.restaurantId)}`}
+                className="order-link"
+              >
                 {order.id}
               </Link>
               {order.splitGroupSize && order.splitGroupSize > 1 ? (

@@ -71,6 +71,15 @@ To switch from demo mode to your Supabase project:
 4. Run `npm run db:check` to verify the required tables are available.
 5. Start the app with `npm run dev` or `npm start`.
 
+For Supabase session-pooler URLs, keep the server pool deliberately small so the app does not exhaust the project pooler limit. The defaults are conservative (`POSTGRES_POOL_MAX=3`, 10 second idle timeout, 60 second max lifetime), and can be overridden with:
+
+```bash
+POSTGRES_POOL_MAX=3
+POSTGRES_POOL_IDLE_TIMEOUT_MS=10000
+POSTGRES_POOL_CONNECTION_TIMEOUT_MS=5000
+POSTGRES_POOL_MAX_LIFETIME_SECONDS=60
+```
+
 ## Demo tenant
 
 - Restaurant: `LB Steakhouse`
