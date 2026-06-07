@@ -1,5 +1,7 @@
 import type {
+  Agent,
   AuthenticatedOperator,
+  AuthenticatedPlatformAdmin,
   AgentOrderRecord,
   AgentApiScope,
   CreateTeamMemberInput,
@@ -10,6 +12,10 @@ import type {
   OnboardingProvider,
   OnboardingRequestRecord,
   OrderingRule,
+  Partner,
+  PartnerCredentialEnvironment,
+  PartnerCredentialSummary,
+  PlatformAdminPartnerRecord,
   ReportingDateRange,
   Restaurant,
   RestaurantSignupInput,
@@ -21,6 +27,8 @@ import { clearResourceCache } from "./resourceCache";
 export interface OperatorAuthPayload extends AuthenticatedOperator {
   restaurants: Array<Restaurant & { memberships: Array<{ id: string; role: string; locationId?: string }> }>;
 }
+
+export type PlatformAdminAuthPayload = AuthenticatedPlatformAdmin;
 
 function stripTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
@@ -67,8 +75,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   authMe: () => request<OperatorAuthPayload>("/api/auth/me"),
+  adminAuthMe: () => request<PlatformAdminAuthPayload>("/api/admin/auth/me"),
   login: (email: string, password: string) =>
     request<OperatorAuthPayload>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  adminLogin: (email: string, password: string) =>
+    request<PlatformAdminAuthPayload>("/api/admin/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
@@ -96,6 +110,10 @@ export const api = {
     request<OnboardingRequestRecord>(`/api/onboarding/${requestId}`),
   logout: () =>
     request<void>("/api/auth/logout", {
+      method: "POST",
+    }),
+  adminLogout: () =>
+    request<void>("/api/admin/auth/logout", {
       method: "POST",
     }),
   selectTenant: (restaurantId: string, locationId?: string) =>
@@ -197,4 +215,74 @@ export const api = {
   },
   operationsDiagnostics: (restaurantId: string) =>
     request(`/api/restaurants/${restaurantId}/operations/diagnostics`),
+  platformAdminPartners: () =>
+    request<PlatformAdminPartnerRecord[]>("/api/admin/partners"),
+  createPartner: (body: { name: string; contactEmail?: string; status: Partner["status"] }) =>
+    request<Partner>("/api/admin/partners", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updatePartner: (partnerId: string, body: { name: string; contactEmail?: string; status: Partner["status"] }) =>
+    request<Partner>(`/api/admin/partners/${partnerId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  removePartner: (partnerId: string) =>
+    request<void>(`/api/admin/partners/${partnerId}`, {
+      method: "DELETE",
+    }),
+  createPartnerCredential: (
+    partnerId: string,
+    body: { agentId: string; label: string; scopes: AgentApiScope[]; environment: PartnerCredentialEnvironment },
+  ) =>
+    request<{ rawKey: string; credential: PartnerCredentialSummary }>(`/api/admin/partners/${partnerId}/credentials`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  createPartnerAgent: (
+    partnerId: string,
+    body: { name: string },
+  ) =>
+    request<Agent>(`/api/admin/partners/${partnerId}/agents`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updatePartnerAgent: (partnerId: string, agentId: string, body: { name: string }) =>
+    request<Agent>(`/api/admin/partners/${partnerId}/agents/${agentId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  removePartnerAgent: (partnerId: string, agentId: string) =>
+    request<void>(`/api/admin/partners/${partnerId}/agents/${agentId}`, {
+      method: "DELETE",
+    }),
+  rotatePartnerCredential: (
+    partnerId: string,
+    credentialId: string,
+    body: { scopes: AgentApiScope[]; environment: PartnerCredentialEnvironment },
+  ) =>
+    request<{ rawKey: string; credential: PartnerCredentialSummary }>(
+      `/api/admin/partners/${partnerId}/credentials/${credentialId}/rotate`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
+  updatePartnerCredential: (
+    partnerId: string,
+    credentialId: string,
+    body: { label: string; scopes: AgentApiScope[]; environment: PartnerCredentialEnvironment },
+  ) =>
+    request<PartnerCredentialSummary>(`/api/admin/partners/${partnerId}/credentials/${credentialId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  revokePartnerCredential: (partnerId: string, credentialId: string) =>
+    request<PartnerCredentialSummary>(`/api/admin/partners/${partnerId}/credentials/${credentialId}/revoke`, {
+      method: "POST",
+    }),
+  removePartnerCredential: (partnerId: string, credentialId: string) =>
+    request<void>(`/api/admin/partners/${partnerId}/credentials/${credentialId}`, {
+      method: "DELETE",
+    }),
 };

@@ -1,8 +1,11 @@
 import type { Pool } from "pg";
 import type {
+  Agent,
   AgentApiScope,
   AgentApiKey,
+  AuthenticatedAgentCredential,
   AuthenticatedOperator,
+  AuthenticatedPlatformAdmin,
   AgentOrderRecord,
   AuditLog,
   CanonicalMenuItem,
@@ -16,6 +19,8 @@ import type {
   OrderTimelineEvent,
   OrderValidationResult,
   OrderingRule,
+  Partner,
+  PartnerCredential,
   POSConnection,
   POSMenuMapping,
   POSOrderSubmission,
@@ -228,10 +233,23 @@ function mapMapping(row: any): POSMenuMapping {
 function mapAgent(row: any) {
   return {
     id: row.id,
+    partnerId: row.partner_id ?? undefined,
     name: row.name,
     slug: row.slug,
     description: row.description,
     createdAt: row.created_at,
+  };
+}
+
+function mapPartner(row: any): Partner {
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    status: row.status,
+    contactEmail: row.contact_email ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -243,6 +261,23 @@ function mapKey(row: any): AgentApiKey {
     keyPrefix: row.key_prefix,
     keyHash: row.key_hash,
     scopes: row.scopes ?? [],
+    lastUsedAt: row.last_used_at ?? undefined,
+    createdAt: row.created_at,
+    rotatedAt: row.rotated_at ?? undefined,
+    revokedAt: row.revoked_at ?? undefined,
+  };
+}
+
+function mapPartnerCredential(row: any): PartnerCredential {
+  return {
+    id: row.id,
+    partnerId: row.partner_id,
+    agentId: row.agent_id,
+    label: row.label,
+    keyPrefix: row.key_prefix,
+    keyHash: row.key_hash,
+    scopes: row.scopes ?? [],
+    environment: row.environment,
     lastUsedAt: row.last_used_at ?? undefined,
     createdAt: row.created_at,
     rotatedAt: row.rotated_at ?? undefined,
@@ -269,6 +304,17 @@ function mapOperatorMembership(row: any): OperatorMembership {
     locationId: row.location_id ?? undefined,
     role: row.role,
     createdAt: row.created_at,
+  };
+}
+
+function mapPlatformAdmin(row: any): AuthenticatedPlatformAdmin["user"] {
+  return {
+    id: row.id,
+    email: row.email,
+    fullName: row.full_name,
+    status: row.status,
+    createdAt: row.created_at,
+    lastLoginAt: row.last_login_at ?? undefined,
   };
 }
 
@@ -535,6 +581,50 @@ export class SupabasePlatformRepository implements PlatformRepository {
   private onboardingRequests = new Map<string, OnboardingRequestRecord>();
 
   constructor(private pool: Pool) {}
+
+  async authenticatePlatformAdmin(email: string, passwordHash: string): Promise<AuthenticatedPlatformAdmin | null> {
+    const result = await this.pool.query(
+      `update platform_admin_users
+       set last_login_at = now()
+       where lower(email) = lower($1)
+         and password_hash = $2
+         and status = 'active'
+       returning *`,
+      [email, passwordHash],
+    );
+    return result.rows[0] ? { user: mapPlatformAdmin(result.rows[0]) } : null;
+  }
+
+  async createPlatformAdminSession(args: {
+    adminUserId: string;
+    sessionTokenHash: string;
+    expiresAt: string;
+  }) {
+    await this.pool.query(
+      `insert into platform_admin_sessions
+       (id, admin_user_id, session_token_hash, expires_at, created_at)
+       values ($1, $2, $3, $4, now())`,
+      [createId("pa_sess"), args.adminUserId, args.sessionTokenHash, args.expiresAt],
+    );
+  }
+
+  async getAuthenticatedPlatformAdminBySessionToken(sessionTokenHash: string): Promise<AuthenticatedPlatformAdmin | null> {
+    const result = await this.pool.query(
+      `select u.*
+       from platform_admin_sessions s
+       join platform_admin_users u on u.id = s.admin_user_id
+       where s.session_token_hash = $1
+         and s.expires_at > now()
+         and u.status = 'active'
+       limit 1`,
+      [sessionTokenHash],
+    );
+    return result.rows[0] ? { user: mapPlatformAdmin(result.rows[0]) } : null;
+  }
+
+  async deletePlatformAdminSession(sessionTokenHash: string) {
+    await this.pool.query("delete from platform_admin_sessions where session_token_hash = $1", [sessionTokenHash]);
+  }
 
   async authenticateOperator(email: string, password: string): Promise<AuthenticatedOperator | null> {
     void email;
@@ -1399,14 +1489,21 @@ export class SupabasePlatformRepository implements PlatformRepository {
       `select
          p.id as permission_id,
          p.restaurant_id,
-         p.agent_id,
          p.status,
          p.notes,
          p.last_activity_at,
+         a.id as agent_id,
+         a.partner_id,
          a.name as agent_name,
          a.slug as agent_slug,
          a.description as agent_description,
          a.created_at as agent_created_at,
+         partner.name as partner_name,
+         partner.slug as partner_slug,
+         partner.status as partner_status,
+         partner.contact_email as partner_contact_email,
+         partner.created_at as partner_created_at,
+         partner.updated_at as partner_updated_at,
          k.id as key_id,
          k.label as key_label,
          k.key_prefix,
@@ -1415,30 +1512,59 @@ export class SupabasePlatformRepository implements PlatformRepository {
          k.created_at as key_created_at,
          k.rotated_at,
          k.revoked_at
-       from restaurant_agent_permissions p
-       join agents a on a.id = p.agent_id
+       from agents a
+       left join restaurant_agent_permissions p on p.agent_id = a.id and p.restaurant_id = $1
+       left join partners partner on partner.id = a.partner_id
        left join agent_api_keys k on k.agent_id = a.id and k.rotated_at is null
-       where p.restaurant_id = $1
+       where p.id is not null
+          or exists (
+            select 1
+            from partner_credentials pc
+            join partners credential_partner on credential_partner.id = pc.partner_id
+            where pc.agent_id = a.id
+              and pc.environment = 'live'
+              and pc.revoked_at is null
+              and credential_partner.status = 'approved'
+          )
        order by a.name asc`,
       [restaurantId],
     );
     return result.rows.map((row) => ({
-      permissionId: row.permission_id,
+      permissionId: row.permission_id ?? `pending:${restaurantId}:${row.agent_id}`,
       agent: {
         id: row.agent_id,
+        partnerId: row.partner_id ?? undefined,
+        partner: row.partner_id
+          ? {
+              id: row.partner_id,
+              name: row.partner_name,
+              slug: row.partner_slug,
+              status: row.partner_status,
+              contactEmail: row.partner_contact_email ?? undefined,
+              createdAt: row.partner_created_at,
+              updatedAt: row.partner_updated_at,
+            }
+          : undefined,
         name: row.agent_name,
         slug: row.agent_slug,
         description: row.agent_description,
         createdAt: row.agent_created_at,
       },
-      permission: {
-        id: row.permission_id,
-        restaurantId: row.restaurant_id,
-        agentId: row.agent_id,
-        status: row.status,
-        notes: row.notes ?? undefined,
-        lastActivityAt: row.last_activity_at ?? undefined,
-      },
+      permission: row.permission_id
+        ? {
+            id: row.permission_id,
+            restaurantId: row.restaurant_id,
+            agentId: row.agent_id,
+            status: row.status,
+            notes: row.notes ?? undefined,
+            lastActivityAt: row.last_activity_at ?? undefined,
+          }
+        : {
+            id: `pending:${restaurantId}:${row.agent_id}`,
+            restaurantId,
+            agentId: row.agent_id,
+            status: "pending",
+          },
       apiKey: row.key_id
         ? {
             id: row.key_id,
@@ -1455,8 +1581,188 @@ export class SupabasePlatformRepository implements PlatformRepository {
   }
 
   async getAgent(agentId: string) {
-    const result = await this.pool.query("select * from agents where id = $1 limit 1", [agentId]);
-    return result.rows[0] ? mapAgent(result.rows[0]) : null;
+    const result = await this.pool.query(
+      `select
+         a.*,
+         p.name as partner_name,
+         p.slug as partner_slug,
+         p.status as partner_status,
+         p.contact_email as partner_contact_email,
+         p.created_at as partner_created_at,
+         p.updated_at as partner_updated_at
+       from agents a
+       left join partners p on p.id = a.partner_id
+       where a.id = $1
+       limit 1`,
+      [agentId],
+    );
+    if (!result.rows[0]) return null;
+    const agent = mapAgent(result.rows[0]);
+    if (!result.rows[0].partner_id) return agent;
+    return {
+      ...agent,
+      partner: {
+        id: result.rows[0].partner_id,
+        name: result.rows[0].partner_name,
+        slug: result.rows[0].partner_slug,
+        status: result.rows[0].partner_status,
+        contactEmail: result.rows[0].partner_contact_email ?? undefined,
+        createdAt: result.rows[0].partner_created_at,
+        updatedAt: result.rows[0].partner_updated_at,
+      },
+    };
+  }
+
+  async listPartners() {
+    const result = await this.pool.query("select * from partners order by name asc");
+    return result.rows.map(mapPartner);
+  }
+
+  async createPartner(args: { name: string; slug: string; status: Partner["status"]; contactEmail?: string }): Promise<Partner> {
+    const result = await this.pool.query(
+      `insert into partners (id, name, slug, status, contact_email, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, now(), now())
+       returning *`,
+      [createId("partner"), args.name, args.slug, args.status, args.contactEmail ?? null],
+    );
+    return mapPartner(result.rows[0]);
+  }
+
+  async updatePartner(
+    partnerId: string,
+    patch: Partial<Pick<Partner, "name" | "slug" | "status" | "contactEmail">>,
+  ): Promise<Partner> {
+    const currentResult = await this.pool.query("select * from partners where id = $1 limit 1", [partnerId]);
+    const current = required(currentResult.rows[0], `Partner ${partnerId} not found.`);
+    const mapped = { ...mapPartner(current), ...patch };
+    const result = await this.pool.query(
+      `update partners
+       set name = $2,
+           slug = $3,
+           status = $4,
+           contact_email = $5,
+           updated_at = now()
+       where id = $1
+       returning *`,
+      [partnerId, mapped.name, mapped.slug, mapped.status, mapped.contactEmail ?? null],
+    );
+    return mapPartner(result.rows[0]);
+  }
+
+  async deletePartner(partnerId: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existing = await client.query("select id from partners where id = $1 limit 1", [partnerId]);
+      required(existing.rows[0], `Partner ${partnerId} not found.`);
+      await client.query("delete from partner_credentials where partner_id = $1", [partnerId]);
+      await client.query(
+        `update agents
+         set partner_id = null,
+             slug = slug || '-removed-' || right(regexp_replace(id, '[^a-zA-Z0-9]', '', 'g'), 6)
+         where partner_id = $1`,
+        [partnerId],
+      );
+      await client.query("delete from partners where id = $1", [partnerId]);
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listPartnerAgents(partnerId: string) {
+    const result = await this.pool.query(
+      `select
+         a.*,
+         p.name as partner_name,
+         p.slug as partner_slug,
+         p.status as partner_status,
+         p.contact_email as partner_contact_email,
+         p.created_at as partner_created_at,
+         p.updated_at as partner_updated_at
+       from agents a
+       left join partners p on p.id = a.partner_id
+       where a.partner_id = $1
+       order by a.name asc`,
+      [partnerId],
+    );
+    return result.rows.map((row) => {
+      const agent = mapAgent(row);
+      return {
+        ...agent,
+        partner: {
+          id: row.partner_id,
+          name: row.partner_name,
+          slug: row.partner_slug,
+          status: row.partner_status,
+          contactEmail: row.partner_contact_email ?? undefined,
+          createdAt: row.partner_created_at,
+          updatedAt: row.partner_updated_at,
+        },
+      };
+    });
+  }
+
+  async createPartnerAgent(args: { partnerId: string; name: string; slug: string; description?: string }): Promise<Agent> {
+    const result = await this.pool.query(
+      `insert into agents (id, partner_id, name, slug, description, created_at)
+       values ($1, $2, $3, $4, $5, now())
+       returning *`,
+      [createId("agent"), args.partnerId, args.name, args.slug, args.description ?? ""],
+    );
+    return mapAgent(result.rows[0]);
+  }
+
+  async updatePartnerAgent(
+    partnerId: string,
+    agentId: string,
+    patch: Partial<Pick<Agent, "name" | "slug" | "description">>,
+  ): Promise<Agent> {
+    const currentResult = await this.pool.query("select * from agents where id = $1 and partner_id = $2 limit 1", [
+      agentId,
+      partnerId,
+    ]);
+    const current = required(currentResult.rows[0], `Partner agent ${agentId} not found.`);
+    const mapped = { ...mapAgent(current), ...patch };
+    const result = await this.pool.query(
+      `update agents
+       set name = $3,
+           slug = $4,
+           description = $5
+       where id = $1 and partner_id = $2
+       returning *`,
+      [agentId, partnerId, mapped.name, mapped.slug, mapped.description],
+    );
+    return mapAgent(result.rows[0]);
+  }
+
+  async removePartnerAgent(partnerId: string, agentId: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existing = await client.query("select id from agents where id = $1 and partner_id = $2 limit 1", [
+        agentId,
+        partnerId,
+      ]);
+      required(existing.rows[0], `Partner agent ${agentId} not found.`);
+      await client.query("delete from partner_credentials where partner_id = $1 and agent_id = $2", [partnerId, agentId]);
+      await client.query(
+        `update agents
+         set partner_id = null,
+             slug = slug || '-removed-' || right(regexp_replace(id, '[^a-zA-Z0-9]', '', 'g'), 6)
+         where id = $1 and partner_id = $2`,
+        [agentId, partnerId],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getPermission(restaurantId: string, agentId: string) {
@@ -1479,6 +1785,35 @@ export class SupabasePlatformRepository implements PlatformRepository {
        where id = $1
        returning *`,
       [permissionId, mapped.status, mapped.notes ?? null, mapped.lastActivityAt ?? null],
+    );
+    return mapPermission(result.rows[0]);
+  }
+
+  async createPermission(args: {
+    restaurantId: string;
+    agentId: string;
+    status: RestaurantAgentPermission["status"];
+    notes?: string;
+    lastActivityAt?: string;
+  }) {
+    const result = await this.pool.query(
+      `insert into restaurant_agent_permissions
+       (id, restaurant_id, agent_id, status, notes, last_activity_at)
+       values ($1, $2, $3, $4, $5, $6)
+       on conflict (restaurant_id, agent_id)
+       do update set
+         status = excluded.status,
+         notes = excluded.notes,
+         last_activity_at = excluded.last_activity_at
+       returning *`,
+      [
+        createId("perm"),
+        args.restaurantId,
+        args.agentId,
+        args.status,
+        args.notes ?? null,
+        args.lastActivityAt ?? null,
+      ],
     );
     return mapPermission(result.rows[0]);
   }
@@ -1526,6 +1861,74 @@ export class SupabasePlatformRepository implements PlatformRepository {
   async listAgentApiKeys(agentId: string) {
     const result = await this.pool.query("select * from agent_api_keys where agent_id = $1 order by created_at desc", [agentId]);
     return result.rows.map(mapKey);
+  }
+
+  async createPartnerCredential(args: {
+    partnerId: string;
+    agentId: string;
+    label: string;
+    keyPrefix: string;
+    keyHash: string;
+    scopes: AgentApiScope[];
+    environment: PartnerCredential["environment"];
+  }) {
+    const result = await this.pool.query(
+      `insert into partner_credentials
+       (id, partner_id, agent_id, label, key_prefix, key_hash, scopes, environment, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, now())
+       returning *`,
+      [createId("pcred"), args.partnerId, args.agentId, args.label, args.keyPrefix, args.keyHash, args.scopes, args.environment],
+    );
+    return mapPartnerCredential(result.rows[0]);
+  }
+
+  async updatePartnerCredential(
+    credentialId: string,
+    patch: Partial<Pick<PartnerCredential, "label" | "keyHash" | "keyPrefix" | "scopes" | "environment" | "rotatedAt" | "revokedAt" | "lastUsedAt">>,
+  ) {
+    const currentResult = await this.pool.query("select * from partner_credentials where id = $1 limit 1", [credentialId]);
+    const current = required(currentResult.rows[0], `Partner credential ${credentialId} not found.`);
+    const mapped = { ...mapPartnerCredential(current), ...patch };
+    const result = await this.pool.query(
+      `update partner_credentials
+       set label = $2,
+           key_prefix = $3,
+           key_hash = $4,
+           scopes = $5,
+           environment = $6,
+           rotated_at = $7,
+           revoked_at = $8,
+           last_used_at = $9
+       where id = $1
+       returning *`,
+      [
+        credentialId,
+        mapped.label,
+        mapped.keyPrefix,
+        mapped.keyHash,
+        mapped.scopes,
+        mapped.environment,
+        mapped.rotatedAt ?? null,
+        mapped.revokedAt ?? null,
+        mapped.lastUsedAt ?? null,
+      ],
+    );
+    return mapPartnerCredential(result.rows[0]);
+  }
+
+  async deletePartnerCredential(partnerId: string, credentialId: string) {
+    const result = await this.pool.query("delete from partner_credentials where partner_id = $1 and id = $2", [
+      partnerId,
+      credentialId,
+    ]);
+    if (result.rowCount === 0) {
+      throw new Error(`Partner credential ${credentialId} not found.`);
+    }
+  }
+
+  async listPartnerCredentials(partnerId: string) {
+    const result = await this.pool.query("select * from partner_credentials where partner_id = $1 order by created_at desc", [partnerId]);
+    return result.rows.map(mapPartnerCredential);
   }
 
   async listOrders(restaurantId: string) {
@@ -1942,11 +2345,40 @@ export class SupabasePlatformRepository implements PlatformRepository {
   }
 
   async authenticateAgentKey(keyHash: string) {
+    const partnerCredentialResult = await this.pool.query(
+      "update partner_credentials set last_used_at = now() where key_hash = $1 and revoked_at is null returning *",
+      [keyHash],
+    );
+    if (partnerCredentialResult.rows[0]) {
+      const credential = mapPartnerCredential(partnerCredentialResult.rows[0]);
+      return {
+        id: credential.id,
+        agentId: credential.agentId,
+        partnerId: credential.partnerId,
+        label: credential.label,
+        keyPrefix: credential.keyPrefix,
+        keyHash: credential.keyHash,
+        scopes: credential.scopes,
+        lastUsedAt: credential.lastUsedAt,
+        createdAt: credential.createdAt,
+        rotatedAt: credential.rotatedAt,
+        revokedAt: credential.revokedAt,
+        credentialType: "partner_credential" as const,
+        credentialId: credential.id,
+      };
+    }
+
     const result = await this.pool.query(
       "update agent_api_keys set last_used_at = now() where key_hash = $1 and revoked_at is null returning *",
       [keyHash],
     );
-    return result.rows[0] ? mapKey(result.rows[0]) : null;
+    if (!result.rows[0]) return null;
+    const key = mapKey(result.rows[0]);
+    return {
+      ...key,
+      credentialType: "agent_api_key" as const,
+      credentialId: key.id,
+    };
   }
 
   async getRecentAuditLogs(restaurantId: string, limit: number) {

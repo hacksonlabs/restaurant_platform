@@ -11,6 +11,7 @@
     "build": "vite build --mode demo",
     "start": "node --import tsx src/server/index.ts",
     "start:local": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/index.ts",
+    "start:api": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/index.ts",
     "test": "vitest run",
     "db:check": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/checkSupabase.ts",
     "db:enable:auto-approve": "node --env-file=.env --env-file=.env.demo.local --import tsx src/server/scripts/enableDemoAutoApprove.ts",
