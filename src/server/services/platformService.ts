@@ -4,6 +4,7 @@ import type {
   AgentApiScope,
   AgentApiKey,
   AuthenticatedOperator,
+  AuthenticatedPlatformAdmin,
   AgentOrderItemRecord,
   AgentOrderModifierRecord,
   AgentOrderRecord,
@@ -21,6 +22,10 @@ import type {
   POSContext,
   POSDiagnosticsResult,
   POSOrderSubmission,
+  PartnerCredential,
+  PartnerCredentialEnvironment,
+  PartnerCredentialSummary,
+  PlatformAdminPartnerRecord,
   Restaurant,
   ReportingDateRange,
   RestaurantReportingSnapshot,
@@ -54,6 +59,33 @@ function normalizeText(value: unknown): string | null {
   if (value == null) return null;
   const text = String(value).trim();
   return text || null;
+}
+
+function slugify(value: string) {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "")
+      .slice(0, 48) || "agent"
+  );
+}
+
+function summarizePartnerCredential(credential: PartnerCredential): PartnerCredentialSummary {
+  return {
+    id: credential.id,
+    partnerId: credential.partnerId,
+    agentId: credential.agentId,
+    label: credential.label,
+    keyPrefix: credential.keyPrefix,
+    scopes: credential.scopes,
+    environment: credential.environment,
+    lastUsedAt: credential.lastUsedAt,
+    createdAt: credential.createdAt,
+    rotatedAt: credential.rotatedAt,
+    revokedAt: credential.revokedAt,
+  };
 }
 
 function extractPOSTimezone(metadata: Record<string, unknown> | undefined): string | null {
@@ -222,6 +254,15 @@ export class PlatformService {
             id: agent.id,
             slug: agent.slug,
             name: agent.name,
+            partnerId: agent.partnerId ?? null,
+            partner: agent.partner
+              ? {
+                  id: agent.partner.id,
+                  name: agent.partner.name,
+                  slug: agent.partner.slug,
+                  status: agent.partner.status,
+                }
+              : null,
           },
         };
       }),
@@ -390,6 +431,26 @@ export class PlatformService {
     };
   }
 
+  async loginPlatformAdmin(email: string, password: string) {
+    const authenticated = await this.repository.authenticatePlatformAdmin(email, sha256(password));
+    if (!authenticated) {
+      throw new Error("Invalid admin email or password.");
+    }
+    const sessionToken = randomToken(32);
+    const sessionTokenHash = sha256(sessionToken);
+    await this.repository.createPlatformAdminSession({
+      adminUserId: authenticated.user.id,
+      sessionTokenHash,
+      expiresAt: new Date(Date.now() + this.operatorSessionTtlMs).toISOString(),
+    });
+    await this.appendPlatformAdminAudit(
+      authenticated,
+      "platform_admin.login",
+      `Platform admin ${authenticated.user.email} signed in.`,
+    );
+    return { sessionToken, authenticated };
+  }
+
   async signupRestaurant(input: RestaurantSignupInput) {
     const identity = this.operatorAuth?.isEnabled()
       ? await this.operatorAuth.createUserWithPassword(input.ownerEmail, input.password, input.ownerFullName)
@@ -528,6 +589,31 @@ export class PlatformService {
       includeRestaurants: false,
       forceRefreshIdentity: false,
     });
+  }
+
+  async getPlatformAdminSession(rawSessionToken: string) {
+    const authenticated = await this.repository.getAuthenticatedPlatformAdminBySessionToken(sha256(rawSessionToken));
+    if (!authenticated) {
+      throw new Error("Not signed in.");
+    }
+    return authenticated;
+  }
+
+  async getPlatformAdminRequestSession(rawSessionToken: string) {
+    return this.getPlatformAdminSession(rawSessionToken);
+  }
+
+  async logoutPlatformAdmin(rawSessionToken: string) {
+    const sessionTokenHash = sha256(rawSessionToken);
+    const authenticated = await this.repository.getAuthenticatedPlatformAdminBySessionToken(sessionTokenHash);
+    await this.repository.deletePlatformAdminSession(sessionTokenHash);
+    if (authenticated) {
+      await this.appendPlatformAdminAudit(
+        authenticated,
+        "platform_admin.logout",
+        `Platform admin ${authenticated.user.email} signed out.`,
+      );
+    }
   }
 
   async logoutOperator(rawSessionToken: string) {
@@ -789,11 +875,348 @@ export class PlatformService {
     return updated;
   }
 
+  private async getPlatformAuditRestaurantId() {
+    return (await this.repository.listRestaurants())[0]?.id ?? null;
+  }
+
+  private async appendPlatformAdminAudit(authenticated: AuthenticatedPlatformAdmin, action: string, summary: string, targetId = authenticated.user.id) {
+    const restaurantId = await this.getPlatformAuditRestaurantId();
+    if (!restaurantId) return;
+    await this.repository.appendAuditLog({
+      restaurantId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action,
+      targetType: "platform_admin_user",
+      targetId,
+      summary,
+    });
+  }
+
+  private async createUniqueAgentSlug(name: string, excludeAgentId?: string) {
+    const base = slugify(name);
+    const partners = await this.repository.listPartners();
+    const agents = (await Promise.all(partners.map((partner) => this.repository.listPartnerAgents(partner.id)))).flat();
+    const existingSlugs = new Set(
+      agents.filter((agent) => agent.id !== excludeAgentId).map((agent) => agent.slug),
+    );
+    if (!existingSlugs.has(base)) return base;
+
+    let suffix = 2;
+    let candidate = `${base}-${suffix}`;
+    while (existingSlugs.has(candidate)) {
+      suffix += 1;
+      candidate = `${base}-${suffix}`;
+    }
+    return candidate;
+  }
+
+  private async createUniquePartnerSlug(name: string, excludePartnerId?: string) {
+    const base = slugify(name);
+    const existingSlugs = new Set(
+      (await this.repository.listPartners())
+        .filter((partner) => partner.id !== excludePartnerId)
+        .map((partner) => partner.slug),
+    );
+    if (!existingSlugs.has(base)) return base;
+
+    let suffix = 2;
+    let candidate = `${base}-${suffix}`;
+    while (existingSlugs.has(candidate)) {
+      suffix += 1;
+      candidate = `${base}-${suffix}`;
+    }
+    return candidate;
+  }
+
+  async getPlatformAdminPartners(_authenticated: AuthenticatedPlatformAdmin): Promise<PlatformAdminPartnerRecord[]> {
+    const partners = await this.repository.listPartners();
+    return Promise.all(
+      partners.map(async (partner) => {
+        const [agents, credentials] = await Promise.all([
+          this.repository.listPartnerAgents(partner.id),
+          this.repository.listPartnerCredentials(partner.id),
+        ]);
+        const credentialSummaries = credentials.map(summarizePartnerCredential);
+        return {
+          partner,
+          credentials: credentialSummaries,
+          agents: agents.map((agent) => ({
+            agent,
+            credentials: credentialSummaries.filter((credential) => credential.agentId === agent.id),
+          })),
+        };
+      }),
+    );
+  }
+
+  async createAdminPartner(
+    authenticated: AuthenticatedPlatformAdmin,
+    name: string,
+    contactEmail: string | undefined,
+    status: "pending" | "approved" | "suspended" = "approved",
+  ) {
+    const partnerName = normalizeText(name);
+    if (!partnerName) throw new Error("Partner name is required.");
+    const partner = await this.repository.createPartner({
+      name: partnerName,
+      slug: await this.createUniquePartnerSlug(partnerName),
+      status,
+      contactEmail: normalizeText(contactEmail) ?? undefined,
+    });
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    await this.repository.appendAuditLog({
+      restaurantId: auditRestaurantId ?? partner.id,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "partner.created",
+      targetType: "partner",
+      targetId: partner.id,
+      summary: `Created partner ${partner.name}.`,
+    });
+    return partner;
+  }
+
+  async updateAdminPartner(
+    authenticated: AuthenticatedPlatformAdmin,
+    partnerId: string,
+    name: string,
+    contactEmail: string | undefined,
+    status: "pending" | "approved" | "suspended",
+  ) {
+    const partnerName = normalizeText(name);
+    if (!partnerName) throw new Error("Partner name is required.");
+    const existing = (await this.repository.listPartners()).find((entry) => entry.id === partnerId);
+    if (!existing) {
+      throw new Error(`Partner ${partnerId} not found.`);
+    }
+    const updated = await this.repository.updatePartner(partnerId, {
+      name: partnerName,
+      slug: await this.createUniquePartnerSlug(partnerName, partnerId),
+      status,
+      contactEmail: normalizeText(contactEmail) ?? undefined,
+    });
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    await this.repository.appendAuditLog({
+      restaurantId: auditRestaurantId ?? partnerId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "partner.updated",
+      targetType: "partner",
+      targetId: partnerId,
+      summary: `Updated partner ${updated.name}.`,
+    });
+    return updated;
+  }
+
+  async removeAdminPartner(authenticated: AuthenticatedPlatformAdmin, partnerId: string) {
+    const partner = (await this.repository.listPartners()).find((entry) => entry.id === partnerId);
+    if (!partner) {
+      throw new Error(`Partner ${partnerId} not found.`);
+    }
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    await this.repository.deletePartner(partnerId);
+    await this.repository.appendAuditLog({
+      restaurantId: auditRestaurantId ?? partnerId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "partner.removed",
+      targetType: "partner",
+      targetId: partnerId,
+      summary: `Removed partner ${partner.name}.`,
+    });
+  }
+
+  async createAdminPartnerCredential(
+    authenticated: AuthenticatedPlatformAdmin,
+    partnerId: string,
+    agentId: string,
+    label: string,
+    scopes: AgentApiScope[],
+    environment: PartnerCredentialEnvironment,
+  ) {
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    const created = await this.createPartnerCredential(
+      auditRestaurantId ?? partnerId,
+      partnerId,
+      agentId,
+      label,
+      scopes,
+      environment,
+      authenticated.user.id,
+    );
+    return { rawKey: created.rawKey, credential: summarizePartnerCredential(created.credential) };
+  }
+
+  async createAdminPartnerAgent(
+    authenticated: AuthenticatedPlatformAdmin,
+    partnerId: string,
+    name: string,
+  ) {
+    const agentName = normalizeText(name);
+    if (!agentName) throw new Error("Agent name is required.");
+
+    const partner = (await this.repository.listPartners()).find((entry) => entry.id === partnerId);
+    if (!partner) {
+      throw new Error(`Partner ${partnerId} not found.`);
+    }
+
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    const agent = await this.repository.createPartnerAgent({
+      partnerId,
+      name: agentName,
+      slug: await this.createUniqueAgentSlug(agentName),
+      description: "",
+    });
+
+    await this.repository.appendAuditLog({
+      restaurantId: auditRestaurantId ?? partnerId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "partner.agent_created",
+      targetType: "agent",
+      targetId: agent.id,
+      summary: `Created agent ${agent.name} for partner ${partner.name}.`,
+    });
+    return agent;
+  }
+
+  async updateAdminPartnerAgent(
+    authenticated: AuthenticatedPlatformAdmin,
+    partnerId: string,
+    agentId: string,
+    name: string,
+  ) {
+    const agentName = normalizeText(name);
+    if (!agentName) throw new Error("Agent name is required.");
+    const existing = await this.getAgent(agentId);
+    if (existing.partnerId !== partnerId) {
+      throw new Error(`Agent ${agentId} does not belong to partner ${partnerId}.`);
+    }
+    const updated = await this.repository.updatePartnerAgent(partnerId, agentId, {
+      name: agentName,
+      slug: await this.createUniqueAgentSlug(agentName, agentId),
+    });
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    await this.repository.appendAuditLog({
+      restaurantId: auditRestaurantId ?? partnerId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "partner.agent_updated",
+      targetType: "agent",
+      targetId: agentId,
+      summary: `Updated agent ${updated.name} for partner ${partnerId}.`,
+    });
+    return updated;
+  }
+
+  async removeAdminPartnerAgent(authenticated: AuthenticatedPlatformAdmin, partnerId: string, agentId: string) {
+    const agent = await this.getAgent(agentId);
+    if (agent.partnerId !== partnerId) {
+      throw new Error(`Agent ${agentId} does not belong to partner ${partnerId}.`);
+    }
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    await this.repository.removePartnerAgent(partnerId, agentId);
+    await this.repository.appendAuditLog({
+      restaurantId: auditRestaurantId ?? partnerId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "partner.agent_removed",
+      targetType: "agent",
+      targetId: agentId,
+      summary: `Removed agent ${agent.name} from partner ${partnerId}.`,
+    });
+  }
+
+  async rotateAdminPartnerCredential(
+    authenticated: AuthenticatedPlatformAdmin,
+    partnerId: string,
+    credentialId: string,
+    scopes: AgentApiScope[],
+    environment: PartnerCredentialEnvironment,
+  ) {
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    const rotated = await this.rotatePartnerCredential(
+      auditRestaurantId ?? partnerId,
+      partnerId,
+      credentialId,
+      scopes,
+      environment,
+      authenticated.user.id,
+    );
+    return { rawKey: rotated.rawKey, credential: summarizePartnerCredential(rotated.credential) };
+  }
+
+  async revokeAdminPartnerCredential(authenticated: AuthenticatedPlatformAdmin, partnerId: string, credentialId: string) {
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    const credential = await this.revokePartnerCredential(
+      auditRestaurantId ?? partnerId,
+      partnerId,
+      credentialId,
+      authenticated.user.id,
+    );
+    return summarizePartnerCredential(credential);
+  }
+
+  async updateAdminPartnerCredential(
+    authenticated: AuthenticatedPlatformAdmin,
+    partnerId: string,
+    credentialId: string,
+    label: string,
+    scopes: AgentApiScope[],
+    environment: PartnerCredentialEnvironment,
+  ) {
+    const credentialLabel = normalizeText(label);
+    if (!credentialLabel) throw new Error("Credential label is required.");
+    const existing = (await this.repository.listPartnerCredentials(partnerId)).find((entry) => entry.id === credentialId);
+    if (!existing) {
+      throw new Error(`Partner credential ${credentialId} not found.`);
+    }
+    const credential = await this.repository.updatePartnerCredential(credentialId, {
+      label: credentialLabel,
+      scopes,
+      environment,
+    });
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    await this.repository.appendAuditLog({
+      restaurantId: auditRestaurantId ?? partnerId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "partner.credential_updated",
+      targetType: "partner_credential",
+      targetId: credentialId,
+      summary: `Updated partner credential ${credential.label} for partner ${partnerId}.`,
+    });
+    return summarizePartnerCredential(credential);
+  }
+
+  async removeAdminPartnerCredential(authenticated: AuthenticatedPlatformAdmin, partnerId: string, credentialId: string) {
+    const credential = (await this.repository.listPartnerCredentials(partnerId)).find((entry) => entry.id === credentialId);
+    if (!credential) {
+      throw new Error(`Partner credential ${credentialId} not found.`);
+    }
+    const auditRestaurantId = await this.getPlatformAuditRestaurantId();
+    await this.repository.deletePartnerCredential(partnerId, credentialId);
+    await this.repository.appendAuditLog({
+      restaurantId: auditRestaurantId ?? partnerId,
+      actorType: "manager",
+      actorId: authenticated.user.id,
+      action: "partner.credential_removed",
+      targetType: "partner_credential",
+      targetId: credentialId,
+      summary: `Removed partner credential ${credential.label} for partner ${partnerId}.`,
+    });
+  }
+
   async listAgents(restaurantId: string) {
     return this.repository.listAgents(restaurantId);
   }
 
   async createAgentApiKey(restaurantId: string, agentId: string, label: string, scopes: AgentApiScope[]) {
+    const agent = await this.getAgent(agentId);
+    if (agent.partnerId) {
+      throw new Error("Partner-managed agent credentials are managed in Phantom Admin.");
+    }
     const rawKey = `phm_${randomToken(18)}`;
     const key = await this.repository.createAgentApiKey({
       agentId,
@@ -814,7 +1237,103 @@ export class PlatformService {
     return { rawKey, key };
   }
 
+  async createPartnerCredential(
+    restaurantId: string,
+    partnerId: string,
+    agentId: string,
+    label: string,
+    scopes: AgentApiScope[],
+    environment: "test" | "live" = "test",
+    actorId = "operator",
+  ) {
+    const partner = (await this.repository.listPartners()).find((entry) => entry.id === partnerId);
+    if (!partner) {
+      throw new Error(`Partner ${partnerId} not found.`);
+    }
+    const agent = await this.getAgent(agentId);
+    if (agent.partnerId !== partnerId) {
+      throw new Error(`Agent ${agentId} does not belong to partner ${partnerId}.`);
+    }
+    const rawKey = `phm_${randomToken(18)}`;
+    const credential = await this.repository.createPartnerCredential({
+      partnerId,
+      agentId,
+      label,
+      keyPrefix: rawKey.slice(0, 8),
+      keyHash: sha256(rawKey),
+      scopes,
+      environment,
+    });
+    await this.repository.appendAuditLog({
+      restaurantId,
+      actorType: "manager",
+      actorId,
+      action: "partner.credential_created",
+      targetType: "partner_credential",
+      targetId: credential.id,
+      summary: `Created ${environment} partner credential ${credential.label} for partner ${partnerId}.`,
+    });
+    return { rawKey, credential };
+  }
+
+  async rotatePartnerCredential(
+    restaurantId: string,
+    partnerId: string,
+    credentialId: string,
+    scopes: AgentApiScope[],
+    environment: "test" | "live" = "test",
+    actorId = "operator",
+  ) {
+    const existing = (await this.repository.listPartnerCredentials(partnerId)).find((entry) => entry.id === credentialId);
+    if (!existing) {
+      throw new Error(`Partner credential ${credentialId} not found.`);
+    }
+    const rawKey = `phm_${randomToken(18)}`;
+    const credential = await this.repository.updatePartnerCredential(credentialId, {
+      keyPrefix: rawKey.slice(0, 8),
+      keyHash: sha256(rawKey),
+      scopes,
+      environment,
+      rotatedAt: new Date().toISOString(),
+      revokedAt: undefined,
+    });
+    await this.repository.appendAuditLog({
+      restaurantId,
+      actorType: "manager",
+      actorId,
+      action: "partner.credential_rotated",
+      targetType: "partner_credential",
+      targetId: credential.id,
+      summary: `Rotated partner credential ${credential.label} for partner ${partnerId}.`,
+    });
+    return { rawKey, credential };
+  }
+
+  async revokePartnerCredential(restaurantId: string, partnerId: string, credentialId: string, actorId = "operator") {
+    const existing = (await this.repository.listPartnerCredentials(partnerId)).find((entry) => entry.id === credentialId);
+    if (!existing) {
+      throw new Error(`Partner credential ${credentialId} not found.`);
+    }
+    const credential = await this.repository.updatePartnerCredential(credentialId, {
+      revokedAt: new Date().toISOString(),
+    });
+    await this.repository.appendAuditLog({
+      restaurantId,
+      actorType: "manager",
+      actorId,
+      action: "partner.credential_revoked",
+      targetType: "partner_credential",
+      targetId: credential.id,
+      summary: `Revoked partner credential ${credential.label} for partner ${partnerId}.`,
+    });
+    return credential;
+  }
+
   async rotateAgentApiKey(restaurantId: string, agentId: string, keyId: string, scopes: AgentApiScope[]) {
+    const agent = await this.getAgent(agentId);
+    if (agent.partnerId) {
+      throw new Error("Partner-managed agent credentials are managed in Phantom Admin.");
+    }
     const existing = (await this.repository.listAgentApiKeys(agentId)).find((entry) => entry.id === keyId);
     if (!existing) {
       throw new Error(`Agent API key ${keyId} not found.`);
@@ -840,6 +1359,10 @@ export class PlatformService {
   }
 
   async revokeAgentApiKey(restaurantId: string, agentId: string, keyId: string) {
+    const agent = await this.getAgent(agentId);
+    if (agent.partnerId) {
+      throw new Error("Partner-managed agent credentials are managed in Phantom Admin.");
+    }
     const existing = (await this.repository.listAgentApiKeys(agentId)).find((entry) => entry.id === keyId);
     if (!existing) {
       throw new Error(`Agent API key ${keyId} not found.`);
@@ -860,15 +1383,22 @@ export class PlatformService {
   }
 
   async updateAgentPermission(restaurantId: string, agentId: string, status: any, notes?: string) {
+    await this.getAgent(agentId);
     const permission = await this.repository.getPermission(restaurantId, agentId);
-    if (!permission) {
-      throw new Error(`Permission for agent ${agentId} not found.`);
-    }
-    const updated = await this.repository.updatePermission(permission.id, {
-      status,
-      notes,
-      lastActivityAt: new Date().toISOString(),
-    });
+    const lastActivityAt = new Date().toISOString();
+    const updated = permission
+      ? await this.repository.updatePermission(permission.id, {
+          status,
+          notes,
+          lastActivityAt,
+        })
+      : await this.repository.createPermission({
+          restaurantId,
+          agentId,
+          status,
+          notes,
+          lastActivityAt,
+        });
     await this.repository.appendAuditLog({
       restaurantId,
       actorType: "manager",
@@ -1063,6 +1593,12 @@ export class PlatformService {
     }
     if (keyRecord.revokedAt) {
       throw new Error("API key has been revoked.");
+    }
+    if (keyRecord.credentialType === "agent_api_key") {
+      const agent = await this.getAgent(keyRecord.agentId);
+      if (agent.partnerId) {
+        throw new Error("Invalid API key.");
+      }
     }
     return keyRecord;
   }

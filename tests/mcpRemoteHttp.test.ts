@@ -88,4 +88,28 @@ describe("Phantom remote MCP server", () => {
       await transport.close();
     }
   });
+
+  it("returns an auth error instead of a server error for invalid MCP keys", async () => {
+    const service = new PlatformService(new InMemoryPlatformRepository("coachimhungry_demo_live_local_key"));
+    const app = express();
+    app.use("/mcp", createRemoteMcpApp(service, { mcpAllowedHosts: ["127.0.0.1"] }));
+    server = app.listen(0);
+    await once(server, "listening");
+
+    const address = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer invalid_key",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      error: "invalid_token",
+      error_description: "Invalid API key.",
+    });
+  });
 });

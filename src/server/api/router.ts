@@ -2,6 +2,9 @@ import { Router } from "express";
 import { ZodError } from "zod";
 import {
   canonicalOrderIntentSchema,
+  createPartnerAgentSchema,
+  createPartnerCredentialSchema,
+  createPartnerSchema,
   createTeamMemberSchema,
   onboardingActivateSchema,
   onboardingAccessRequestSchema,
@@ -10,11 +13,21 @@ import {
   patchPermissionSchema,
   patchRestaurantSchema,
   restaurantSignupSchema,
+  rotatePartnerCredentialSchema,
+  updatePartnerAgentSchema,
+  updatePartnerCredentialSchema,
+  updatePartnerSchema,
   updateTeamMemberSchema,
 } from "../../shared/schemas";
 import { phantomMcpSchemas, searchRestaurantsTool } from "../mcp/tools";
 import { requireAgentApiKey } from "../auth/middleware";
-import { requireRestaurantRole, requireRestaurantSession, restaurantAuthRoutes } from "../auth/restaurantSession";
+import {
+  platformAdminAuthRoutes,
+  requirePlatformAdminSession,
+  requireRestaurantRole,
+  requireRestaurantSession,
+  restaurantAuthRoutes,
+} from "../auth/restaurantSession";
 import { rateLimit } from "../middleware/rateLimit";
 import type { PlatformService } from "../services/platformService";
 
@@ -44,6 +57,7 @@ function parseOptionalNumber(value: unknown) {
 export function createApiRouter(service: PlatformService) {
   const router = Router();
   const restaurantAuth = restaurantAuthRoutes(service);
+  const platformAdminAuth = platformAdminAuthRoutes(service);
 
   router.get("/health", (_request, response) => {
     response.json({ ok: true, service: "phantom" });
@@ -57,6 +71,14 @@ export function createApiRouter(service: PlatformService) {
   }));
   router.post("/auth/logout", asyncHandler(restaurantAuth.logout));
   router.post("/auth/select-tenant", asyncHandler(restaurantAuth.selectTenant));
+
+  router.get("/admin/auth/me", asyncHandler(platformAdminAuth.me));
+  router.post(
+    "/admin/auth/login",
+    rateLimit({ key: (request) => `admin-auth:${request.ip ?? "local"}`, limit: 10, windowMs: 60_000, message: "Too many admin login attempts." }),
+    asyncHandler(platformAdminAuth.login),
+  );
+  router.post("/admin/auth/logout", asyncHandler(platformAdminAuth.logout));
 
   router.post(
     "/onboarding/discover",
@@ -93,6 +115,170 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.use("/restaurants", requireRestaurantSession(service));
+
+  router.use("/admin", requirePlatformAdminSession(service));
+
+  router.get(
+    "/admin/partners",
+    asyncHandler(async (request, response) => {
+      response.json(await service.getPlatformAdminPartners(request.platformAdminSession!));
+    }),
+  );
+
+  router.post(
+    "/admin/partners",
+    asyncHandler(async (request, response) => {
+      const input = createPartnerSchema.parse(request.body);
+      response.json(
+        await service.createAdminPartner(
+          request.platformAdminSession!,
+          input.name,
+          input.contactEmail || undefined,
+          input.status,
+        ),
+      );
+    }),
+  );
+
+  router.patch(
+    "/admin/partners/:partnerId",
+    asyncHandler(async (request, response) => {
+      const input = updatePartnerSchema.parse(request.body);
+      response.json(
+        await service.updateAdminPartner(
+          request.platformAdminSession!,
+          request.params.partnerId,
+          input.name,
+          input.contactEmail || undefined,
+          input.status,
+        ),
+      );
+    }),
+  );
+
+  router.delete(
+    "/admin/partners/:partnerId",
+    asyncHandler(async (request, response) => {
+      await service.removeAdminPartner(request.platformAdminSession!, request.params.partnerId);
+      response.status(204).end();
+    }),
+  );
+
+  router.post(
+    "/admin/partners/:partnerId/agents",
+    asyncHandler(async (request, response) => {
+      const input = createPartnerAgentSchema.parse(request.body);
+      response.json(
+        await service.createAdminPartnerAgent(
+          request.platformAdminSession!,
+          request.params.partnerId,
+          input.name,
+        ),
+      );
+    }),
+  );
+
+  router.patch(
+    "/admin/partners/:partnerId/agents/:agentId",
+    asyncHandler(async (request, response) => {
+      const input = updatePartnerAgentSchema.parse(request.body);
+      response.json(
+        await service.updateAdminPartnerAgent(
+          request.platformAdminSession!,
+          request.params.partnerId,
+          request.params.agentId,
+          input.name,
+        ),
+      );
+    }),
+  );
+
+  router.delete(
+    "/admin/partners/:partnerId/agents/:agentId",
+    asyncHandler(async (request, response) => {
+      await service.removeAdminPartnerAgent(
+        request.platformAdminSession!,
+        request.params.partnerId,
+        request.params.agentId,
+      );
+      response.status(204).end();
+    }),
+  );
+
+  router.post(
+    "/admin/partners/:partnerId/credentials",
+    asyncHandler(async (request, response) => {
+      const input = createPartnerCredentialSchema.parse(request.body);
+      response.json(
+        await service.createAdminPartnerCredential(
+          request.platformAdminSession!,
+          request.params.partnerId,
+          input.agentId,
+          input.label,
+          input.scopes,
+          input.environment,
+        ),
+      );
+    }),
+  );
+
+  router.patch(
+    "/admin/partners/:partnerId/credentials/:credentialId",
+    asyncHandler(async (request, response) => {
+      const input = updatePartnerCredentialSchema.parse(request.body);
+      response.json(
+        await service.updateAdminPartnerCredential(
+          request.platformAdminSession!,
+          request.params.partnerId,
+          request.params.credentialId,
+          input.label,
+          input.scopes,
+          input.environment,
+        ),
+      );
+    }),
+  );
+
+  router.delete(
+    "/admin/partners/:partnerId/credentials/:credentialId",
+    asyncHandler(async (request, response) => {
+      await service.removeAdminPartnerCredential(
+        request.platformAdminSession!,
+        request.params.partnerId,
+        request.params.credentialId,
+      );
+      response.status(204).end();
+    }),
+  );
+
+  router.post(
+    "/admin/partners/:partnerId/credentials/:credentialId/rotate",
+    asyncHandler(async (request, response) => {
+      const input = rotatePartnerCredentialSchema.parse(request.body);
+      response.json(
+        await service.rotateAdminPartnerCredential(
+          request.platformAdminSession!,
+          request.params.partnerId,
+          request.params.credentialId,
+          input.scopes,
+          input.environment,
+        ),
+      );
+    }),
+  );
+
+  router.post(
+    "/admin/partners/:partnerId/credentials/:credentialId/revoke",
+    asyncHandler(async (request, response) => {
+      response.json(
+        await service.revokeAdminPartnerCredential(
+          request.platformAdminSession!,
+          request.params.partnerId,
+          request.params.credentialId,
+        ),
+      );
+    }),
+  );
 
   router.get(
     "/restaurants",

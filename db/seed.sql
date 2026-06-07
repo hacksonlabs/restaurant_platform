@@ -137,16 +137,26 @@ on conflict (id) do update set
   provider_reference = excluded.provider_reference,
   status = excluded.status;
 
-insert into agents (id, name, slug, description, created_at) values
-  ('agent_coachimhungry', 'CoachImHungry', 'coachimhungry', 'First-party ordering agent acting on behalf of customers.', '2026-05-01T18:00:00.000Z')
+insert into partners (id, name, slug, status, contact_email, created_at, updated_at) values
+  ('partner_coachimhungry', 'CoachImHungry', 'coachimhungry', 'approved', 'integrations@coachimhungry.example', '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z')
 on conflict (id) do update set
+  name = excluded.name,
+  slug = excluded.slug,
+  status = excluded.status,
+  contact_email = excluded.contact_email,
+  updated_at = excluded.updated_at;
+
+insert into agents (id, partner_id, name, slug, description, created_at) values
+  ('agent_coachimhungry', 'partner_coachimhungry', 'CoachImHungry', 'coachimhungry', 'First-party ordering agent acting on behalf of customers.', '2026-05-01T18:00:00.000Z')
+on conflict (id) do update set
+  partner_id = excluded.partner_id,
   name = excluded.name,
   slug = excluded.slug,
   description = excluded.description,
   created_at = excluded.created_at;
 
 insert into agent_api_keys (id, agent_id, label, key_prefix, key_hash, scopes, last_used_at, created_at, revoked_at) values
-  ('key_coachimhungry_demo', 'agent_coachimhungry', 'CoachImHungry local demo key', 'coachimh', 'ec8189130b326472785eae6410197a4d0f89cf806bd430f8b2c933a0668f94ac', array['restaurants:read','menus:read','payments:start','orders:validate','orders:quote','orders:submit','orders:status']::text[], '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z', null)
+  ('key_coachimhungry_demo', 'agent_coachimhungry', 'CoachImHungry local demo key', 'coachimh', 'ec8189130b326472785eae6410197a4d0f89cf806bd430f8b2c933a0668f94ac', array['restaurants:read','menus:read','orders:validate','orders:quote','orders:submit','orders:status']::text[], '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z', null)
 on conflict (id) do update set
   agent_id = excluded.agent_id,
   label = excluded.label,
@@ -156,6 +166,32 @@ on conflict (id) do update set
   last_used_at = excluded.last_used_at,
   created_at = excluded.created_at,
   revoked_at = excluded.revoked_at;
+
+insert into partner_credentials (id, partner_id, agent_id, label, key_prefix, key_hash, scopes, environment, last_used_at, created_at, revoked_at) values
+  ('pcred_coachimhungry_demo', 'partner_coachimhungry', 'agent_coachimhungry', 'CoachImHungry demo partner credential', 'coachimh', 'ec8189130b326472785eae6410197a4d0f89cf806bd430f8b2c933a0668f94ac', array['restaurants:read','menus:read','orders:validate','orders:quote','orders:submit','orders:status']::text[], 'test', '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z', null)
+on conflict (id) do update set
+  partner_id = excluded.partner_id,
+  agent_id = excluded.agent_id,
+  label = excluded.label,
+  key_prefix = excluded.key_prefix,
+  key_hash = excluded.key_hash,
+  scopes = excluded.scopes,
+  environment = excluded.environment,
+  last_used_at = excluded.last_used_at,
+  created_at = excluded.created_at,
+  revoked_at = excluded.revoked_at;
+
+delete from platform_admin_sessions where admin_user_id = 'pa_coach_agent';
+delete from platform_admin_users where id = 'pa_coach_agent' or lower(email) = 'coach@agent.com';
+
+insert into platform_admin_users (id, email, full_name, password_hash, status, created_at, last_login_at) values
+  ('pa_akayla_mealops', 'akayla@mealops.ai', 'Akayla MealOps Admin', '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8', 'active', '2026-05-01T18:00:00.000Z', null)
+on conflict (id) do update set
+  email = excluded.email,
+  full_name = excluded.full_name,
+  password_hash = excluded.password_hash,
+  status = excluded.status,
+  created_at = excluded.created_at;
 
 insert into operator_users (id, email, full_name, supabase_user_id, created_at, last_login_at) values
   ('op_dev_rest', 'dev@rest.com', 'Restaurant Dev Operator', null, '2026-05-01T18:00:00.000Z', null)

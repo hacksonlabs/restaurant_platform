@@ -1,4 +1,5 @@
 import type { RequestHandler } from "express";
+import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { AgentApiKey } from "../../shared/types";
@@ -8,13 +9,14 @@ const PHANTOM_AGENT_KEY_AUTH_INFO_KEY = "phantomAgentKey";
 
 type SerializedAgentApiKey = Pick<
   AgentApiKey,
-  "id" | "agentId" | "label" | "keyPrefix" | "keyHash" | "scopes" | "lastUsedAt" | "createdAt" | "rotatedAt" | "revokedAt"
->;
+  "id" | "agentId" | "partnerId" | "label" | "keyPrefix" | "keyHash" | "scopes" | "lastUsedAt" | "createdAt" | "rotatedAt" | "revokedAt"
+> & { credentialType?: "agent_api_key" | "partner_credential"; credentialId?: string };
 
 function serializeAgentApiKey(key: AgentApiKey): SerializedAgentApiKey {
   return {
     id: key.id,
     agentId: key.agentId,
+    partnerId: key.partnerId,
     label: key.label,
     keyPrefix: key.keyPrefix,
     keyHash: key.keyHash,
@@ -23,6 +25,8 @@ function serializeAgentApiKey(key: AgentApiKey): SerializedAgentApiKey {
     createdAt: key.createdAt,
     rotatedAt: key.rotatedAt,
     revokedAt: key.revokedAt,
+    credentialType: (key as any).credentialType,
+    credentialId: (key as any).credentialId,
   };
 }
 
@@ -36,6 +40,7 @@ function isSerializedAgentApiKey(value: unknown): value is SerializedAgentApiKey
   return (
     typeof candidate.id === "string" &&
     typeof candidate.agentId === "string" &&
+    (candidate.partnerId == null || typeof candidate.partnerId === "string") &&
     typeof candidate.label === "string" &&
     typeof candidate.keyPrefix === "string" &&
     typeof candidate.keyHash === "string" &&
@@ -43,7 +48,11 @@ function isSerializedAgentApiKey(value: unknown): value is SerializedAgentApiKey
     typeof candidate.createdAt === "string" &&
     (candidate.lastUsedAt == null || typeof candidate.lastUsedAt === "string") &&
     (candidate.rotatedAt == null || typeof candidate.rotatedAt === "string") &&
-    (candidate.revokedAt == null || typeof candidate.revokedAt === "string")
+    (candidate.revokedAt == null || typeof candidate.revokedAt === "string") &&
+    (candidate.credentialType == null ||
+      candidate.credentialType === "agent_api_key" ||
+      candidate.credentialType === "partner_credential") &&
+    (candidate.credentialId == null || typeof candidate.credentialId === "string")
   );
 }
 
@@ -66,7 +75,13 @@ export function normalizeRemoteMcpAuthorizationHeader(): RequestHandler {
 export function createAgentApiKeyVerifier(service: PlatformService): OAuthTokenVerifier {
   return {
     async verifyAccessToken(token: string) {
-      const agentKey = await service.authenticateAgentKey(token);
+      let agentKey: AgentApiKey;
+      try {
+        agentKey = await service.authenticateAgentKey(token);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid API key.";
+        throw new InvalidTokenError(message);
+      }
       return {
         token,
         clientId: agentKey.agentId,

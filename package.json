@@ -10,6 +10,7 @@
     "mcp:stdio": "node --env-file=.env --import tsx src/server/mcp/stdio.ts",
     "build": "vite build",
     "start": "node --env-file=.env --import tsx src/server/index.ts",
+    "start:api": "node --env-file=.env --import tsx src/server/index.ts",
     "test": "vitest run",
     "db:check": "node --env-file=.env --import tsx src/server/scripts/checkSupabase.ts",
     "smoke:e2e": "node --env-file=.env --import tsx src/server/scripts/smokeOrderFlow.ts"

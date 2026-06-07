@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+export const agentApiScopeSchema = z.enum([
+  "restaurants:read",
+  "menus:read",
+  "payments:start",
+  "orders:validate",
+  "orders:quote",
+  "orders:submit",
+  "orders:status",
+]);
+
 export const canonicalOrderIntentSchema = z.object({
   restaurant_id: z.string().min(1),
   agent_id: z.string().min(1),
@@ -167,6 +177,44 @@ export const updateTeamMemberSchema = z.object({
       message: "Choose at least one restaurant for this account.",
     });
   }
+});
+
+export const createPartnerCredentialSchema = z.object({
+  agentId: z.string().min(1, "Agent is required."),
+  label: z.string().min(1, "Credential label is required."),
+  scopes: z.array(agentApiScopeSchema).min(1, "Choose at least one credential scope."),
+  environment: z.enum(["test", "live"]).default("test"),
+});
+
+export const createPartnerSchema = z.object({
+  name: z.string().min(1, "Partner name is required."),
+  contactEmail: z.string().email("Enter a valid contact email.").optional().or(z.literal("")),
+  status: z.enum(["pending", "approved", "suspended"]).default("approved"),
+});
+
+export const updatePartnerSchema = z.object({
+  name: z.string().min(1, "Partner name is required."),
+  contactEmail: z.string().email("Enter a valid contact email.").optional().or(z.literal("")),
+  status: z.enum(["pending", "approved", "suspended"]),
+});
+
+export const createPartnerAgentSchema = z.object({
+  name: z.string().min(1, "Agent name is required."),
+});
+
+export const updatePartnerAgentSchema = z.object({
+  name: z.string().min(1, "Agent name is required."),
+});
+
+export const updatePartnerCredentialSchema = z.object({
+  label: z.string().min(1, "Credential label is required."),
+  scopes: z.array(agentApiScopeSchema).min(1, "Choose at least one credential scope."),
+  environment: z.enum(["test", "live"]),
+});
+
+export const rotatePartnerCredentialSchema = z.object({
+  scopes: z.array(agentApiScopeSchema).min(1, "Choose at least one credential scope."),
+  environment: z.enum(["test", "live"]).default("test"),
 });
 
 export type CanonicalOrderIntentInput = z.infer<typeof canonicalOrderIntentSchema>;

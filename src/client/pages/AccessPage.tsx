@@ -59,6 +59,8 @@ export function AccessPage() {
   const [teamForm, setTeamForm] = useState<TeamMemberFormState>(emptyTeamMemberForm());
   const [savingTeamMember, setSavingTeamMember] = useState(false);
   const [deletingTeamMemberId, setDeletingTeamMemberId] = useState<string | null>(null);
+  const [reviewingAgentKey, setReviewingAgentKey] = useState<string | null>(null);
+  const [pendingAgentKey, setPendingAgentKey] = useState<string | null>(null);
 
   if (loading) return <div className="panel-state">Loading access…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
@@ -180,6 +182,71 @@ export function AccessPage() {
     navigate(`/agents/${agent.agent.id}`);
   }
 
+  function agentRowKey(entry: any) {
+    return `${entry.restaurantId}:${entry.agent.id}`;
+  }
+
+  function canManageAgentForRestaurant(entry: any) {
+    const membership = session?.restaurants
+      .find((restaurant) => restaurant.id === entry.restaurantId)
+      ?.memberships.find((membership) => membership.restaurantId === entry.restaurantId);
+    return membership?.role === "owner";
+  }
+
+  function permissionTone(status: string) {
+    if (status === "allowed") return "success";
+    if (status === "blocked" || status === "revoked") return "danger";
+    return "warning";
+  }
+
+  function permissionLabel(status: string) {
+    if (status === "pending") return "Needs review";
+    return status.replaceAll("_", " ");
+  }
+
+  async function decideAgent(entry: any, status: "allowed" | "blocked") {
+    const rowKey = agentRowKey(entry);
+    const previousAgents = data.agents;
+    setReviewingAgentKey(null);
+    setPendingAgentKey(rowKey);
+    setMessage("");
+    setData({
+      ...data,
+      agents: data.agents.map((agentEntry: any) =>
+        agentRowKey(agentEntry) === rowKey
+          ? {
+              ...agentEntry,
+              permission: {
+                ...agentEntry.permission,
+                status,
+                lastActivityAt: new Date().toISOString(),
+              },
+            }
+          : agentEntry,
+      ),
+    });
+    try {
+      const updated = await api.updateAgentPermission(entry.restaurantId, entry.agent.id, { status });
+      setData({
+        ...data,
+        agents: previousAgents.map((agentEntry: any) =>
+          agentRowKey(agentEntry) === rowKey
+            ? {
+                ...agentEntry,
+                permissionId: updated.id,
+                permission: updated,
+              }
+            : agentEntry,
+        ),
+      });
+    } catch (decisionError) {
+      setData({ ...data, agents: previousAgents });
+      setMessage(decisionError instanceof Error ? decisionError.message : `Failed to ${status === "allowed" ? "allow" : "block"} agent.`);
+    } finally {
+      setPendingAgentKey(null);
+    }
+  }
+
   return (
     <div className="page-grid">
       <PageHeader
@@ -249,13 +316,21 @@ export function AccessPage() {
 
       <Card title="Agents" className="settings-controls-card access-agents-card">
         <DataTable
-          columns={isAllRestaurantsScope ? ["Restaurant", "Agent", "Type", "Status", "Last Used", "Actions"] : ["Agent", "Type", "Status", "Last Used", "Actions"]}
-          rows={data.agents.map((entry: any) => {
+          columns={isAllRestaurantsScope ? ["Restaurant", "Agent", "Type", "Status", "Last Used"] : ["Agent", "Type", "Status", "Last Used"]}
+          rows={data.agents.map((entry: any, index: number) => {
+            const rowKey = agentRowKey(entry);
+            const canDecideAgent = canManageAgentForRestaurant(entry);
+            const shouldOpenReviewMenuUpward = index >= data.agents.length - 2;
             const cells = [
               <div className="access-agents-cell" key={`${entry.restaurantId}-restaurant`}>{entry.restaurantName}</div>,
-              <div className="agent-app-cell" key={entry.agent.id}>
+              <div className="agent-app-cell" key={`${entry.restaurantId}-${entry.agent.id}-agent`}>
                 <div className="agent-app-icon">{entry.agent.name.slice(0, 1)}</div>
-                <div><strong>{entry.agent.name}</strong></div>
+                <div>
+                  <button type="button" className="agent-name-link" onClick={() => void openAgent(entry)}>
+                    {entry.agent.name}
+                  </button>
+                  <span className="agent-company-name">{entry.agent.partner?.name ?? "Independent agent"}</span>
+                </div>
               </div>,
               <div className="access-agents-cell" key={`${entry.agent.id}-type`}>
                 <Badge tone="default">
@@ -263,24 +338,42 @@ export function AccessPage() {
                 </Badge>
               </div>,
               <div className="access-agents-cell" key={`${entry.agent.id}-status`}>
-                <Badge
-                  tone={
-                    entry.permission.status === "allowed"
-                      ? "success"
-                      : entry.permission.status === "blocked"
-                        ? "danger"
-                        : "warning"
-                  }
-                >
-                  {entry.permission.status}
-                </Badge>
+                {canDecideAgent ? (
+                  <div className="review-cell">
+                    <button
+                      type="button"
+                      className="review-trigger"
+                      disabled={pendingAgentKey === rowKey}
+                      onClick={() => setReviewingAgentKey((current) => (current === rowKey ? null : rowKey))}
+                    >
+                      <Badge tone={permissionTone(entry.permission.status)}>{permissionLabel(entry.permission.status)}</Badge>
+                    </button>
+                    {reviewingAgentKey === rowKey ? (
+                      <div className={`review-popover access-review-popover ${shouldOpenReviewMenuUpward ? "open-up" : ""}`.trim()}>
+                        <Button
+                          className="button-small"
+                          tone="secondary"
+                          onClick={() => void decideAgent(entry, "allowed")}
+                          disabled={pendingAgentKey === rowKey || entry.permission.status === "allowed"}
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          className="button-small"
+                          tone="danger"
+                          onClick={() => void decideAgent(entry, "blocked")}
+                          disabled={pendingAgentKey === rowKey || entry.permission.status === "blocked"}
+                        >
+                          Block
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <Badge tone={permissionTone(entry.permission.status)}>{permissionLabel(entry.permission.status)}</Badge>
+                )}
               </div>,
               <div className="access-agents-cell" key={`${entry.agent.id}-used`}>{dateTimeOrFallback(entry.apiKey?.lastUsedAt ?? entry.permission.lastActivityAt)}</div>,
-              <div className="access-agents-cell" key={`${entry.agent.id}-actions`}>
-                <button type="button" className="settings-table-action" onClick={() => void openAgent(entry)}>
-                  Manage
-                </button>
-              </div>,
             ];
             return isAllRestaurantsScope ? cells : cells.slice(1);
           })}
