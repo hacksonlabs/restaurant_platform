@@ -1309,9 +1309,10 @@ describe("PlatformService", () => {
     expect(created.user.email).toBe("jordan.staff@example.com");
     expect(created.assignments).toHaveLength(2);
     expect(listResponse.status).toBe(200);
-    expect(listed.map((member: { user: { email: string } }) => member.user.email)).toEqual([
-      "jordan.staff@example.com",
-    ]);
+    expect(listed.map((member: { user: { email: string } }) => member.user.email)).toEqual(
+      expect.arrayContaining(["dev@rest.com", "jordan.staff@example.com"]),
+    );
+    expect(listed).toHaveLength(2);
     expect(listed).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1380,6 +1381,7 @@ describe("PlatformService", () => {
     );
 
     expect(listResponse.status).toBe(200);
+    expect(listed.map((member: { user: { email: string } }) => member.user.email)).toContain("dev@rest.com");
     expect(listed.map((member: { user: { email: string } }) => member.user.email)).not.toContain(
       "shared.restaurant@example.com",
     );

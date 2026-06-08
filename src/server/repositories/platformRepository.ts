@@ -190,7 +190,7 @@ export interface PlatformRepository {
   listAccessibleRestaurants(operatorUserId: string): Promise<Array<Restaurant & { memberships: OperatorMembership[] }>>;
   listTeamMembers(
     restaurantIds: string[],
-    options?: { createdByOperatorUserId?: string },
+    options?: { createdByOperatorUserId?: string; includeOperatorUserIds?: string[] },
   ): Promise<TeamMemberRecord[]>;
   getTeamMemberRecord(operatorUserId: string): Promise<TeamMemberRecord | null>;
   createTeamMember(input: {
@@ -969,16 +969,21 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       }));
   }
 
-  async listTeamMembers(restaurantIds: string[], options?: { createdByOperatorUserId?: string }) {
+  async listTeamMembers(
+    restaurantIds: string[],
+    options?: { createdByOperatorUserId?: string; includeOperatorUserIds?: string[] },
+  ) {
     const restaurantIdSet = new Set(restaurantIds);
     const memberships = this.state.operatorMemberships.filter((entry) => restaurantIdSet.has(entry.restaurantId));
     let operatorUserIds = [...new Set(memberships.map((entry) => entry.operatorUserId))];
 
-    if (options?.createdByOperatorUserId) {
+    if (options?.createdByOperatorUserId || options?.includeOperatorUserIds?.length) {
+      const includedOperatorUserIds = new Set(options.includeOperatorUserIds ?? []);
       const invitedOperatorUserIds = new Set(
         this.state.auditLogs
           .filter(
             (entry) =>
+              Boolean(options.createdByOperatorUserId) &&
               entry.action === "operator.team_member_created" &&
               entry.actorId === options.createdByOperatorUserId &&
               entry.targetType === "operator_user" &&
@@ -986,7 +991,9 @@ export class InMemoryPlatformRepository implements PlatformRepository {
           )
           .map((entry) => entry.targetId),
       );
-      operatorUserIds = operatorUserIds.filter((operatorUserId) => invitedOperatorUserIds.has(operatorUserId));
+      operatorUserIds = operatorUserIds.filter(
+        (operatorUserId) => invitedOperatorUserIds.has(operatorUserId) || includedOperatorUserIds.has(operatorUserId),
+      );
     }
 
     return operatorUserIds

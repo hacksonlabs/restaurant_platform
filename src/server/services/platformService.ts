@@ -282,7 +282,10 @@ export class PlatformService {
     const ownerRestaurantIds = [...new Set(
       authenticated.memberships.filter((entry) => entry.role === "owner").map((entry) => entry.restaurantId),
     )];
-    return this.repository.listTeamMembers(ownerRestaurantIds, { createdByOperatorUserId: authenticated.user.id });
+    return this.repository.listTeamMembers(ownerRestaurantIds, {
+      createdByOperatorUserId: authenticated.user.id,
+      includeOperatorUserIds: [authenticated.user.id],
+    });
   }
 
   async createTeamMember(authenticated: AuthenticatedOperator, input: CreateTeamMemberInput) {
@@ -356,6 +359,7 @@ export class PlatformService {
     }
     const managedTeamMembers = await this.repository.listTeamMembers(ownerRestaurantIds, {
       createdByOperatorUserId: authenticated.user.id,
+      includeOperatorUserIds: [authenticated.user.id],
     });
     if (!managedTeamMembers.some((entry) => entry.user.id === operatorUserId)) {
       throw new Error("Team member not found.");
@@ -407,6 +411,7 @@ export class PlatformService {
     }
     const managedTeamMembers = await this.repository.listTeamMembers(ownerRestaurantIds, {
       createdByOperatorUserId: authenticated.user.id,
+      includeOperatorUserIds: [authenticated.user.id],
     });
     if (!managedTeamMembers.some((entry) => entry.user.id === operatorUserId)) {
       throw new Error("Team member not found.");

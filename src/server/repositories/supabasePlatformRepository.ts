@@ -1051,21 +1051,35 @@ export class SupabasePlatformRepository implements PlatformRepository {
     }));
   }
 
-  async listTeamMembers(restaurantIds: string[], options?: { createdByOperatorUserId?: string }) {
+  async listTeamMembers(
+    restaurantIds: string[],
+    options?: { createdByOperatorUserId?: string; includeOperatorUserIds?: string[] },
+  ) {
     if (restaurantIds.length === 0) {
       return [];
     }
-    const createdByFilter = options?.createdByOperatorUserId
-      ? `and exists (
+    const queryParams: unknown[] = [restaurantIds];
+    const visibilityPredicates: string[] = [];
+    if (options?.createdByOperatorUserId) {
+      queryParams.push(options.createdByOperatorUserId);
+      visibilityPredicates.push(
+        `exists (
            select 1
            from audit_logs al
            where al.action = 'operator.team_member_created'
              and al.target_type = 'operator_user'
              and al.target_id = u.id
-             and al.actor_id = $2
+             and al.actor_id = $${queryParams.length}
              and al.restaurant_id = any($1::text[])
-         )`
-      : "";
+         )`,
+      );
+    }
+    const includedOperatorUserIds = options?.includeOperatorUserIds?.filter(Boolean) ?? [];
+    if (includedOperatorUserIds.length > 0) {
+      queryParams.push(includedOperatorUserIds);
+      visibilityPredicates.push(`u.id = any($${queryParams.length}::text[])`);
+    }
+    const visibilityFilter = visibilityPredicates.length > 0 ? `and (${visibilityPredicates.join(" or ")})` : "";
     const result = await this.pool.query(
       `select
          u.*,
@@ -1079,9 +1093,9 @@ export class SupabasePlatformRepository implements PlatformRepository {
        join operator_users u on u.id = m.operator_user_id
        join restaurants r on r.id = m.restaurant_id
        where m.restaurant_id = any($1::text[])
-         ${createdByFilter}
+         ${visibilityFilter}
        order by u.full_name asc, r.name asc`,
-      options?.createdByOperatorUserId ? [restaurantIds, options.createdByOperatorUserId] : [restaurantIds],
+      queryParams,
     );
 
     const byUser = new Map<string, TeamMemberRecord>();
