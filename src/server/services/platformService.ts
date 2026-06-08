@@ -282,7 +282,7 @@ export class PlatformService {
     const ownerRestaurantIds = [...new Set(
       authenticated.memberships.filter((entry) => entry.role === "owner").map((entry) => entry.restaurantId),
     )];
-    return this.repository.listTeamMembers(ownerRestaurantIds);
+    return this.repository.listTeamMembers(ownerRestaurantIds, { createdByOperatorUserId: authenticated.user.id });
   }
 
   async createTeamMember(authenticated: AuthenticatedOperator, input: CreateTeamMemberInput) {
@@ -354,6 +354,12 @@ export class PlatformService {
         throw new Error("You can only assign access to restaurants you own.");
       }
     }
+    const managedTeamMembers = await this.repository.listTeamMembers(ownerRestaurantIds, {
+      createdByOperatorUserId: authenticated.user.id,
+    });
+    if (!managedTeamMembers.some((entry) => entry.user.id === operatorUserId)) {
+      throw new Error("Team member not found.");
+    }
 
     const updated = await this.repository.updateTeamMember({
       operatorUserId,
@@ -398,6 +404,12 @@ export class PlatformService {
     const managedAssignments = target.assignments.filter((entry) => ownerRestaurantIds.includes(entry.restaurantId));
     if (managedAssignments.length === 0) {
       throw new Error("You can only remove access to restaurants you own.");
+    }
+    const managedTeamMembers = await this.repository.listTeamMembers(ownerRestaurantIds, {
+      createdByOperatorUserId: authenticated.user.id,
+    });
+    if (!managedTeamMembers.some((entry) => entry.user.id === operatorUserId)) {
+      throw new Error("Team member not found.");
     }
 
     const removesEntireOperator = target.assignments.every((entry) => ownerRestaurantIds.includes(entry.restaurantId));

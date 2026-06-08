@@ -1051,10 +1051,21 @@ export class SupabasePlatformRepository implements PlatformRepository {
     }));
   }
 
-  async listTeamMembers(restaurantIds: string[]) {
+  async listTeamMembers(restaurantIds: string[], options?: { createdByOperatorUserId?: string }) {
     if (restaurantIds.length === 0) {
       return [];
     }
+    const createdByFilter = options?.createdByOperatorUserId
+      ? `and exists (
+           select 1
+           from audit_logs al
+           where al.action = 'operator.team_member_created'
+             and al.target_type = 'operator_user'
+             and al.target_id = u.id
+             and al.actor_id = $2
+             and al.restaurant_id = any($1::text[])
+         )`
+      : "";
     const result = await this.pool.query(
       `select
          u.*,
@@ -1068,8 +1079,9 @@ export class SupabasePlatformRepository implements PlatformRepository {
        join operator_users u on u.id = m.operator_user_id
        join restaurants r on r.id = m.restaurant_id
        where m.restaurant_id = any($1::text[])
+         ${createdByFilter}
        order by u.full_name asc, r.name asc`,
-      [restaurantIds],
+      options?.createdByOperatorUserId ? [restaurantIds, options.createdByOperatorUserId] : [restaurantIds],
     );
 
     const byUser = new Map<string, TeamMemberRecord>();

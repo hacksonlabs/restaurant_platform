@@ -1309,6 +1309,9 @@ describe("PlatformService", () => {
     expect(created.user.email).toBe("jordan.staff@example.com");
     expect(created.assignments).toHaveLength(2);
     expect(listResponse.status).toBe(200);
+    expect(listed.map((member: { user: { email: string } }) => member.user.email)).toEqual([
+      "jordan.staff@example.com",
+    ]);
     expect(listed).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1320,6 +1323,71 @@ describe("PlatformService", () => {
         }),
       ]),
     );
+  });
+
+  it("hides operator accounts that share restaurant access but were not added as team members", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const now = new Date().toISOString();
+    repository.state.operatorUsers.unshift({
+      id: "op_shared_restaurant",
+      email: "shared.restaurant@example.com",
+      fullName: "Shared Restaurant Operator",
+      createdAt: now,
+    });
+    repository.state.operatorMemberships.unshift({
+      id: "membership_shared_restaurant",
+      operatorUserId: "op_shared_restaurant",
+      restaurantId: "rest_lb_steakhouse",
+      locationId: "loc_lb_main",
+      role: "staff",
+      createdAt: now,
+    });
+
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const { cookie } = await loginOperator(baseUrl);
+
+    const listResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members`, {
+      headers: { cookie },
+    });
+    const listed = await listResponse.json();
+
+    const updateResponse = await fetch(
+      `${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members/op_shared_restaurant`,
+      {
+        method: "PATCH",
+        headers: {
+          cookie,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fullName: "Shared Restaurant Operator",
+          email: "shared.restaurant@example.com",
+          role: "viewer",
+          accessScope: "selected",
+          restaurantIds: ["rest_lb_steakhouse"],
+        }),
+      },
+    );
+
+    const deleteResponse = await fetch(
+      `${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members/op_shared_restaurant`,
+      {
+        method: "DELETE",
+        headers: { cookie },
+      },
+    );
+
+    expect(listResponse.status).toBe(200);
+    expect(listed.map((member: { user: { email: string } }) => member.user.email)).not.toContain(
+      "shared.restaurant@example.com",
+    );
+    expect(updateResponse.status).toBe(400);
+    expect(await updateResponse.json()).toEqual({ error: "Team member not found." });
+    expect(deleteResponse.status).toBe(400);
+    expect(await deleteResponse.json()).toEqual({ error: "Team member not found." });
+    expect(await repository.getTeamMemberRecord("op_shared_restaurant")).not.toBeNull();
   });
 
   it("lets an owner edit and delete team members from the team access API", async () => {

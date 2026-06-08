@@ -188,7 +188,10 @@ export interface PlatformRepository {
   updateOperatorSessionSelection(sessionTokenHash: string, restaurantId: string, locationId?: string): Promise<void>;
   deleteOperatorSession(sessionTokenHash: string): Promise<void>;
   listAccessibleRestaurants(operatorUserId: string): Promise<Array<Restaurant & { memberships: OperatorMembership[] }>>;
-  listTeamMembers(restaurantIds: string[]): Promise<TeamMemberRecord[]>;
+  listTeamMembers(
+    restaurantIds: string[],
+    options?: { createdByOperatorUserId?: string },
+  ): Promise<TeamMemberRecord[]>;
   getTeamMemberRecord(operatorUserId: string): Promise<TeamMemberRecord | null>;
   createTeamMember(input: {
     creatorUserId: string;
@@ -966,10 +969,25 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       }));
   }
 
-  async listTeamMembers(restaurantIds: string[]) {
+  async listTeamMembers(restaurantIds: string[], options?: { createdByOperatorUserId?: string }) {
     const restaurantIdSet = new Set(restaurantIds);
     const memberships = this.state.operatorMemberships.filter((entry) => restaurantIdSet.has(entry.restaurantId));
-    const operatorUserIds = [...new Set(memberships.map((entry) => entry.operatorUserId))];
+    let operatorUserIds = [...new Set(memberships.map((entry) => entry.operatorUserId))];
+
+    if (options?.createdByOperatorUserId) {
+      const invitedOperatorUserIds = new Set(
+        this.state.auditLogs
+          .filter(
+            (entry) =>
+              entry.action === "operator.team_member_created" &&
+              entry.actorId === options.createdByOperatorUserId &&
+              entry.targetType === "operator_user" &&
+              restaurantIdSet.has(entry.restaurantId),
+          )
+          .map((entry) => entry.targetId),
+      );
+      operatorUserIds = operatorUserIds.filter((operatorUserId) => invitedOperatorUserIds.has(operatorUserId));
+    }
 
     return operatorUserIds
       .map((operatorUserId) => {
