@@ -37,7 +37,7 @@ import type {
   UpdateTeamMemberInput,
 } from "../../shared/types";
 import { POSAdapterRegistry } from "../pos/registry";
-import type { OrderDetailRecord, PlatformRepository } from "../repositories/platformRepository";
+import type { AgentListEntry, OrderDetailRecord, PlatformRepository } from "../repositories/platformRepository";
 import type { OperatorIdentity } from "../auth/supabaseAuth";
 import { randomToken, sha256 } from "../utils/crypto";
 import { createId } from "../utils/ids";
@@ -67,6 +67,35 @@ function sameStringSet(left: string[], right: string[]) {
   const rightValues = new Set(right);
   if (leftValues.size !== rightValues.size) return false;
   return [...leftValues].every((value) => rightValues.has(value));
+}
+
+const MOCK_ORDER_AGENT_UNAVAILABLE_MESSAGE =
+  "You must unblock Demo Agent or CoachImHungry in the Access Management page to add a mock order.";
+
+function isAllowedAgent(entry: AgentListEntry) {
+  return entry.permission.status === "allowed";
+}
+
+function isDemoMockAgent(entry: AgentListEntry) {
+  return entry.agent.slug === "demo-agent" || entry.agent.name.trim().toLowerCase() === "demo agent";
+}
+
+function isCoachImHungryAgent(entry: AgentListEntry) {
+  return entry.agent.id === "agent_coachimhungry" || entry.agent.slug === "coachimhungry";
+}
+
+function resolveMockOrderAgentId(agents: AgentListEntry[]) {
+  const demoAgent = agents.find(isDemoMockAgent);
+  if (demoAgent && isAllowedAgent(demoAgent)) {
+    return demoAgent.agent.id;
+  }
+
+  const coachAgent = agents.find(isCoachImHungryAgent);
+  if (coachAgent && isAllowedAgent(coachAgent)) {
+    return coachAgent.agent.id;
+  }
+
+  throw new Error(MOCK_ORDER_AGENT_UNAVAILABLE_MESSAGE);
 }
 
 function slugify(value: string) {
@@ -1470,19 +1499,7 @@ export class PlatformService {
       this.listAgents(restaurantId),
     ]);
 
-    const preferredAllowedAgent = agents.find(
-      (entry) => entry.permission.status === "allowed" && entry.agent.id === "agent_coachimhungry",
-    );
-    const allowedAgentId =
-      preferredAllowedAgent?.agent.id ??
-      rules.allowedAgentIds.find((agentId) =>
-        agents.some((entry) => entry.permission.status === "allowed" && entry.agent.id === agentId),
-      ) ??
-      agents.find((entry) => entry.permission.status === "allowed")?.agent.id ??
-      null;
-    if (!allowedAgentId) {
-      throw new Error("No allowed agent is configured for this restaurant.");
-    }
+    const allowedAgentId = resolveMockOrderAgentId(agents);
 
     const availableItems = menu.items.filter((item) => item.availability === "available");
     if (availableItems.length === 0) {

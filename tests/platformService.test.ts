@@ -5,10 +5,62 @@ import { createApiRouter } from "../src/server/api/router";
 import { InMemoryPlatformRepository } from "../src/server/repositories/platformRepository";
 import { PlatformService } from "../src/server/services/platformService";
 import type { OperatorIdentity } from "../src/server/auth/supabaseAuth";
-import type { AuthenticatedOperator, AuthenticatedPlatformAdmin, CanonicalOrderIntent } from "../src/shared/types";
+import type { AgentApiScope, AuthenticatedOperator, AuthenticatedPlatformAdmin, CanonicalOrderIntent } from "../src/shared/types";
 
 function createService() {
   return new PlatformService(new InMemoryPlatformRepository("coachimhungry_demo_live_local_key"));
+}
+
+function addLiveDemoAgent(
+  repository: InMemoryPlatformRepository,
+  restaurantId = "rest_lb_steakhouse",
+  status: "allowed" | "blocked" = "allowed",
+) {
+  const now = new Date().toISOString();
+  const credentialScopes: AgentApiScope[] = [
+    "restaurants:read",
+    "menus:read",
+    "orders:validate",
+    "orders:quote",
+    "orders:submit",
+    "orders:status",
+  ];
+  repository.state.partners.unshift({
+    id: "partner_demo_agent",
+    name: "Demo Partner",
+    slug: "demo-partner",
+    status: "approved",
+    contactEmail: "demo@example.com",
+    createdAt: now,
+    updatedAt: now,
+  });
+  repository.state.agents.unshift({
+    id: "agent_demo",
+    partnerId: "partner_demo_agent",
+    name: "Demo Agent",
+    slug: "demo-agent",
+    description: "Demo ordering agent.",
+    createdAt: now,
+  });
+  repository.state.partnerCredentials.unshift({
+    id: "pcred_demo_agent",
+    partnerId: "partner_demo_agent",
+    agentId: "agent_demo",
+    label: "Demo access",
+    keyPrefix: "demoage",
+    keyHash: createHash("sha256").update("demo_agent_key").digest("hex"),
+    scopes: credentialScopes,
+    environment: "live",
+    createdAt: now,
+  });
+  repository.state.permissions.unshift({
+    id: `perm_${restaurantId}_demo_agent`,
+    restaurantId,
+    agentId: "agent_demo",
+    status,
+    notes: "Test Demo Agent access.",
+    lastActivityAt: now,
+  });
 }
 
 function createAuthBackedService(authProvider: {
@@ -522,6 +574,42 @@ describe("PlatformService", () => {
         process.env.VITE_DEMO_NOW = previousDemoNow;
       }
     }
+  });
+
+  it("places mock orders through Demo Agent when it is allowed", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    addLiveDemoAgent(repository);
+
+    const order = await service.createMockOrderForRestaurant("rest_lb_steakhouse");
+
+    expect(order.agentId).toBe("agent_demo");
+    expect(order.orderIntent.metadata.source).toBe("demo_add_mock_order");
+  });
+
+  it("falls back to CoachImHungry for mock orders when Demo Agent is blocked", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    addLiveDemoAgent(repository, "rest_lb_steakhouse", "blocked");
+
+    const order = await service.createMockOrderForRestaurant("rest_lb_steakhouse");
+
+    expect(order.agentId).toBe("agent_coachimhungry");
+  });
+
+  it("requires unblocking a demo ordering agent before adding mock orders when both are blocked", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    addLiveDemoAgent(repository, "rest_lb_steakhouse", "blocked");
+    const coachPermission = repository.state.permissions.find(
+      (entry) => entry.restaurantId === "rest_lb_steakhouse" && entry.agentId === "agent_coachimhungry",
+    );
+    if (!coachPermission) throw new Error("CoachImHungry permission missing from seed.");
+    coachPermission.status = "blocked";
+
+    await expect(service.createMockOrderForRestaurant("rest_lb_steakhouse")).rejects.toThrow(
+      "You must unblock Demo Agent or CoachImHungry in the Access Management page to add a mock order.",
+    );
   });
 
   it("reuses the same persisted submit result for repeated idempotent order submissions", async () => {

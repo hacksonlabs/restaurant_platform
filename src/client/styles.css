@@ -2129,6 +2129,23 @@ th {
   color: var(--ink-soft);
 }
 
+tr.mock-order-row-highlight td {
+  animation: mock-order-row-highlight 6s ease-out both;
+}
+
+@keyframes mock-order-row-highlight {
+  0%,
+  78% {
+    background: rgba(45, 122, 91, 0.16);
+    box-shadow: inset 0 1px rgba(45, 122, 91, 0.16), inset 0 -1px rgba(45, 122, 91, 0.16);
+  }
+
+  100% {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
 .detail-grid,
 .form-grid {
   display: grid;
@@ -2285,6 +2302,11 @@ th {
   border-radius: 14px;
   background: #fffaf3;
   box-shadow: 0 14px 26px rgba(70, 51, 29, 0.12);
+}
+
+.review-popover.open-up {
+  top: auto;
+  bottom: calc(100% + 8px);
 }
 
 .agent-detail-topline {

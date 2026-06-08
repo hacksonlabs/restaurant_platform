@@ -48,7 +48,11 @@ export function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { 
   return <button {...props} className={`button ${props.tone ?? "primary"} ${props.className ?? ""}`.trim()} />;
 }
 
-export function DataTable(props: { columns: string[]; rows: ReactNode[][] }) {
+export function DataTable(props: {
+  columns: string[];
+  rows: ReactNode[][];
+  rowClassName?: (row: ReactNode[], index: number) => string | undefined;
+}) {
   return (
     <div className="table-wrap">
       <table>
@@ -60,13 +64,16 @@ export function DataTable(props: { columns: string[]; rows: ReactNode[][] }) {
           </tr>
         </thead>
         <tbody>
-          {props.rows.map((row, index) => (
-            <tr key={index}>
-              {row.map((cell, cellIndex) => (
-                <td key={cellIndex}>{cell}</td>
-              ))}
-            </tr>
-          ))}
+          {props.rows.map((row, index) => {
+            const rowClassName = props.rowClassName?.(row, index);
+            return (
+              <tr key={index} className={rowClassName || undefined}>
+                {row.map((cell, cellIndex) => (
+                  <td key={cellIndex}>{cell}</td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

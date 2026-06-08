@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { useTenant } from "../auth/AuthContext";
 import { dateTime, money } from "../lib/format";
@@ -7,6 +7,7 @@ import { Badge, Button, Card, DataTable, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
 export function OrdersPage() {
+  const navigate = useNavigate();
   const { selectedRestaurantId, selectedRestaurantIds, canManageOrders, isReadOnly, isAllRestaurantsScope, session } = useTenant();
   const isDemoMode = import.meta.env.MODE === "demo";
   const mockOrderRestaurantId = selectedRestaurantId ?? selectedRestaurantIds[0] ?? null;
@@ -37,6 +38,8 @@ export function OrdersPage() {
   const [pendingDecisionOrderId, setPendingDecisionOrderId] = useState<string | null>(null);
   const [pendingDecisionByOrderId, setPendingDecisionByOrderId] = useState<Record<string, "approved" | "rejected">>({});
   const [creatingMockOrder, setCreatingMockOrder] = useState(false);
+  const [mockOrderAgentNotice, setMockOrderAgentNotice] = useState("");
+  const [highlightedMockOrderId, setHighlightedMockOrderId] = useState<string | null>(null);
   const orders = Array.isArray(data) ? data : [];
 
   function getDisplayStatus(order: any) {
@@ -109,10 +112,14 @@ export function OrdersPage() {
     setCreatingMockOrder(true);
     try {
       const order = await api.addMockOrder(mockOrderRestaurantId);
-      setMessage(`Added mock order ${order.id}.`);
+      setHighlightedMockOrderId(order.id);
       await refreshOrders();
     } catch (submitError) {
-      setMessage(submitError instanceof Error ? submitError.message : "Failed to add a mock order.");
+      const errorMessage = submitError instanceof Error ? submitError.message : "Failed to add a mock order.";
+      setMessage(errorMessage);
+      if (errorMessage.includes("must unblock Demo Agent or CoachImHungry")) {
+        setMockOrderAgentNotice(errorMessage);
+      }
     } finally {
       setCreatingMockOrder(false);
     }
@@ -126,7 +133,7 @@ export function OrdersPage() {
   }
 
   function messageTone(value: string) {
-    if (value === "Restaurant has agent ordering disabled.") {
+    if (value === "Restaurant has agent ordering disabled." || value.includes("must unblock Demo Agent or CoachImHungry")) {
       return "warning";
     }
     if (value.toLowerCase().includes("failed")) {
@@ -151,6 +158,12 @@ export function OrdersPage() {
     const timeoutId = window.setTimeout(() => setMessage(""), 7000);
     return () => window.clearTimeout(timeoutId);
   }, [message]);
+
+  useEffect(() => {
+    if (!highlightedMockOrderId) return undefined;
+    const timeoutId = window.setTimeout(() => setHighlightedMockOrderId(null), 6000);
+    return () => window.clearTimeout(timeoutId);
+  }, [highlightedMockOrderId]);
 
   if (loading) return <div className="panel-state">Loading incoming orders…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
@@ -239,8 +252,32 @@ export function OrdersPage() {
           ];
           return isAllRestaurantsScope ? row : row.slice(1);
           })}
+          rowClassName={(_, index) => (orders[index]?.id === highlightedMockOrderId ? "mock-order-row-highlight" : undefined)}
         />
       </Card>
+      {mockOrderAgentNotice ? (
+        <div className="settings-modal-backdrop" role="presentation" onClick={() => setMockOrderAgentNotice("")}>
+          <div className="settings-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="settings-modal-header">
+              <div>
+                <h3>Agent Access Required</h3>
+                <p>{mockOrderAgentNotice}</p>
+              </div>
+              <button type="button" className="settings-modal-close" onClick={() => setMockOrderAgentNotice("")} aria-label="Close">×</button>
+            </div>
+            <div className="settings-modal-footer">
+              <Button
+                onClick={() => {
+                  setMockOrderAgentNotice("");
+                  navigate("/access");
+                }}
+              >
+                Open Access Management
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
