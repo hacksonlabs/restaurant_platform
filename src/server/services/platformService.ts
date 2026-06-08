@@ -62,6 +62,13 @@ function normalizeText(value: unknown): string | null {
   return text || null;
 }
 
+function sameStringSet(left: string[], right: string[]) {
+  const leftValues = new Set(left);
+  const rightValues = new Set(right);
+  if (leftValues.size !== rightValues.size) return false;
+  return [...leftValues].every((value) => rightValues.has(value));
+}
+
 function slugify(value: string) {
   return (
     value
@@ -344,9 +351,6 @@ export class PlatformService {
     if (ownerRestaurantIds.length === 0) {
       throw new Error("Only owner accounts can manage staff.");
     }
-    if (authenticated.user.id === operatorUserId && input.role !== "owner") {
-      throw new Error("You cannot remove your own owner access.");
-    }
 
     const selectedRestaurantIds = input.accessScope === "all" ? ownerRestaurantIds : input.restaurantIds;
     if (selectedRestaurantIds.length === 0) {
@@ -355,6 +359,11 @@ export class PlatformService {
     for (const restaurantId of selectedRestaurantIds) {
       if (!ownerRestaurantIds.includes(restaurantId)) {
         throw new Error("You can only assign access to restaurants you own.");
+      }
+    }
+    if (authenticated.user.id === operatorUserId) {
+      if (input.role !== "owner" || !sameStringSet(selectedRestaurantIds, ownerRestaurantIds)) {
+        throw new Error("You can only edit your own name and email.");
       }
     }
     const managedTeamMembers = await this.repository.listTeamMembers(ownerRestaurantIds, {

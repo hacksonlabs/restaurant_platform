@@ -65,6 +65,8 @@ export function AccessPage() {
   if (loading) return <div className="panel-state">Loading access…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 
+  const editingCurrentUser = teamModal?.mode === "edit" && teamModal.member.user.id === session?.user.id;
+
   function visibleRestaurantIdsForForm(form: TeamMemberFormState) {
     return form.accessScope === "all" ? ownerManagedRestaurants.map((restaurant) => restaurant.id) : form.restaurantIds;
   }
@@ -119,13 +121,21 @@ export function AccessPage() {
     setMessage("");
     try {
       if (teamModal?.mode === "edit") {
-        const payload: UpdateTeamMemberInput = {
-          fullName: teamForm.fullName,
-          email: teamForm.email,
-          role: teamForm.role,
-          accessScope: teamForm.accessScope,
-          restaurantIds: visibleRestaurantIdsForForm(teamForm),
-        };
+        const payload: UpdateTeamMemberInput = editingCurrentUser
+          ? {
+              fullName: teamForm.fullName,
+              email: teamForm.email,
+              role: "owner",
+              accessScope: "selected",
+              restaurantIds: teamModal.member.assignments.map((assignment) => assignment.restaurantId),
+            }
+          : {
+              fullName: teamForm.fullName,
+              email: teamForm.email,
+              role: teamForm.role,
+              accessScope: teamForm.accessScope,
+              restaurantIds: visibleRestaurantIdsForForm(teamForm),
+            };
         const updated = await api.updateTeamMember(firstOwnerRestaurantId, teamModal.member.user.id, payload);
         setData({
           ...data,
@@ -385,8 +395,8 @@ export function AccessPage() {
           <div className="settings-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
             <div className="settings-modal-header">
               <div>
-                <h3>{teamModal.mode === "edit" ? "Edit Team Member" : "Add Team Member"}</h3>
-                <p>{teamModal.mode === "edit" ? "Update role and restaurant access." : "Create a new account for your team."}</p>
+                <h3>{editingCurrentUser ? "Edit Your Profile" : teamModal.mode === "edit" ? "Edit Team Member" : "Add Team Member"}</h3>
+                <p>{editingCurrentUser ? "Update your name and email." : teamModal.mode === "edit" ? "Update role and restaurant access." : "Create a new account for your team."}</p>
               </div>
               <button type="button" className="settings-modal-close" onClick={closeTeamMemberModal} aria-label="Close">×</button>
             </div>
@@ -403,45 +413,49 @@ export function AccessPage() {
                   <input type="password" value={teamForm.password} onChange={(event) => setTeamForm({ ...teamForm, password: event.target.value })} />
                 </Field>
               ) : null}
-              <Field label="Role">
-                <select value={teamForm.role} onChange={(event) => setTeamForm({ ...teamForm, role: event.target.value as CreateTeamMemberInput["role"] })}>
-                  <option value="owner">Owner</option>
-                  <option value="staff">Staff</option>
-                  <option value="viewer">Viewer</option>
-                </select>
-              </Field>
-              <Field label="Restaurant Access">
-                <select
-                  value={teamForm.accessScope}
-                  onChange={(event) => setTeamForm({ ...teamForm, accessScope: event.target.value as CreateTeamMemberInput["accessScope"], restaurantIds: event.target.value === "all" ? [] : teamForm.restaurantIds })}
-                >
-                  <option value="all">All my restaurants</option>
-                  <option value="selected">Selected restaurants</option>
-                </select>
-              </Field>
-              {teamForm.accessScope === "selected" ? (
-                <div className="settings-team-checkboxes">
-                  {ownerManagedRestaurants.map((restaurant) => {
-                    const checked = teamForm.restaurantIds.includes(restaurant.id);
-                    return (
-                      <label key={restaurant.id} className="settings-team-checkbox">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) =>
-                            setTeamForm({
-                              ...teamForm,
-                              restaurantIds: event.target.checked
-                                ? [...teamForm.restaurantIds, restaurant.id]
-                                : teamForm.restaurantIds.filter((id) => id !== restaurant.id),
-                            })
-                          }
-                        />
-                        <span>{restaurant.name}</span>
-                      </label>
-                    );
-                  })}
-                </div>
+              {!editingCurrentUser ? (
+                <>
+                  <Field label="Role">
+                    <select value={teamForm.role} onChange={(event) => setTeamForm({ ...teamForm, role: event.target.value as CreateTeamMemberInput["role"] })}>
+                      <option value="owner">Owner</option>
+                      <option value="staff">Staff</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                  </Field>
+                  <Field label="Restaurant Access">
+                    <select
+                      value={teamForm.accessScope}
+                      onChange={(event) => setTeamForm({ ...teamForm, accessScope: event.target.value as CreateTeamMemberInput["accessScope"], restaurantIds: event.target.value === "all" ? [] : teamForm.restaurantIds })}
+                    >
+                      <option value="all">All my restaurants</option>
+                      <option value="selected">Selected restaurants</option>
+                    </select>
+                  </Field>
+                  {teamForm.accessScope === "selected" ? (
+                    <div className="settings-team-checkboxes">
+                      {ownerManagedRestaurants.map((restaurant) => {
+                        const checked = teamForm.restaurantIds.includes(restaurant.id);
+                        return (
+                          <label key={restaurant.id} className="settings-team-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) =>
+                                setTeamForm({
+                                  ...teamForm,
+                                  restaurantIds: event.target.checked
+                                    ? [...teamForm.restaurantIds, restaurant.id]
+                                    : teamForm.restaurantIds.filter((id) => id !== restaurant.id),
+                                })
+                              }
+                            />
+                            <span>{restaurant.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </>
               ) : null}
             </div>
             <div className="settings-modal-footer">
@@ -453,7 +467,7 @@ export function AccessPage() {
                   !teamForm.fullName.trim() ||
                   !teamForm.email.trim() ||
                   (teamModal.mode === "create" && teamForm.password.length < 8) ||
-                  (teamForm.accessScope === "selected" && visibleRestaurantIdsForForm(teamForm).length === 0)
+                  (!editingCurrentUser && teamForm.accessScope === "selected" && visibleRestaurantIdsForForm(teamForm).length === 0)
                 }
               >
                 {savingTeamMember ? (teamModal.mode === "edit" ? "Saving..." : "Creating...") : teamModal.mode === "edit" ? "Save Changes" : "Create Account"}

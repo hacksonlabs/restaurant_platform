@@ -1392,6 +1392,69 @@ describe("PlatformService", () => {
     expect(await repository.getTeamMemberRecord("op_shared_restaurant")).not.toBeNull();
   });
 
+  it("only lets an owner edit their own name and email", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const { cookie } = await loginOperator(baseUrl);
+
+    const profileResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members/op_dev_rest`, {
+      method: "PATCH",
+      headers: {
+        cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fullName: "Restaurant Dev Owner",
+        email: "owner.updated@example.com",
+        role: "owner",
+        accessScope: "all",
+        restaurantIds: [],
+      }),
+    });
+    const updatedProfile = await profileResponse.json();
+
+    const roleResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members/op_dev_rest`, {
+      method: "PATCH",
+      headers: {
+        cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fullName: "Restaurant Dev Owner",
+        email: "owner.updated@example.com",
+        role: "staff",
+        accessScope: "all",
+        restaurantIds: [],
+      }),
+    });
+
+    const accessResponse = await fetch(`${baseUrl}/api/restaurants/rest_lb_steakhouse/team-members/op_dev_rest`, {
+      method: "PATCH",
+      headers: {
+        cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fullName: "Restaurant Dev Owner",
+        email: "owner.updated@example.com",
+        role: "owner",
+        accessScope: "selected",
+        restaurantIds: ["rest_lb_steakhouse"],
+      }),
+    });
+
+    expect(profileResponse.status).toBe(200);
+    expect(updatedProfile.user.fullName).toBe("Restaurant Dev Owner");
+    expect(updatedProfile.user.email).toBe("owner.updated@example.com");
+    expect(updatedProfile.assignments.length).toBeGreaterThan(1);
+    expect(updatedProfile.assignments.every((assignment: { role: string }) => assignment.role === "owner")).toBe(true);
+    expect(roleResponse.status).toBe(400);
+    expect(await roleResponse.json()).toEqual({ error: "You can only edit your own name and email." });
+    expect(accessResponse.status).toBe(400);
+    expect(await accessResponse.json()).toEqual({ error: "You can only edit your own name and email." });
+  });
+
   it("lets an owner edit and delete team members from the team access API", async () => {
     const service = createService();
     const { server, baseUrl } = await startServer(service);
