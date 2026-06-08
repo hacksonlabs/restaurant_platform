@@ -701,11 +701,13 @@ describe("PlatformService", () => {
     expect(legacyKey.credentialType).toBe("partner_credential");
   });
 
-  it("associates seeded agents with an approved partner without changing restaurant access", async () => {
+  it("only shows seeded agents with live admin credentials in restaurant access management", async () => {
     const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
     const agents = await service.listAgents("rest_lb_steakhouse");
     const coachAgent = agents.find((entry) => entry.agent.id === "agent_coachimhungry");
 
+    expect(agents.some((entry) => entry.agent.id === "agent_phantom")).toBe(false);
     expect(coachAgent).toBeTruthy();
     expect(coachAgent?.agent.partnerId).toBe("partner_coachimhungry");
     expect(coachAgent?.agent.partner).toEqual(
@@ -716,6 +718,10 @@ describe("PlatformService", () => {
     );
     expect(coachAgent?.permission.status).toBe("allowed");
     expect(coachAgent?.apiKey?.scopes).toContain("orders:submit");
+
+    repository.state.partnerCredentials[0].environment = "test";
+    const testOnlyAgents = await service.listAgents("rest_lb_steakhouse");
+    expect(testOnlyAgents.some((entry) => entry.agent.id === "agent_coachimhungry")).toBe(false);
   });
 
   it("lists platform admin partners without exposing stored key hashes", async () => {

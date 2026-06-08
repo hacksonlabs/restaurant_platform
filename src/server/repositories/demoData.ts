@@ -344,7 +344,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     keyPrefix: demoPhantomApiKey.slice(0, 8),
     keyHash: sha256(demoPhantomApiKey),
     scopes: [...agentApiKey.scopes],
-    environment: "test",
+    environment: "live",
     lastUsedAt: now,
     createdAt: now,
   };

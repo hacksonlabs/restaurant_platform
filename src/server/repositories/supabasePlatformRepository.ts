@@ -1516,16 +1516,15 @@ export class SupabasePlatformRepository implements PlatformRepository {
        left join restaurant_agent_permissions p on p.agent_id = a.id and p.restaurant_id = $1
        left join partners partner on partner.id = a.partner_id
        left join agent_api_keys k on k.agent_id = a.id and k.rotated_at is null
-       where p.id is not null
-          or exists (
-            select 1
-            from partner_credentials pc
-            join partners credential_partner on credential_partner.id = pc.partner_id
-            where pc.agent_id = a.id
-              and pc.environment = 'live'
-              and pc.revoked_at is null
-              and credential_partner.status = 'approved'
-          )
+       where exists (
+         select 1
+         from partner_credentials pc
+         join partners credential_partner on credential_partner.id = pc.partner_id
+         where pc.agent_id = a.id
+           and pc.environment = 'live'
+           and pc.revoked_at is null
+           and credential_partner.status = 'approved'
+       )
        order by a.name asc`,
       [restaurantId],
     );

@@ -169,7 +169,7 @@ on conflict (id) do update set
   revoked_at = excluded.revoked_at;
 
 insert into partner_credentials (id, partner_id, agent_id, label, key_prefix, key_hash, scopes, environment, last_used_at, created_at, revoked_at) values
-  ('pcred_coachimhungry_demo', 'partner_coachimhungry', 'agent_coachimhungry', 'CoachImHungry demo partner credential', 'coachimh', 'ec8189130b326472785eae6410197a4d0f89cf806bd430f8b2c933a0668f94ac', array['restaurants:read','menus:read','orders:validate','orders:quote','orders:submit','orders:status']::text[], 'test', '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z', null)
+  ('pcred_coachimhungry_demo', 'partner_coachimhungry', 'agent_coachimhungry', 'CoachImHungry demo partner credential', 'coachimh', 'ec8189130b326472785eae6410197a4d0f89cf806bd430f8b2c933a0668f94ac', array['restaurants:read','menus:read','orders:validate','orders:quote','orders:submit','orders:status']::text[], 'live', '2026-05-01T18:00:00.000Z', '2026-05-01T18:00:00.000Z', null)
 on conflict (id) do update set
   partner_id = excluded.partner_id,
   agent_id = excluded.agent_id,

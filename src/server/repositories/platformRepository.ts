@@ -1251,7 +1251,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
         return partner?.status === "approved";
       })
       .map((credential) => credential.agentId);
-    const visibleAgentIds = [...new Set([...permissionsByAgentId.keys(), ...liveAgentIds])];
+    const visibleAgentIds = [...new Set(liveAgentIds)];
 
     return visibleAgentIds
       .map((agentId) => {
