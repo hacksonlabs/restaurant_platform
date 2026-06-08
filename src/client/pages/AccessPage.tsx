@@ -459,7 +459,6 @@ export function AccessPage() {
               ) : null}
             </div>
             <div className="settings-modal-footer">
-              <Button tone="secondary" onClick={closeTeamMemberModal}>Cancel</Button>
               <Button
                 onClick={submitTeamMember}
                 disabled={
