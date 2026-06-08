@@ -7,7 +7,9 @@ import type {
   Agent,
   AgentApiScope,
   AgentApiKey,
+  AuthenticatedAgentCredential,
   AuthenticatedOperator,
+  AuthenticatedPlatformAdmin,
   AgentOrderItemRecord,
   AgentOrderModifierRecord,
   AgentOrderRecord,
@@ -22,6 +24,8 @@ import type {
   OrderTimelineEvent,
   OrderValidationResult,
   OrderingRule,
+  Partner,
+  PartnerCredential,
   POSConnection,
   POSMenuMapping,
   POSOrderSubmission,
@@ -148,6 +152,14 @@ export interface ReconcileOperatorOptions {
 }
 
 export interface PlatformRepository {
+  authenticatePlatformAdmin(email: string, passwordHash: string): Promise<AuthenticatedPlatformAdmin | null>;
+  createPlatformAdminSession(args: {
+    adminUserId: string;
+    sessionTokenHash: string;
+    expiresAt: string;
+  }): Promise<void>;
+  getAuthenticatedPlatformAdminBySessionToken(sessionTokenHash: string): Promise<AuthenticatedPlatformAdmin | null>;
+  deletePlatformAdminSession(sessionTokenHash: string): Promise<void>;
   authenticateOperator(email: string, password: string): Promise<AuthenticatedOperator | null>;
   createRestaurantAccount(
     input: RestaurantSignupInput & { supabaseUserId?: string },
@@ -205,9 +217,41 @@ export interface PlatformRepository {
   getRules(restaurantId: string): Promise<OrderingRule | null>;
   updateRules(restaurantId: string, patch: Partial<OrderingRule>): Promise<OrderingRule>;
   listAgents(restaurantId: string): Promise<AgentListEntry[]>;
+  listPartners(): Promise<Partner[]>;
+  createPartner(args: {
+    name: string;
+    slug: string;
+    status: Partner["status"];
+    contactEmail?: string;
+  }): Promise<Partner>;
+  updatePartner(
+    partnerId: string,
+    patch: Partial<Pick<Partner, "name" | "slug" | "status" | "contactEmail">>,
+  ): Promise<Partner>;
+  deletePartner(partnerId: string): Promise<void>;
+  listPartnerAgents(partnerId: string): Promise<Agent[]>;
+  createPartnerAgent(args: {
+    partnerId: string;
+    name: string;
+    slug: string;
+    description?: string;
+  }): Promise<Agent>;
+  updatePartnerAgent(
+    partnerId: string,
+    agentId: string,
+    patch: Partial<Pick<Agent, "name" | "slug" | "description">>,
+  ): Promise<Agent>;
+  removePartnerAgent(partnerId: string, agentId: string): Promise<void>;
   getAgent(agentId: string): Promise<Agent | null>;
   getPermission(restaurantId: string, agentId: string): Promise<RestaurantAgentPermission | null>;
   updatePermission(permissionId: string, patch: Partial<RestaurantAgentPermission>): Promise<RestaurantAgentPermission>;
+  createPermission(args: {
+    restaurantId: string;
+    agentId: string;
+    status: RestaurantAgentPermission["status"];
+    notes?: string;
+    lastActivityAt?: string;
+  }): Promise<RestaurantAgentPermission>;
   createAgentApiKey(args: {
     agentId: string;
     label: string;
@@ -220,6 +264,21 @@ export interface PlatformRepository {
     patch: Partial<Pick<AgentApiKey, "label" | "keyHash" | "keyPrefix" | "scopes" | "rotatedAt" | "revokedAt" | "lastUsedAt">>,
   ): Promise<AgentApiKey>;
   listAgentApiKeys(agentId: string): Promise<AgentApiKey[]>;
+  createPartnerCredential(args: {
+    partnerId: string;
+    agentId: string;
+    label: string;
+    keyPrefix: string;
+    keyHash: string;
+    scopes: AgentApiScope[];
+    environment: PartnerCredential["environment"];
+  }): Promise<PartnerCredential>;
+  updatePartnerCredential(
+    credentialId: string,
+    patch: Partial<Pick<PartnerCredential, "label" | "keyHash" | "keyPrefix" | "scopes" | "environment" | "rotatedAt" | "revokedAt" | "lastUsedAt">>,
+  ): Promise<PartnerCredential>;
+  deletePartnerCredential(partnerId: string, credentialId: string): Promise<void>;
+  listPartnerCredentials(partnerId: string): Promise<PartnerCredential[]>;
   listOrders(restaurantId: string): Promise<AgentOrderRecord[]>;
   getOrderDetail(restaurantId: string, orderId: string): Promise<OrderDetailRecord | null>;
   getOrderById(orderId: string): Promise<AgentOrderRecord | null>;
@@ -233,7 +292,7 @@ export interface PlatformRepository {
   getLatestSubmission(orderId: string): Promise<POSOrderSubmission | null>;
   appendStatusEvent(event: Omit<StatusEvent, "id" | "createdAt">): Promise<StatusEvent>;
   appendAuditLog(log: Omit<AuditLog, "id" | "createdAt">): Promise<AuditLog>;
-  authenticateAgentKey(keyHash: string): Promise<AgentApiKey | null>;
+  authenticateAgentKey(keyHash: string): Promise<AuthenticatedAgentCredential | null>;
   getRecentAuditLogs(restaurantId: string, limit: number): Promise<AuditLog[]>;
   getDashboardStats(restaurantId: string): Promise<DashboardStats>;
   getReporting(restaurantId: string, range?: ReportingDateRange): Promise<ReportingSnapshotRecord>;
@@ -502,6 +561,48 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const selectedMembership = memberships[0];
     if (!selectedMembership) return null;
     return { user, memberships, selectedMembership };
+  }
+
+  async authenticatePlatformAdmin(email: string, passwordHash: string) {
+    const user = this.state.platformAdminUsers.find(
+      (entry) =>
+        entry.email.toLowerCase() === email.toLowerCase() &&
+        entry.passwordHash === passwordHash &&
+        entry.status === "active",
+    );
+    if (!user) return null;
+    user.lastLoginAt = new Date().toISOString();
+    const { passwordHash: _passwordHash, ...safeUser } = user;
+    return { user: safeUser };
+  }
+
+  async createPlatformAdminSession(args: {
+    adminUserId: string;
+    sessionTokenHash: string;
+    expiresAt: string;
+  }) {
+    this.state.platformAdminSessions.unshift({
+      id: args.sessionTokenHash,
+      adminUserId: args.adminUserId,
+      sessionTokenHash: args.sessionTokenHash,
+      expiresAt: args.expiresAt,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  async getAuthenticatedPlatformAdminBySessionToken(sessionTokenHash: string) {
+    const session = this.state.platformAdminSessions.find((entry) => entry.sessionTokenHash === sessionTokenHash);
+    if (!session || new Date(session.expiresAt).getTime() <= Date.now()) return null;
+    const user = this.state.platformAdminUsers.find((entry) => entry.id === session.adminUserId && entry.status === "active");
+    if (!user) return null;
+    const { passwordHash: _passwordHash, ...safeUser } = user;
+    return { user: safeUser };
+  }
+
+  async deletePlatformAdminSession(sessionTokenHash: string) {
+    this.state.platformAdminSessions = this.state.platformAdminSessions.filter(
+      (entry) => entry.sessionTokenHash !== sessionTokenHash,
+    );
   }
 
   async createRestaurantAccount(input: RestaurantSignupInput & { supabaseUserId?: string }) {
@@ -1138,17 +1239,39 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async listAgents(restaurantId: string) {
-    return this.state.permissions
-      .filter((permission) => permission.restaurantId === restaurantId)
-      .map((permission) => {
-        const agent = this.state.agents.find((entry) => entry.id === permission.agentId);
+    const permissionsByAgentId = new Map(
+      this.state.permissions
+        .filter((permission) => permission.restaurantId === restaurantId)
+        .map((permission) => [permission.agentId, permission]),
+    );
+    const liveAgentIds = this.state.partnerCredentials
+      .filter((credential) => credential.environment === "live" && !credential.revokedAt)
+      .filter((credential) => {
+        const partner = this.state.partners.find((entry) => entry.id === credential.partnerId);
+        return partner?.status === "approved";
+      })
+      .map((credential) => credential.agentId);
+    const visibleAgentIds = [...new Set([...permissionsByAgentId.keys(), ...liveAgentIds])];
+
+    return visibleAgentIds
+      .map((agentId) => {
+        const agent = this.state.agents.find((entry) => entry.id === agentId);
         if (!agent) {
-          throw notFound("Agent", permission.agentId);
+          throw notFound("Agent", agentId);
         }
+        const permission = permissionsByAgentId.get(agentId) ?? {
+          id: `pending:${restaurantId}:${agentId}`,
+          restaurantId,
+          agentId,
+          status: "pending" as const,
+        };
+        const partner = agent.partnerId
+          ? this.state.partners.find((entry) => entry.id === agent.partnerId)
+          : undefined;
         const key = this.state.agentApiKeys.find((entry) => entry.agentId === agent.id);
         return {
           permissionId: permission.id,
-          agent,
+          agent: partner ? { ...agent, partner } : agent,
           permission,
           apiKey: key
             ? {
@@ -1163,11 +1286,121 @@ export class InMemoryPlatformRepository implements PlatformRepository {
               }
             : null,
         };
-      });
+      })
+      .sort((left, right) => left.agent.name.localeCompare(right.agent.name));
+  }
+
+  async listPartners() {
+    return [...this.state.partners].sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async createPartner(args: { name: string; slug: string; status: Partner["status"]; contactEmail?: string }) {
+    const now = new Date().toISOString();
+    const partner: Partner = {
+      id: createId("partner"),
+      name: args.name,
+      slug: args.slug,
+      status: args.status,
+      contactEmail: args.contactEmail,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.state.partners.unshift(partner);
+    return partner;
+  }
+
+  async updatePartner(
+    partnerId: string,
+    patch: Partial<Pick<Partner, "name" | "slug" | "status" | "contactEmail">>,
+  ) {
+    const index = this.state.partners.findIndex((entry) => entry.id === partnerId);
+    if (index < 0) throw notFound("Partner", partnerId);
+    const updated = {
+      ...this.state.partners[index],
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    this.state.partners[index] = updated;
+    return updated;
+  }
+
+  async deletePartner(partnerId: string) {
+    const partnerIndex = this.state.partners.findIndex((entry) => entry.id === partnerId);
+    if (partnerIndex < 0) throw notFound("Partner", partnerId);
+    this.state.partnerCredentials = this.state.partnerCredentials.filter((entry) => entry.partnerId !== partnerId);
+    this.state.agents = this.state.agents.map((agent) =>
+      agent.partnerId === partnerId
+        ? {
+            ...agent,
+            partnerId: undefined,
+            partner: undefined,
+            slug: `${agent.slug}-removed-${agent.id.slice(-6)}`,
+          }
+        : agent,
+    );
+    this.state.partners.splice(partnerIndex, 1);
+  }
+
+  async listPartnerAgents(partnerId: string) {
+    const partner = this.state.partners.find((entry) => entry.id === partnerId);
+    return this.state.agents
+      .filter((entry) => entry.partnerId === partnerId)
+      .map((agent) => (partner ? { ...agent, partner } : agent))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async createPartnerAgent(args: { partnerId: string; name: string; slug: string; description?: string }) {
+    const partner = this.state.partners.find((entry) => entry.id === args.partnerId);
+    const agent: Agent = {
+      id: createId("agent"),
+      partnerId: args.partnerId,
+      partner,
+      name: args.name,
+      slug: args.slug,
+      description: args.description ?? "",
+      createdAt: new Date().toISOString(),
+    };
+    this.state.agents.unshift(agent);
+    return agent;
+  }
+
+  async updatePartnerAgent(
+    partnerId: string,
+    agentId: string,
+    patch: Partial<Pick<Agent, "name" | "slug" | "description">>,
+  ) {
+    const index = this.state.agents.findIndex((entry) => entry.id === agentId && entry.partnerId === partnerId);
+    if (index < 0) throw notFound("Partner agent", agentId);
+    const partner = this.state.partners.find((entry) => entry.id === partnerId);
+    const updated = {
+      ...this.state.agents[index],
+      ...patch,
+      partner,
+    };
+    this.state.agents[index] = updated;
+    return updated;
+  }
+
+  async removePartnerAgent(partnerId: string, agentId: string) {
+    const index = this.state.agents.findIndex((entry) => entry.id === agentId && entry.partnerId === partnerId);
+    if (index < 0) throw notFound("Partner agent", agentId);
+    const agent = this.state.agents[index];
+    this.state.partnerCredentials = this.state.partnerCredentials.filter(
+      (entry) => !(entry.partnerId === partnerId && entry.agentId === agentId),
+    );
+    this.state.agents[index] = {
+      ...agent,
+      partnerId: undefined,
+      partner: undefined,
+      slug: `${agent.slug}-removed-${agent.id.slice(-6)}`,
+    };
   }
 
   async getAgent(agentId: string) {
-    return this.state.agents.find((entry) => entry.id === agentId) ?? null;
+    const agent = this.state.agents.find((entry) => entry.id === agentId) ?? null;
+    if (!agent?.partnerId) return agent;
+    const partner = this.state.partners.find((entry) => entry.id === agent.partnerId);
+    return partner ? { ...agent, partner } : agent;
   }
 
   async getPermission(restaurantId: string, agentId: string) {
@@ -1180,6 +1413,27 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const updated = { ...this.state.permissions[index], ...patch };
     this.state.permissions[index] = updated;
     return updated;
+  }
+
+  async createPermission(args: {
+    restaurantId: string;
+    agentId: string;
+    status: RestaurantAgentPermission["status"];
+    notes?: string;
+    lastActivityAt?: string;
+  }) {
+    const existing = await this.getPermission(args.restaurantId, args.agentId);
+    if (existing) return this.updatePermission(existing.id, args);
+    const permission: RestaurantAgentPermission = {
+      id: createId("perm"),
+      restaurantId: args.restaurantId,
+      agentId: args.agentId,
+      status: args.status,
+      notes: args.notes,
+      lastActivityAt: args.lastActivityAt,
+    };
+    this.state.permissions.unshift(permission);
+    return permission;
   }
 
   async createAgentApiKey(args: {
@@ -1215,6 +1469,53 @@ export class InMemoryPlatformRepository implements PlatformRepository {
 
   async listAgentApiKeys(agentId: string) {
     return this.state.agentApiKeys.filter((entry) => entry.agentId === agentId);
+  }
+
+  async createPartnerCredential(args: {
+    partnerId: string;
+    agentId: string;
+    label: string;
+    keyPrefix: string;
+    keyHash: string;
+    scopes: AgentApiScope[];
+    environment: PartnerCredential["environment"];
+  }) {
+    const credential: PartnerCredential = {
+      id: createId("pcred"),
+      partnerId: args.partnerId,
+      agentId: args.agentId,
+      label: args.label,
+      keyPrefix: args.keyPrefix,
+      keyHash: args.keyHash,
+      scopes: args.scopes,
+      environment: args.environment,
+      createdAt: new Date().toISOString(),
+    };
+    this.state.partnerCredentials.unshift(credential);
+    return credential;
+  }
+
+  async updatePartnerCredential(
+    credentialId: string,
+    patch: Partial<Pick<PartnerCredential, "label" | "keyHash" | "keyPrefix" | "scopes" | "environment" | "rotatedAt" | "revokedAt" | "lastUsedAt">>,
+  ) {
+    const index = this.state.partnerCredentials.findIndex((entry) => entry.id === credentialId);
+    if (index < 0) throw notFound("Partner credential", credentialId);
+    const updated = { ...this.state.partnerCredentials[index], ...patch };
+    this.state.partnerCredentials[index] = updated;
+    return updated;
+  }
+
+  async deletePartnerCredential(partnerId: string, credentialId: string) {
+    const index = this.state.partnerCredentials.findIndex(
+      (entry) => entry.id === credentialId && entry.partnerId === partnerId,
+    );
+    if (index < 0) throw notFound("Partner credential", credentialId);
+    this.state.partnerCredentials.splice(index, 1);
+  }
+
+  async listPartnerCredentials(partnerId: string) {
+    return this.state.partnerCredentials.filter((entry) => entry.partnerId === partnerId);
   }
 
   private decorateOrderAgent(order: AgentOrderRecord) {
@@ -1365,12 +1666,37 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async authenticateAgentKey(keyHash: string) {
+    const partnerCredential =
+      this.state.partnerCredentials.find((entry) => entry.keyHash === keyHash && !entry.revokedAt) ?? null;
+    if (partnerCredential) {
+      partnerCredential.lastUsedAt = new Date().toISOString();
+      return {
+        id: partnerCredential.id,
+        agentId: partnerCredential.agentId,
+        partnerId: partnerCredential.partnerId,
+        label: partnerCredential.label,
+        keyPrefix: partnerCredential.keyPrefix,
+        keyHash: partnerCredential.keyHash,
+        scopes: partnerCredential.scopes,
+        lastUsedAt: partnerCredential.lastUsedAt,
+        createdAt: partnerCredential.createdAt,
+        rotatedAt: partnerCredential.rotatedAt,
+        revokedAt: partnerCredential.revokedAt,
+        credentialType: "partner_credential" as const,
+        credentialId: partnerCredential.id,
+      };
+    }
     const keyRecord =
       this.state.agentApiKeys.find((entry) => entry.keyHash === keyHash && !entry.revokedAt) ?? null;
     if (keyRecord) {
       keyRecord.lastUsedAt = new Date().toISOString();
+      return {
+        ...keyRecord,
+        credentialType: "agent_api_key" as const,
+        credentialId: keyRecord.id,
+      };
     }
-    return keyRecord;
+    return null;
   }
 
   async getRecentAuditLogs(restaurantId: string, limit: number) {

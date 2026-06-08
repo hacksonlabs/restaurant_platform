@@ -9,6 +9,11 @@ function bool(value: string | undefined, fallback = false): boolean {
   return TRUE_VALUES.has(value.trim().toLowerCase());
 }
 
+function int(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function list(value: string | undefined, fallback: string[] = []): string[] {
   if (!value?.trim()) return fallback;
   return value
@@ -29,11 +34,16 @@ export interface AppEnv {
   port: number;
   appUrl: string;
   apiUrl: string;
+  mcpAllowedHosts: string[];
   demoMode: boolean;
   corsOrigins: string[];
   sessionCookieSameSite: "lax" | "strict" | "none";
   sessionCookieSecure: boolean;
   databaseUrl: string;
+  postgresPoolMax: number;
+  postgresPoolIdleTimeoutMs: number;
+  postgresPoolConnectionTimeoutMs: number;
+  postgresPoolMaxLifetimeSeconds: number;
   supabaseUrl: string;
   supabaseAnonKey: string;
   supabaseServiceRoleKey: string;
@@ -70,11 +80,16 @@ export function getEnv(): AppEnv {
     port: Number.parseInt(process.env.PORT ?? "3030", 10),
     appUrl,
     apiUrl: text(process.env.VITE_API_URL),
+    mcpAllowedHosts: list(process.env.MCP_ALLOWED_HOSTS),
     demoMode: bool(process.env.DEMO_MODE, true),
     corsOrigins: list(process.env.CORS_ORIGINS, appUrl ? [appUrl] : []),
     sessionCookieSameSite: sameSite(process.env.SESSION_COOKIE_SAME_SITE, "lax"),
     sessionCookieSecure: bool(process.env.SESSION_COOKIE_SECURE, false),
     databaseUrl: text(process.env.DATABASE_URL),
+    postgresPoolMax: int(process.env.POSTGRES_POOL_MAX, 3),
+    postgresPoolIdleTimeoutMs: int(process.env.POSTGRES_POOL_IDLE_TIMEOUT_MS, 10_000),
+    postgresPoolConnectionTimeoutMs: int(process.env.POSTGRES_POOL_CONNECTION_TIMEOUT_MS, 5_000),
+    postgresPoolMaxLifetimeSeconds: int(process.env.POSTGRES_POOL_MAX_LIFETIME_SECONDS, 60),
     supabaseUrl: text(process.env.SUPABASE_URL),
     supabaseAnonKey: text(process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY),
     supabaseServiceRoleKey: text(

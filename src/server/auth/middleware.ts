@@ -31,9 +31,12 @@ declare global {
       agentKey?: {
         id: string;
         agentId: string;
+        partnerId?: string;
         label: string;
         keyPrefix: string;
         scopes: string[];
+        credentialType?: "agent_api_key" | "partner_credential";
+        credentialId?: string;
         revokedAt?: string;
       };
     }

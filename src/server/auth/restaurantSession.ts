@@ -5,6 +5,7 @@ import { log } from "../utils/logger";
 import type { AppEnv } from "../config/env";
 
 const SESSION_COOKIE = "phantom_restaurant_session";
+const ADMIN_SESSION_COOKIE = "phantom_admin_session";
 
 function parseCookies(header: string | undefined) {
   if (!header) return new Map<string, string>();
@@ -25,6 +26,11 @@ function getRawSessionToken(request: Request) {
   return cookies.get(SESSION_COOKIE) ?? null;
 }
 
+function getRawAdminSessionToken(request: Request) {
+  const cookies = parseCookies(request.header("cookie"));
+  return cookies.get(ADMIN_SESSION_COOKIE) ?? null;
+}
+
 function cookieAttributes(env: Pick<AppEnv, "sessionCookieSameSite" | "sessionCookieSecure">) {
   return [
     "Path=/",
@@ -34,12 +40,19 @@ function cookieAttributes(env: Pick<AppEnv, "sessionCookieSameSite" | "sessionCo
   ].join("; ");
 }
 
-function sessionCookieValue(token: string, env: Pick<AppEnv, "sessionCookieSameSite" | "sessionCookieSecure">) {
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; ${cookieAttributes(env)}; Max-Age=604800`;
+function sessionCookieValue(
+  cookieName: string,
+  token: string,
+  env: Pick<AppEnv, "sessionCookieSameSite" | "sessionCookieSecure">,
+) {
+  return `${cookieName}=${encodeURIComponent(token)}; ${cookieAttributes(env)}; Max-Age=604800`;
 }
 
-function clearedSessionCookie(env: Pick<AppEnv, "sessionCookieSameSite" | "sessionCookieSecure">) {
-  return `${SESSION_COOKIE}=; ${cookieAttributes(env)}; Max-Age=0`;
+function clearedSessionCookie(
+  cookieName: string,
+  env: Pick<AppEnv, "sessionCookieSameSite" | "sessionCookieSecure">,
+) {
+  return `${cookieName}=; ${cookieAttributes(env)}; Max-Age=0`;
 }
 
 export function requireRestaurantSession(service: PlatformService) {
@@ -58,6 +71,26 @@ export function requireRestaurantSession(service: PlatformService) {
     } catch (error) {
       log("warn", "operator_auth_failure", { requestId: request.requestId, reason: error instanceof Error ? error.message : "auth_failed" });
       response.status(401).json({ error: error instanceof Error ? error.message : "Restaurant authentication required." });
+    }
+  };
+}
+
+export function requirePlatformAdminSession(service: PlatformService) {
+  return async (request: Request, response: Response, next: NextFunction) => {
+    const rawSessionToken = getRawAdminSessionToken(request);
+    if (!rawSessionToken) {
+      log("warn", "platform_admin_auth_missing", { requestId: request.requestId });
+      response.status(401).json({ error: "Phantom Admin authentication required." });
+      return;
+    }
+    try {
+      const session = await service.getPlatformAdminRequestSession(rawSessionToken);
+      request.platformAdminSession = session;
+      request.platformAdminSessionToken = rawSessionToken;
+      next();
+    } catch (error) {
+      log("warn", "platform_admin_auth_failure", { requestId: request.requestId, reason: error instanceof Error ? error.message : "auth_failed" });
+      response.status(401).json({ error: error instanceof Error ? error.message : "Phantom Admin authentication required." });
     }
   };
 }
@@ -98,7 +131,7 @@ export function restaurantAuthRoutes(
       try {
         response.json(await service.getOperatorSession(rawSessionToken));
       } catch (error) {
-        response.setHeader("Set-Cookie", clearedSessionCookie(env));
+        response.setHeader("Set-Cookie", clearedSessionCookie(SESSION_COOKIE, env));
         response.status(401).json({ error: error instanceof Error ? error.message : "Not signed in." });
       }
     },
@@ -106,17 +139,17 @@ export function restaurantAuthRoutes(
       const email = String(request.body?.email ?? "").trim();
       const password = String(request.body?.password ?? "");
       const { sessionToken, authenticated, restaurants } = await service.loginOperator(email, password);
-      response.setHeader("Set-Cookie", sessionCookieValue(sessionToken, env));
+      response.setHeader("Set-Cookie", sessionCookieValue(SESSION_COOKIE, sessionToken, env));
       response.json({ ...authenticated, restaurants });
     },
     signup: async (_request: Request, response: Response, input: RestaurantSignupInput) => {
       const { sessionToken, authenticated, restaurants } = await service.signupRestaurant(input);
-      response.setHeader("Set-Cookie", sessionCookieValue(sessionToken, env));
+      response.setHeader("Set-Cookie", sessionCookieValue(SESSION_COOKIE, sessionToken, env));
       return { ...authenticated, restaurants };
     },
     activateOnboarding: async (_request: Request, response: Response, input: OnboardingActivateInput) => {
       const { sessionToken, authenticated, restaurants } = await service.activateOnboarding(input);
-      response.setHeader("Set-Cookie", sessionCookieValue(sessionToken, env));
+      response.setHeader("Set-Cookie", sessionCookieValue(SESSION_COOKIE, sessionToken, env));
       return { ...authenticated, restaurants };
     },
     logout: async (request: Request, response: Response) => {
@@ -124,7 +157,7 @@ export function restaurantAuthRoutes(
       if (rawSessionToken) {
         await service.logoutOperator(rawSessionToken);
       }
-      response.setHeader("Set-Cookie", clearedSessionCookie(env));
+      response.setHeader("Set-Cookie", clearedSessionCookie(SESSION_COOKIE, env));
       response.status(204).end();
     },
     selectTenant: async (request: Request, response: Response) => {
@@ -148,12 +181,53 @@ export function restaurantAuthRoutes(
   };
 }
 
+export function platformAdminAuthRoutes(
+  service: PlatformService,
+  env: Pick<AppEnv, "sessionCookieSameSite" | "sessionCookieSecure"> = {
+    sessionCookieSameSite: "lax",
+    sessionCookieSecure: false,
+  },
+) {
+  return {
+    me: async (request: Request, response: Response) => {
+      const rawSessionToken = getRawAdminSessionToken(request);
+      if (!rawSessionToken) {
+        response.status(401).json({ error: "Not signed in." });
+        return;
+      }
+      try {
+        response.json(await service.getPlatformAdminSession(rawSessionToken));
+      } catch (error) {
+        response.setHeader("Set-Cookie", clearedSessionCookie(ADMIN_SESSION_COOKIE, env));
+        response.status(401).json({ error: error instanceof Error ? error.message : "Not signed in." });
+      }
+    },
+    login: async (request: Request, response: Response) => {
+      const email = String(request.body?.email ?? "").trim();
+      const password = String(request.body?.password ?? "");
+      const { sessionToken, authenticated } = await service.loginPlatformAdmin(email, password);
+      response.setHeader("Set-Cookie", sessionCookieValue(ADMIN_SESSION_COOKIE, sessionToken, env));
+      response.json(authenticated);
+    },
+    logout: async (request: Request, response: Response) => {
+      const rawSessionToken = getRawAdminSessionToken(request);
+      if (rawSessionToken) {
+        await service.logoutPlatformAdmin(rawSessionToken);
+      }
+      response.setHeader("Set-Cookie", clearedSessionCookie(ADMIN_SESSION_COOKIE, env));
+      response.status(204).end();
+    },
+  };
+}
+
 declare global {
   namespace Express {
     interface Request {
       restaurantSession?: Awaited<ReturnType<PlatformService["getOperatorRequestSession"]>>;
       restaurantSessionToken?: string;
       restaurantMembership?: ReturnType<PlatformService["assertOperatorAccess"]>;
+      platformAdminSession?: Awaited<ReturnType<PlatformService["getPlatformAdminRequestSession"]>>;
+      platformAdminSessionToken?: string;
     }
   }
 }

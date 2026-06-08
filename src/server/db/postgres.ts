@@ -25,6 +25,10 @@ export function createPostgresPool(env: AppEnv) {
 
   sharedPool = new Pool({
     connectionString,
+    max: env.postgresPoolMax,
+    idleTimeoutMillis: env.postgresPoolIdleTimeoutMs,
+    connectionTimeoutMillis: env.postgresPoolConnectionTimeoutMs,
+    maxLifetimeSeconds: env.postgresPoolMaxLifetimeSeconds,
     ssl: { rejectUnauthorized: false },
   });
 

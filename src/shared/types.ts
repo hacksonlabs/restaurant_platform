@@ -123,8 +123,20 @@ export interface POSMenuMapping {
   status: "mapped" | "needs_review";
 }
 
+export interface Partner {
+  id: string;
+  name: string;
+  slug: string;
+  status: "pending" | "approved" | "suspended";
+  contactEmail?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Agent {
   id: string;
+  partnerId?: string;
+  partner?: Partner;
   name: string;
   slug: string;
   description: string;
@@ -134,6 +146,7 @@ export interface Agent {
 export interface AgentApiKey {
   id: string;
   agentId: string;
+  partnerId?: string;
   label: string;
   keyPrefix: string;
   keyHash: string;
@@ -142,6 +155,54 @@ export interface AgentApiKey {
   createdAt: string;
   rotatedAt?: string;
   revokedAt?: string;
+}
+
+export interface PartnerCredential {
+  id: string;
+  partnerId: string;
+  agentId: string;
+  label: string;
+  keyPrefix: string;
+  keyHash: string;
+  scopes: AgentApiScope[];
+  environment: "test" | "live";
+  lastUsedAt?: string;
+  createdAt: string;
+  rotatedAt?: string;
+  revokedAt?: string;
+}
+
+export type PartnerCredentialEnvironment = PartnerCredential["environment"];
+
+export interface PartnerCredentialSummary {
+  id: string;
+  partnerId: string;
+  agentId: string;
+  label: string;
+  keyPrefix: string;
+  scopes: AgentApiScope[];
+  environment: PartnerCredentialEnvironment;
+  lastUsedAt?: string;
+  createdAt: string;
+  rotatedAt?: string;
+  revokedAt?: string;
+}
+
+export interface PlatformAdminAgentRecord {
+  agent: Agent;
+  credentials: PartnerCredentialSummary[];
+}
+
+export interface PlatformAdminPartnerRecord {
+  partner: Partner;
+  agents: PlatformAdminAgentRecord[];
+  credentials: PartnerCredentialSummary[];
+}
+
+export interface AuthenticatedAgentCredential extends AgentApiKey {
+  partnerId?: string;
+  credentialType: "agent_api_key" | "partner_credential";
+  credentialId: string;
 }
 
 export type AgentApiScope =
@@ -193,6 +254,28 @@ export interface AuthenticatedOperator {
   user: OperatorUser;
   memberships: OperatorMembership[];
   selectedMembership: OperatorMembership;
+}
+
+export interface PlatformAdminUser {
+  id: string;
+  email: string;
+  fullName: string;
+  passwordHash: string;
+  status: "active" | "disabled";
+  createdAt: string;
+  lastLoginAt?: string;
+}
+
+export interface PlatformAdminSession {
+  id: string;
+  adminUserId: string;
+  sessionTokenHash: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface AuthenticatedPlatformAdmin {
+  user: Omit<PlatformAdminUser, "passwordHash">;
 }
 
 export interface TeamMemberAssignment {

@@ -71,19 +71,6 @@ function normalizeText(value: string | null | undefined) {
   return String(value || "").trim();
 }
 
-function normalizeAddressKey(value: string | null | undefined) {
-  return normalizeText(value)
-    .toLowerCase()
-    .replace(/\./g, "")
-    .replace(/\broad\b/g, "rd")
-    .replace(/\bstreet\b/g, "st")
-    .replace(/\bavenue\b/g, "ave")
-    .replace(/\bdrive\b/g, "dr")
-    .replace(/\bboulevard\b/g, "blvd")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function buildRestaurantAddress(restaurant: {
   address?: string | null;
   address1?: string | null;
@@ -107,6 +94,7 @@ function buildRestaurantAddress(restaurant: {
 }
 
 function resolveSeededRestaurantCoordinates(restaurant: {
+  id?: string | null;
   address?: string | null;
   address1?: string | null;
   city?: string | null;
@@ -123,27 +111,17 @@ function resolveSeededRestaurantCoordinates(restaurant: {
     };
   }
 
-  const seededCoordinatesByAddress = new Map<string, { lat: number; lng: number }>([
-    ["1533 ashcroft way, sunnyvale, ca 94087", { lat: 37.3509, lng: -122.0378 }],
-    ["1325 sunnyvale saratoga rd, sunnyvale, ca 94087", { lat: 37.3385, lng: -122.0322 }],
-    ["650 w el camino real, sunnyvale, ca 94087", { lat: 37.3794, lng: -122.0428 }],
+  const seededCoordinatesByRestaurantId = new Map<string, { lat: number; lng: number }>([
+    ["rest_lb_steakhouse", { lat: 37.3509, lng: -122.0378 }],
+    ["rest_pizza_palace", { lat: 37.3385, lng: -122.0322 }],
+    ["rest_green_leaf_salads", { lat: 37.3794, lng: -122.0428 }],
   ]);
 
-  const candidates = [
-    buildRestaurantAddress(restaurant),
-    restaurant.location,
-    [
-      normalizeText(restaurant.address1),
-      [normalizeText(restaurant.city), normalizeText(restaurant.state), normalizeText(restaurant.postalCode)]
-        .filter(Boolean)
-        .join(" "),
-    ]
-      .filter(Boolean)
-      .join(", "),
-  ];
-
-  for (const candidate of candidates) {
-    const coords = seededCoordinatesByAddress.get(normalizeAddressKey(candidate));
+  // Keep a tiny fallback for legacy seeded demo rows only. Address-based fallback
+  // caused unrelated onboarding restaurants at the same address to inherit demo
+  // coordinates and appear in nearby-search results.
+  if (restaurant.id) {
+    const coords = seededCoordinatesByRestaurantId.get(restaurant.id);
     if (coords) return coords;
   }
 

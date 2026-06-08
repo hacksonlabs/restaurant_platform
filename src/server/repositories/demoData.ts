@@ -3,6 +3,7 @@ import { createId } from "../utils/ids";
 import type {
   Agent,
   AgentApiKey,
+  PartnerCredential,
   OperatorMembership,
   OnboardingRequestRecord,
   OperatorSession,
@@ -17,6 +18,9 @@ import type {
   EventIngestionRecord,
   IdempotencyRecord,
   OrderingRule,
+  Partner,
+  PlatformAdminSession,
+  PlatformAdminUser,
   POSConnection,
   POSMenuMapping,
   ReportingDailyMetric,
@@ -35,12 +39,16 @@ export interface DemoSeedState {
   modifierGroups: CanonicalModifierGroup[];
   modifiers: CanonicalModifier[];
   posMappings: POSMenuMapping[];
+  partners: Partner[];
   agents: Agent[];
   agentApiKeys: AgentApiKey[];
+  partnerCredentials: PartnerCredential[];
   operatorUsers: OperatorUser[];
   operatorMemberships: OperatorMembership[];
   operatorSessions: OperatorSession[];
   onboardingRequests: OnboardingRequestRecord[];
+  platformAdminUsers: PlatformAdminUser[];
+  platformAdminSessions: PlatformAdminSession[];
   permissions: RestaurantAgentPermission[];
   orderingRules: OrderingRule[];
   orders: AgentOrderRecord[];
@@ -293,10 +301,21 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
 
   const coachImHungryAgent: Agent = {
     id: coachImHungryAgentId,
+    partnerId: "partner_coachimhungry",
     name: "CoachImHungry",
     slug: "coachimhungry",
     description: "External MealOps ordering agent acting on behalf of customers.",
     createdAt: now,
+  };
+
+  const coachImHungryPartner: Partner = {
+    id: "partner_coachimhungry",
+    name: "CoachImHungry",
+    slug: "coachimhungry",
+    status: "approved",
+    contactEmail: "integrations@coachimhungry.example",
+    createdAt: now,
+    updatedAt: now,
   };
 
   const agentApiKey: AgentApiKey = {
@@ -308,7 +327,6 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     scopes: [
       "restaurants:read",
       "menus:read",
-      "payments:start",
       "orders:validate",
       "orders:quote",
       "orders:submit",
@@ -318,10 +336,32 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     createdAt: now,
   };
 
+  const partnerCredential: PartnerCredential = {
+    id: "pcred_coachimhungry_demo",
+    partnerId: "partner_coachimhungry",
+    agentId: coachImHungryAgentId,
+    label: "CoachImHungry demo partner credential",
+    keyPrefix: demoPhantomApiKey.slice(0, 8),
+    keyHash: sha256(demoPhantomApiKey),
+    scopes: [...agentApiKey.scopes],
+    environment: "test",
+    lastUsedAt: now,
+    createdAt: now,
+  };
+
   const operatorUser: OperatorUser = {
     id: "op_dev_rest",
     email: "dev@rest.com",
     fullName: "Restaurant Dev Operator",
+    createdAt: now,
+  };
+
+  const platformAdminUser: PlatformAdminUser = {
+    id: "pa_akayla_mealops",
+    email: "akayla@mealops.ai",
+    fullName: "Akayla MealOps Admin",
+    passwordHash: sha256("password"),
+    status: "active",
     createdAt: now,
   };
 
@@ -1299,8 +1339,10 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       ...midnightNoodleBar.posMappings,
       ...harborSandwichCo.posMappings,
     ],
+    partners: [coachImHungryPartner],
     agents: [phantomAgent, coachImHungryAgent],
     agentApiKeys: [agentApiKey],
+    partnerCredentials: [partnerCredential],
     operatorUsers: [operatorUser],
     operatorMemberships: [
       operatorMembership,
@@ -1313,6 +1355,8 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     ],
     operatorSessions: [],
     onboardingRequests: [],
+    platformAdminUsers: [platformAdminUser],
+    platformAdminSessions: [],
     permissions: [
       permission,
       coachPermission,

@@ -1,0 +1,23 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[[redirects]]
+  from = "/api/*"
+  to = "https://phantom-mealops.up.railway.app/api/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/mcp/*"
+  to = "https://phantom-mealops.up.railway.app/mcp/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/demo-images/*"
+  to = "https://phantom-mealops.up.railway.app/demo-images/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
