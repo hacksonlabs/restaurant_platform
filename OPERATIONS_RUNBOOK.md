@@ -17,7 +17,6 @@ This runbook covers the day-to-day operating model for Phantom during restaurant
 1. Confirm `.env` contains valid:
    - `DEMO_MODE`
    - `DATABASE_URL`
-   - `POSTGRES_POOL_MAX` if using a Supabase session-pooler URL; keep it below the project pool limit across all running app instances
    - `SUPABASE_URL`
    - `SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
@@ -47,7 +46,6 @@ Check:
 - Supabase Auth user exists and is confirmed
 - Phantom `operator_users` and `operator_memberships` are present
 - `SUPABASE_ANON_KEY` is configured for backend use
-- If the error includes `EMAXCONNSESSION`, lower `POSTGRES_POOL_MAX`, restart old backend processes, and check Supabase for idle session-pooler clients. The app defaults to `POSTGRES_POOL_MAX=3` for this reason.
 
 ### Quote fails
 

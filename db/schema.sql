@@ -108,57 +108,11 @@ create table if not exists pos_menu_mappings (
   status text not null check (status in ('mapped', 'needs_review'))
 );
 
-create table if not exists partners (
-  id text primary key,
-  name text not null,
-  slug text not null unique,
-  status text not null default 'pending' check (status in ('pending', 'approved', 'suspended')),
-  contact_email text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
 create table if not exists agents (
   id text primary key,
-  partner_id text references partners(id) on delete set null,
   name text not null,
   slug text not null unique,
   description text not null default '',
-  created_at timestamptz not null default now()
-);
-
-alter table agents add column if not exists partner_id text references partners(id) on delete set null;
-
-create table if not exists partner_credentials (
-  id text primary key,
-  partner_id text not null references partners(id) on delete cascade,
-  agent_id text not null references agents(id) on delete cascade,
-  label text not null,
-  key_prefix text not null,
-  key_hash text not null unique,
-  scopes text[] not null default array['restaurants:read','menus:read','orders:validate','orders:quote','orders:submit','orders:status']::text[],
-  environment text not null default 'test' check (environment in ('test', 'live')),
-  last_used_at timestamptz,
-  created_at timestamptz not null default now(),
-  rotated_at timestamptz,
-  revoked_at timestamptz
-);
-
-create table if not exists platform_admin_users (
-  id text primary key,
-  email text not null unique,
-  full_name text not null,
-  password_hash text not null,
-  status text not null default 'active' check (status in ('active', 'disabled')),
-  created_at timestamptz not null default now(),
-  last_login_at timestamptz
-);
-
-create table if not exists platform_admin_sessions (
-  id text primary key,
-  admin_user_id text not null references platform_admin_users(id) on delete cascade,
-  session_token_hash text not null unique,
-  expires_at timestamptz not null,
   created_at timestamptz not null default now()
 );
 

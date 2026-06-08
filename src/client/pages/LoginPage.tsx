@@ -38,9 +38,9 @@ export function LoginPage() {
           </div>
           <div className="auth-login-panel">
             <div className="auth-login-panel-title">Sign In</div>
-            <form className="auth-form" onSubmit={handleSubmit} autoComplete="off">
+            <form className="auth-form" onSubmit={handleSubmit}>
               <Field label="Email">
-                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="off" />
+                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" />
               </Field>
               <Field label="Password">
                 <div className="password-field-wrap">

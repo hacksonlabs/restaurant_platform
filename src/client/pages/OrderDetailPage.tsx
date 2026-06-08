@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useTenant } from "../auth/AuthContext";
 import { dateTime, money } from "../lib/format";
@@ -113,29 +113,11 @@ function getStatusTone(status: string | null | undefined): "default" | "success"
 
 export function OrderDetailPage() {
   const { orderId = "" } = useParams();
-  const [searchParams] = useSearchParams();
-  const { selectedRestaurantId, session } = useTenant();
-  const queryRestaurantId = searchParams.get("restaurantId");
-  const targetRestaurantId = queryRestaurantId || selectedRestaurantId;
-  const targetMembership = targetRestaurantId
-    ? session?.restaurants
-        .find((restaurant) => restaurant.id === targetRestaurantId)
-        ?.memberships.find((membership) => membership.restaurantId === targetRestaurantId)
-    : null;
-  const canManageTargetOrder = targetMembership
-    ? targetMembership.role === "owner" || targetMembership.role === "staff"
-    : false;
-  const isTargetReadOnly = targetMembership ? targetMembership.role === "viewer" : true;
+  const { selectedRestaurantId, canManageOrders, isReadOnly } = useTenant();
   const { data, setData, loading, error } = useResource(
-    `order:${targetRestaurantId}:${orderId}`,
-    () => {
-      if (!targetRestaurantId) {
-        throw new Error("Open an order from Incoming Orders so Phantom knows which restaurant to use.");
-      }
-      return api.order(targetRestaurantId, orderId);
-    },
-    [orderId, targetRestaurantId],
-    Boolean(targetRestaurantId),
+    `order:${selectedRestaurantId}:${orderId}`,
+    () => api.order(selectedRestaurantId!, orderId),
+    [orderId, selectedRestaurantId],
   );
   const [message, setMessage] = useState("");
   const [showOrderDetails, setShowOrderDetails] = useState(false);
@@ -190,8 +172,7 @@ export function OrderDetailPage() {
   );
 
   async function refresh() {
-    if (!targetRestaurantId) return;
-    const latestDetail = await api.order(targetRestaurantId!, orderId);
+    const latestDetail = await api.order(selectedRestaurantId!, orderId);
     if (latestDetail?.order?.status && latestDetail.order.status !== "needs_approval") {
       setOptimisticDecisionStatus(null);
     }
@@ -199,7 +180,6 @@ export function OrderDetailPage() {
   }
 
   async function approve() {
-    if (!targetRestaurantId) return;
     setPendingDecision("approve");
     setOptimisticDecisionStatus("approved");
     setMessage("Approving order…");
@@ -211,7 +191,7 @@ export function OrderDetailPage() {
         : displayData.groupedOrders,
     });
     try {
-      const updatedOrder = await api.approveOrder(targetRestaurantId!, orderId);
+      const updatedOrder = await api.approveOrder(selectedRestaurantId!, orderId);
       setMessage(
         updatedOrder.splitGroupSize && updatedOrder.splitGroupSize > 1
           ? `Split order bundle approved. Phantom is sending ${updatedOrder.splitGroupSize} linked orders to POS.`
@@ -234,7 +214,6 @@ export function OrderDetailPage() {
   }
 
   async function reject() {
-    if (!targetRestaurantId) return;
     setPendingDecision("reject");
     setOptimisticDecisionStatus("rejected");
     setMessage("Rejecting order…");
@@ -246,7 +225,7 @@ export function OrderDetailPage() {
         : displayData.groupedOrders,
     });
     try {
-      const updatedOrder = await api.rejectOrder(targetRestaurantId!, orderId);
+      const updatedOrder = await api.rejectOrder(selectedRestaurantId!, orderId);
       setMessage(
         updatedOrder.splitGroupSize && updatedOrder.splitGroupSize > 1
           ? "Split order bundle rejected."
@@ -268,7 +247,7 @@ export function OrderDetailPage() {
     }
   }
 
-  const canDecide = canManageTargetOrder && !isTargetReadOnly && displayData?.order?.status === "needs_approval";
+  const canDecide = canManageOrders && !isReadOnly && displayData?.order?.status === "needs_approval";
   const shouldAutoRefresh =
     displayData?.order?.status === "approved" ||
     displayData?.order?.status === "submitting_to_pos" ||
@@ -278,7 +257,7 @@ export function OrderDetailPage() {
   );
 
   useEffect(() => {
-    if (!shouldAutoRefresh || !targetRestaurantId) {
+    if (!shouldAutoRefresh || !selectedRestaurantId) {
       return undefined;
     }
 
@@ -289,12 +268,9 @@ export function OrderDetailPage() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [shouldAutoRefresh, targetRestaurantId, orderId]);
+  }, [shouldAutoRefresh, selectedRestaurantId, orderId]);
 
   if (loading) return <div className="panel-state">Loading order…</div>;
-  if (!targetRestaurantId) {
-    return <div className="panel-state error">Open an order from Incoming Orders so Phantom knows which restaurant to use.</div>;
-  }
   if (error || !displayData) return <div className="panel-state error">{error}</div>;
 
   return (

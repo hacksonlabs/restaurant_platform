@@ -46,8 +46,6 @@ export function AgentDetailPage() {
   if (loading) return <div className="panel-state">Loading agent…</div>;
   if (error || !data) return <div className="panel-state error">{error}</div>;
 
-  const isPartnerManagedAgent = Boolean(data.agent.partnerId);
-
   async function refreshAgent() {
     setData(await api.agent(selectedRestaurantId!, agentId));
   }
@@ -63,29 +61,6 @@ export function AgentDetailPage() {
       throw error;
     } finally {
       setPending(false);
-    }
-  }
-
-  async function allowAgent() {
-    const previousScopes = selectedScopes;
-    const restoredScopes = AVAILABLE_SCOPES.map((scope) => scope.value);
-    setSelectedScopes(restoredScopes);
-    try {
-      await updateStatus("allowed");
-    } catch (error) {
-      setSelectedScopes(previousScopes);
-      setMessage(error instanceof Error ? error.message : "Failed to update agent status.");
-    }
-  }
-
-  async function blockAgent() {
-    const previousScopes = selectedScopes;
-    setSelectedScopes([]);
-    try {
-      await updateStatus("blocked");
-    } catch (error) {
-      setSelectedScopes(previousScopes);
-      setMessage(error instanceof Error ? error.message : "Failed to update agent status.");
     }
   }
 
@@ -161,24 +136,22 @@ export function AgentDetailPage() {
         title={data.agent.name}
         description="Authentication, restaurant access, and order capabilities for this agent integration."
         actions={
-          isPartnerManagedAgent ? null : (
-            <div className="page-actions">
-              {data.apiKey ? (
-                <Button tone="secondary" onClick={rotateKey} disabled={!canManageAgents || pending}>
-                  Rotate Key
-                </Button>
-              ) : (
-                <Button onClick={createKey} disabled={!canManageAgents || pending || selectedScopes.length === 0}>
-                  Create Key
-                </Button>
-              )}
-              {data.apiKey ? (
-                <Button tone="danger" onClick={revokeKey} disabled={!canManageAgents || pending || !!data.apiKey.revokedAt}>
-                  Revoke Key
-                </Button>
-              ) : null}
-            </div>
-          )
+          <div className="page-actions">
+            {data.apiKey ? (
+              <Button tone="secondary" onClick={rotateKey} disabled={!canManageAgents || pending}>
+                Rotate Key
+              </Button>
+            ) : (
+              <Button onClick={createKey} disabled={!canManageAgents || pending || selectedScopes.length === 0}>
+                Create Key
+              </Button>
+            )}
+            {data.apiKey ? (
+              <Button tone="danger" onClick={revokeKey} disabled={!canManageAgents || pending || !!data.apiKey.revokedAt}>
+                Revoke Key
+              </Button>
+            ) : null}
+          </div>
         }
       />
 
@@ -215,94 +188,90 @@ export function AgentDetailPage() {
                 {permissionStatus}
               </Badge>
             </div>
-            {!isPartnerManagedAgent ? (
-              <>
-                <div className="summary-row">
-                  <span>Key Prefix</span>
-                  <strong>{data.apiKey?.keyPrefix ?? "Not issued"}</strong>
-                </div>
-                <div className="summary-row">
-                  <span>Last Rotated</span>
-                  <strong>{dateTimeOrFallback(data.apiKey?.rotatedAt ?? data.apiKey?.createdAt, "Not available")}</strong>
-                </div>
-                <div className="summary-row">
-                  <span>Key State</span>
-                  <strong>{data.apiKey?.revokedAt ? `Revoked ${dateTimeOrFallback(data.apiKey.revokedAt)}` : "Active"}</strong>
-                </div>
-              </>
-            ) : null}
+            <div className="summary-row">
+              <span>Key Prefix</span>
+              <strong>{data.apiKey?.keyPrefix ?? "Not issued"}</strong>
+            </div>
+            <div className="summary-row">
+              <span>Last Rotated</span>
+              <strong>{dateTimeOrFallback(data.apiKey?.rotatedAt ?? data.apiKey?.createdAt, "Not available")}</strong>
+            </div>
             <div className="summary-row">
               <span>Last Used</span>
               <strong>{dateTimeOrFallback(data.apiKey?.lastUsedAt ?? data.permission.lastActivityAt)}</strong>
             </div>
+            <div className="summary-row">
+              <span>Key State</span>
+              <strong>{data.apiKey?.revokedAt ? `Revoked ${dateTimeOrFallback(data.apiKey.revokedAt)}` : "Active"}</strong>
+            </div>
             <div className="summary-actions">
-              {permissionStatus !== "allowed" ? (
-                <Button tone="secondary" onClick={() => void allowAgent()} disabled={!canManageAgents || pending}>
-                  Allow
-                </Button>
-              ) : null}
-              {permissionStatus !== "blocked" ? (
-                <Button tone="danger" onClick={() => void blockAgent()} disabled={!canManageAgents || pending}>
-                  Block
-                </Button>
-              ) : null}
+              <Button
+                tone={permissionStatus === "allowed" ? "danger" : "secondary"}
+                onClick={() => {
+                  if (permissionStatus === "allowed") {
+                    setSelectedScopes([]);
+                    void updateStatus("blocked").catch((error) => {
+                      setSelectedScopes(selectedScopes);
+                      setMessage(error instanceof Error ? error.message : "Failed to update agent status.");
+                    });
+                    return;
+                  }
+
+                  const restoredScopes = AVAILABLE_SCOPES.map((scope) => scope.value);
+                  setSelectedScopes(restoredScopes);
+                  void updateStatus("allowed").catch((error) => {
+                    setSelectedScopes([]);
+                    setMessage(error instanceof Error ? error.message : "Failed to update agent status.");
+                  });
+                }}
+                disabled={!canManageAgents || pending}
+              >
+                {permissionStatus === "allowed" ? "Block" : "Allow"}
+              </Button>
             </div>
           </div>
         </Card>
 
-        {!isPartnerManagedAgent ? (
-          <Card
-            title="Key Configuration"
-            subtitle="Create once, rotate when needed, and keep scopes limited to the workflows this agent actually needs."
-          >
-            <Field label="Key Label">
-              <input
-                value={keyLabel}
-                onChange={(event) => setKeyLabel(event.target.value)}
-                disabled={!canManageAgents || pending || !!data.apiKey}
-              />
-            </Field>
-            <div className="muted" style={{ marginTop: 12 }}>
-              Raw API keys are only shown once. The server stores only the hash, prefix, scopes, and timestamps.
-            </div>
-          </Card>
-        ) : null}
+        <Card
+          title="Key Configuration"
+          subtitle="Create once, rotate when needed, and keep scopes limited to the workflows this agent actually needs."
+        >
+          <Field label="Key Label">
+            <input
+              value={keyLabel}
+              onChange={(event) => setKeyLabel(event.target.value)}
+              disabled={!canManageAgents || pending || !!data.apiKey}
+            />
+          </Field>
+          <div className="muted" style={{ marginTop: 12 }}>
+            Raw API keys are only shown once. The server stores only the hash, prefix, scopes, and timestamps.
+          </div>
+        </Card>
       </div>
 
-      {isPartnerManagedAgent ? (
-        <Card title="API Access" subtitle="Credential scopes are controlled by Phantom Admin.">
-          <div className="agent-note-block">
-            <strong>Restaurant approval controls where this agent can order.</strong>
-            <p className="muted">
-              Use the access status above to approve or block this agent for the selected restaurant.
-            </p>
-          </div>
-        </Card>
-      ) : (
-        <Card title="Scope Permissions"><br></br>
-          <div className="scope-grid">
-            {AVAILABLE_SCOPES.map((scope) => (
-              <div key={scope.value} className="scope-card">
-                <div>
-                  <strong>{scope.label}</strong>
-                  <div className="muted">{scope.description}</div>
-                </div>
-                <button
-                  type="button"
-                  className={`scope-toggle ${selectedScopes.includes(scope.value) ? "on" : ""}`}
-                  role="switch"
-                  aria-checked={selectedScopes.includes(scope.value)}
-                  aria-label={scope.label}
-                  onClick={() => void toggleScope(scope.value)}
-                  disabled={!canManageAgents || pending || !!data.apiKey?.revokedAt}
-                >
-                  <span />
-                </button>
+      <Card title="Scope Permissions"><br></br>
+        <div className="scope-grid">
+          {AVAILABLE_SCOPES.map((scope) => (
+            <div key={scope.value} className="scope-card">
+              <div>
+                <strong>{scope.label}</strong>
+                <div className="muted">{scope.description}</div>
               </div>
-            ))}
-          </div>
-        </Card>
-      )}
+              <button
+                type="button"
+                className={`scope-toggle ${selectedScopes.includes(scope.value) ? "on" : ""}`}
+                role="switch"
+                aria-checked={selectedScopes.includes(scope.value)}
+                aria-label={scope.label}
+                onClick={() => void toggleScope(scope.value)}
+                disabled={!canManageAgents || pending || !!data.apiKey?.revokedAt}
+              >
+                <span />
+              </button>
+            </div>
+          ))}
+        </div>
+      </Card>
 
       {/* <Card title="Agent Notes">
         <div className="agent-note-block">

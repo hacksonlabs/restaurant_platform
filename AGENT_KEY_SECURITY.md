@@ -2,14 +2,6 @@
 
 Phantom now treats agent API keys as persistent security credentials instead of demo-only values.
 
-## Partner identity
-
-- `partners` represent the company or platform relationship, such as CoachImHungry or a future OpenAI integration.
-- `agents` represent a specific ordering integration or app surface and may belong to a partner through `agents.partner_id`.
-- Restaurant access remains separate in `restaurant_agent_permissions`, so approving a partner-owned agent for one restaurant does not automatically approve it for every restaurant.
-- `partner_credentials` are the forward-looking credential model for partner-owned agents. They are tied to both a partner and an agent, carry scoped access, and support test/live environments.
-- Existing `agent_api_keys` still authenticate as a compatibility path, so current demos and integrations keep working while partner credential onboarding is added.
-
 ## Storage model
 
 - Raw agent keys are generated once and returned once.
@@ -24,8 +16,6 @@ Phantom now treats agent API keys as persistent security credentials instead of 
 - Raw keys are never re-read from storage.
 
 ## Lifecycle
-
-Partner credentials are created, rotated, and revoked by service-layer methods today. They use the same one-time raw key return pattern as legacy agent keys, store only hashes and prefixes, and write audit log entries for each lifecycle action.
 
 ### Create
 

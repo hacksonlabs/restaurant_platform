@@ -4,7 +4,6 @@ import { createApiRouter } from "./api/router";
 import { getEnv } from "./config/env";
 import { assertSupabaseReady } from "./db/supabase";
 import { getDemoImageSvg } from "./demoImages";
-import { createRemoteMcpApp } from "./mcp/http";
 import { attachRequestContext } from "./middleware/requestContext";
 import { createPlatformService } from "./runtime";
 
@@ -31,7 +30,6 @@ async function main() {
       credentials: true,
     }),
   );
-  app.use("/mcp", createRemoteMcpApp(service, env));
   app.get("/demo-images/:slug.svg", (request, response) => {
     const svg = getDemoImageSvg(String(request.params.slug ?? ""));
     if (!svg) {

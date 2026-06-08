@@ -1,8 +1,6 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { PlatformAdminAuthProvider, usePlatformAdminAuth } from "./auth/PlatformAdminAuthContext";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./auth/AuthContext";
 import { ConsoleLayout } from "./layout/ConsoleLayout";
-import { PlatformAdminLayout } from "./layout/PlatformAdminLayout";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AgentDetailPage } from "./pages/AgentDetailPage";
 import { AccessPage } from "./pages/AccessPage";
@@ -17,55 +15,12 @@ import { OnboardingPOSSystemPage } from "./pages/OnboardingPOSSystemPage";
 import { OnboardingProviderPage } from "./pages/OnboardingProviderPage";
 import { OrderDetailPage } from "./pages/OrderDetailPage";
 import { OrdersPage } from "./pages/OrdersPage";
-import { PlatformAdminLoginPage } from "./pages/PlatformAdminLoginPage";
-import { PlatformAdminPage } from "./pages/PlatformAdminPage";
 import { ReportingPage } from "./pages/ReportingPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SignupPage } from "./pages/SignupPage";
 
-function PlatformAdminRoutes() {
-  const { session, loading } = usePlatformAdminAuth();
-
-  if (loading) {
-    return (
-      <div className="platform-loading-shell">
-        <div className="platform-loading-panel">Checking Phantom Admin session...</div>
-      </div>
-    );
-  }
-
-  return (
-    <Routes>
-      <Route path="/phantom-admin/login" element={<PlatformAdminLoginPage />} />
-      <Route
-        path="/phantom-admin"
-        element={
-          session ? (
-            <PlatformAdminLayout>
-              <PlatformAdminPage />
-            </PlatformAdminLayout>
-          ) : (
-            <Navigate to="/phantom-admin/login" replace />
-          )
-        }
-      />
-      <Route path="*" element={<Navigate to={session ? "/phantom-admin" : "/phantom-admin/login"} replace />} />
-    </Routes>
-  );
-}
-
 export function App() {
   const { session, loading } = useAuth();
-  const location = useLocation();
-  const isPlatformAdminPath = location.pathname.startsWith("/phantom-admin");
-
-  if (isPlatformAdminPath) {
-    return (
-      <PlatformAdminAuthProvider>
-        <PlatformAdminRoutes />
-      </PlatformAdminAuthProvider>
-    );
-  }
 
   if (loading) {
     return (

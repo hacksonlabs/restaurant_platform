@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getEnv } from "../config/env";
-import { appNow } from "../utils/time";
 
 interface SessionState {
   cookie: string;
@@ -58,18 +57,8 @@ async function main() {
 
   const samplePath = path.resolve(process.cwd(), "examples/sample-agent-order.json");
   const sample = JSON.parse(await fs.readFile(samplePath, "utf8"));
-  if (sample.restaurant_id !== restaurant.id) {
-    sample.restaurant_id = restaurant.id;
-    sample.items = menu.items.slice(0, 2).map((item) => ({
-      item_id: item.id,
-      quantity: 2,
-      modifiers: [],
-    }));
-    sample.dietary_constraints = [];
-    sample.substitution_policy = "strict";
-  }
   sample.external_order_reference = `smoke-${Date.now()}`;
-  sample.requested_fulfillment_time = new Date(appNow().getTime() + 48 * 60 * 60 * 1000).toISOString();
+  sample.requested_fulfillment_time = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
   sample.metadata = { ...(sample.metadata ?? {}), source: "smoke_script" };
 
   const agentHeaders = {

@@ -7,7 +7,7 @@ import { Badge, Button, Card, DataTable, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
 export function OrdersPage() {
-  const { selectedRestaurantId, selectedRestaurantIds, isAllRestaurantsScope, session } = useTenant();
+  const { selectedRestaurantId, selectedRestaurantIds, canManageOrders, isReadOnly, isAllRestaurantsScope, session } = useTenant();
   const isDemoMode = import.meta.env.MODE === "demo";
   const mockOrderRestaurantId = selectedRestaurantId ?? selectedRestaurantIds[0] ?? null;
   const canAddMockOrder = isDemoMode && Boolean(mockOrderRestaurantId);
@@ -135,14 +135,6 @@ export function OrdersPage() {
     return "success";
   }
 
-  function canReviewOrder(order: any) {
-    const targetRestaurantId = order.restaurantId ?? selectedRestaurantId;
-    const membership = session?.restaurants
-      .find((restaurant) => restaurant.id === targetRestaurantId)
-      ?.memberships.find((entry) => entry.restaurantId === targetRestaurantId);
-    return membership?.role === "owner" || membership?.role === "staff";
-  }
-
   useEffect(() => {
     if (!selectedRestaurantId && !isAllRestaurantsScope) return undefined;
     const intervalId = window.setInterval(() => {
@@ -189,17 +181,13 @@ export function OrdersPage() {
               ? ["Restaurant", "Order ID", "Agent", "Requested Time", "Status", "Total", "Headcount", "Approval", "Created"]
               : ["Order ID", "Agent", "Requested Time", "Status", "Total", "Headcount", "Approval", "Created"]
           }
-          rows={orders.map((order, index) => {
+          rows={orders.map((order) => {
             const displayStatus = getDisplayStatus(order);
-            const canReview = displayStatus === "needs_approval" && canReviewOrder(order);
-            const shouldOpenReviewMenuUpward = index >= orders.length - 2;
+            const canReview = displayStatus === "needs_approval" && canManageOrders && !isReadOnly;
             const row = [
             isAllRestaurantsScope ? (order as any).restaurantName : null,
             <div key={order.id}>
-              <Link
-                to={`/orders/${order.id}?restaurantId=${encodeURIComponent(order.restaurantId)}`}
-                className="order-link"
-              >
+              <Link to={`/orders/${order.id}`} className="order-link">
                 {order.id}
               </Link>
               {order.splitGroupSize && order.splitGroupSize > 1 ? (
@@ -219,7 +207,7 @@ export function OrdersPage() {
                   <Badge tone="warning">{statusLabel(displayStatus)}</Badge>
                 </button>
                 {reviewingOrderId === order.id ? (
-                  <div className={`review-popover ${shouldOpenReviewMenuUpward ? "open-up" : ""}`.trim()}>
+                  <div className="review-popover">
                     <Button
                       className="button-small"
                       tone="secondary"
