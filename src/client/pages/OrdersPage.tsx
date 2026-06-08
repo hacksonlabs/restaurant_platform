@@ -6,6 +6,9 @@ import { dateTime, money } from "../lib/format";
 import { Badge, Button, Card, DataTable, PageHeader } from "../components/ui";
 import { useResource } from "./useResource";
 
+const MOCK_ORDER_AGENT_ACCESS_NOTICE =
+  "An agent needs to be unblocked in Access Management before you can add a mock order.";
+
 export function OrdersPage() {
   const navigate = useNavigate();
   const { selectedRestaurantId, selectedRestaurantIds, canManageOrders, isReadOnly, isAllRestaurantsScope, session } = useTenant();
@@ -116,9 +119,11 @@ export function OrdersPage() {
       await refreshOrders();
     } catch (submitError) {
       const errorMessage = submitError instanceof Error ? submitError.message : "Failed to add a mock order.";
-      setMessage(errorMessage);
       if (errorMessage.includes("must unblock Demo Agent or CoachImHungry")) {
-        setMockOrderAgentNotice(errorMessage);
+        setMessage(MOCK_ORDER_AGENT_ACCESS_NOTICE);
+        setMockOrderAgentNotice(MOCK_ORDER_AGENT_ACCESS_NOTICE);
+      } else {
+        setMessage(errorMessage);
       }
     } finally {
       setCreatingMockOrder(false);
@@ -133,7 +138,7 @@ export function OrdersPage() {
   }
 
   function messageTone(value: string) {
-    if (value === "Restaurant has agent ordering disabled." || value.includes("must unblock Demo Agent or CoachImHungry")) {
+    if (value === "Restaurant has agent ordering disabled." || value === MOCK_ORDER_AGENT_ACCESS_NOTICE) {
       return "warning";
     }
     if (value.toLowerCase().includes("failed")) {
@@ -257,7 +262,7 @@ export function OrdersPage() {
       </Card>
       {mockOrderAgentNotice ? (
         <div className="settings-modal-backdrop" role="presentation" onClick={() => setMockOrderAgentNotice("")}>
-          <div className="settings-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+          <div className="settings-modal agent-access-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
             <div className="settings-modal-header">
               <div>
                 <h3>Agent Access Required</h3>
