@@ -795,14 +795,14 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.get(
-    "/internal/deliverect/channel/webhooks",
+    "/webhooks/deliverect/channel",
     asyncHandler(async (request, response) => {
       response.json(service.buildDeliverectChannelWebhookUrls(publicWebhookBaseUrl(request)));
     }),
   );
 
   router.post(
-    "/internal/deliverect/channel/register",
+    "/webhooks/deliverect/channel/register",
     asyncHandler(async (request, response) => {
       verifyDeliverectWebhook(service, request);
       const result = await service.ingestDeliverectChannelRegistration(request.body ?? {}, publicWebhookBaseUrl(request));
@@ -811,7 +811,7 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.post(
-    "/internal/deliverect/channel/menu",
+    "/webhooks/deliverect/channel/menu",
     asyncHandler(async (request, response) => {
       verifyDeliverectWebhook(service, request);
       response.json(await service.ingestDeliverectMenuUpdate(request.body ?? {}));
@@ -819,7 +819,7 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.post(
-    "/internal/deliverect/channel/order-status",
+    "/webhooks/deliverect/channel/order-status",
     asyncHandler(async (request, response) => {
       verifyDeliverectWebhook(service, request);
       response.json(await service.ingestDeliverectChannelEvent("order_status", request.body ?? {}));
@@ -827,7 +827,7 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.post(
-    "/internal/deliverect/channel/snooze",
+    "/webhooks/deliverect/channel/snooze",
     asyncHandler(async (request, response) => {
       verifyDeliverectWebhook(service, request);
       response.json(await service.ingestDeliverectChannelSnoozeUpdate(request.body ?? {}));
@@ -835,7 +835,7 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.post(
-    "/internal/deliverect/channel/busy-mode",
+    "/webhooks/deliverect/channel/busy-mode",
     asyncHandler(async (request, response) => {
       verifyDeliverectWebhook(service, request);
       response.json(await service.ingestDeliverectChannelBusyMode(request.body ?? {}));
@@ -843,7 +843,7 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.post(
-    "/internal/deliverect/channel/prep-time",
+    "/webhooks/deliverect/channel/prep-time",
     asyncHandler(async (request, response) => {
       verifyDeliverectWebhook(service, request);
       response.json(await service.ingestDeliverectChannelEvent("prep_time", request.body ?? {}));
@@ -851,7 +851,7 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.post(
-    "/internal/deliverect/channel/courier",
+    "/webhooks/deliverect/channel/courier",
     asyncHandler(async (request, response) => {
       verifyDeliverectWebhook(service, request);
       response.json(await service.ingestDeliverectChannelEvent("courier_update", request.body ?? {}));
@@ -859,18 +859,10 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.post(
-    "/internal/deliverect/channel/payment",
+    "/webhooks/deliverect/channel/payment",
     asyncHandler(async (request, response) => {
       verifyDeliverectWebhook(service, request);
       response.json(await service.ingestDeliverectChannelEvent("payment_update", request.body ?? {}));
-    }),
-  );
-
-  router.post(
-    "/internal/menus/deliverect",
-    asyncHandler(async (request, response) => {
-      verifyDeliverectWebhook(service, request);
-      response.json(await service.ingestDeliverectMenuUpdate(request.body ?? {}));
     }),
   );
 

@@ -225,11 +225,13 @@ Notes:
   - `orders:submit`
   - `orders:status`
 - Deliverect live mode expects environment variables for:
+  - `DELIVERECT_SCOPE`
   - `DELIVERECT_BASE_URL`
   - `DELIVERECT_ACCESS_TOKEN` or `DELIVERECT_CLIENT_ID` and `DELIVERECT_CLIENT_SECRET`
-  - `DELIVERECT_ACCOUNT_ID`
-  - `DELIVERECT_STORE_ID`
-  - `DELIVERECT_CHANNEL_LINK_ID`
+  - `DELIVERECT_WEBHOOK_BASE_URL`
+  - `DELIVERECT_WEBHOOK_SECRET` when Deliverect enables shared-secret or HMAC verification
+  - `DELIVERECT_REQUEST_TIMEOUT_MS` and `POS_RETRY_BASE_DELAY_MS` can tune staging retries
+  - `DELIVERECT_ACCOUNT_ID`, `DELIVERECT_STORE_ID`, and `DELIVERECT_CHANNEL_LINK_ID` are optional fallback/manual-debug values; Channel registration webhooks should create the durable provider location and channel link records.
 
 ## Toast live follow-up
 

@@ -1,0 +1,4 @@
+/api/* https://phantom-mealops.up.railway.app/api/:splat 200
+/mcp/* https://phantom-mealops.up.railway.app/mcp/:splat 200
+/demo-images/* https://phantom-mealops.up.railway.app/demo-images/:splat 200
+/* /index.html 200

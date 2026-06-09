@@ -105,6 +105,14 @@ create table if not exists provider_locations (
 create unique index if not exists provider_locations_unique_channel_idx
   on provider_locations (provider_account_id, external_location_id, (coalesce(channel_link_id, '')));
 
+create index if not exists provider_locations_channel_link_idx
+  on provider_locations (provider, channel_link_id)
+  where channel_link_id is not null;
+
+create index if not exists provider_locations_mapped_restaurant_idx
+  on provider_locations (mapped_restaurant_id)
+  where mapped_restaurant_id is not null;
+
 create table if not exists provider_menu_snapshots (
   id text primary key,
   provider text not null references pos_providers(id),
@@ -147,6 +155,10 @@ create table if not exists canonical_menu_versions (
 
 create index if not exists canonical_menu_versions_restaurant_status_idx
   on canonical_menu_versions (restaurant_id, status, published_at desc);
+
+create index if not exists canonical_menu_versions_snapshot_idx
+  on canonical_menu_versions (provider_menu_snapshot_id)
+  where provider_menu_snapshot_id is not null;
 
 create table if not exists canonical_modifier_groups (
   id text primary key,
@@ -409,6 +421,13 @@ create table if not exists pos_order_submissions (
   submitted_at timestamptz not null default now()
 );
 
+create index if not exists pos_order_submissions_order_provider_idx
+  on pos_order_submissions (order_id, provider, submitted_at desc);
+
+create index if not exists pos_order_submissions_external_order_idx
+  on pos_order_submissions (provider, external_order_id)
+  where external_order_id is not null;
+
 create table if not exists order_status_events (
   id text primary key,
   order_id text not null references agent_orders(id) on delete cascade,
@@ -427,6 +446,13 @@ alter table order_status_events add column if not exists provider text reference
 alter table order_status_events add column if not exists provider_event_id text;
 alter table order_status_events add column if not exists external_status text;
 alter table order_status_events add column if not exists raw_event_ref text;
+
+create index if not exists order_status_events_order_created_idx
+  on order_status_events (order_id, created_at desc);
+
+create index if not exists order_status_events_provider_event_idx
+  on order_status_events (provider, provider_event_id)
+  where provider_event_id is not null;
 
 create table if not exists reporting_daily_metrics (
   id text primary key,
@@ -482,6 +508,12 @@ create table if not exists order_retry_attempts (
   created_at timestamptz not null default now()
 );
 
+create index if not exists order_retry_attempts_order_stage_idx
+  on order_retry_attempts (order_id, stage, created_at desc);
+
+create index if not exists order_retry_attempts_status_idx
+  on order_retry_attempts (status, created_at desc);
+
 create table if not exists event_ingestion_records (
   id text primary key,
   provider text not null references pos_providers(id),
@@ -504,3 +536,7 @@ create unique index if not exists event_ingestion_provider_external_event_idx
 create index if not exists event_ingestion_provider_payload_hash_idx
   on event_ingestion_records (provider, payload_hash)
   where payload_hash is not null;
+
+create index if not exists event_ingestion_order_idx
+  on event_ingestion_records (order_id, created_at desc)
+  where order_id is not null;

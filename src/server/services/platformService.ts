@@ -334,7 +334,11 @@ export class PlatformService {
       getUserById(userId: string): Promise<OperatorIdentity | null>;
     },
     private env?: AppEnv,
-  ) {}
+  ) {
+    if (env?.posRetryBaseDelayMs) {
+      this.retryBaseDelayMs = env.posRetryBaseDelayMs;
+    }
+  }
 
   async listRestaurants() {
     return this.repository.listRestaurants();
@@ -1064,13 +1068,13 @@ export class PlatformService {
 
   buildDeliverectChannelWebhookUrls(baseUrl: string) {
     return {
-      statusUpdateURL: appendPath(baseUrl, "/api/internal/deliverect/channel/order-status"),
-      menuUpdateURL: appendPath(baseUrl, "/api/internal/deliverect/channel/menu"),
-      snoozeUnsnoozeURL: appendPath(baseUrl, "/api/internal/deliverect/channel/snooze"),
-      busyModeURL: appendPath(baseUrl, "/api/internal/deliverect/channel/busy-mode"),
-      updatePrepTimeURL: appendPath(baseUrl, "/api/internal/deliverect/channel/prep-time"),
-      courierUpdateURL: appendPath(baseUrl, "/api/internal/deliverect/channel/courier"),
-      paymentUpdateURL: appendPath(baseUrl, "/api/internal/deliverect/channel/payment"),
+      statusUpdateURL: appendPath(baseUrl, "/api/webhooks/deliverect/channel/order-status"),
+      menuUpdateURL: appendPath(baseUrl, "/api/webhooks/deliverect/channel/menu"),
+      snoozeUnsnoozeURL: appendPath(baseUrl, "/api/webhooks/deliverect/channel/snooze"),
+      busyModeURL: appendPath(baseUrl, "/api/webhooks/deliverect/channel/busy-mode"),
+      updatePrepTimeURL: appendPath(baseUrl, "/api/webhooks/deliverect/channel/prep-time"),
+      courierUpdateURL: appendPath(baseUrl, "/api/webhooks/deliverect/channel/courier"),
+      paymentUpdateURL: appendPath(baseUrl, "/api/webhooks/deliverect/channel/payment"),
     };
   }
 

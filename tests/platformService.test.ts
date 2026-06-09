@@ -1,7 +1,8 @@
 import express from "express";
 import { createHash, createHmac } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiRouter } from "../src/server/api/router";
+import { POSAdapterRegistry } from "../src/server/pos/registry";
 import { InMemoryPlatformRepository } from "../src/server/repositories/platformRepository";
 import { PlatformService } from "../src/server/services/platformService";
 import type { OperatorIdentity } from "../src/server/auth/supabaseAuth";
@@ -13,7 +14,13 @@ function createService() {
 }
 
 function createServiceWithEnv(env: Partial<AppEnv>) {
-  return new PlatformService(new InMemoryPlatformRepository("coachimhungry_demo_live_local_key"), undefined, undefined, env as AppEnv);
+  const typedEnv = env as AppEnv;
+  return new PlatformService(
+    new InMemoryPlatformRepository("coachimhungry_demo_live_local_key"),
+    new POSAdapterRegistry(undefined, typedEnv),
+    undefined,
+    typedEnv,
+  );
 }
 
 function createAuthBackedService(authProvider: {
@@ -135,9 +142,107 @@ function authenticatedPlatformAdmin(): AuthenticatedPlatformAdmin {
   };
 }
 
+async function createDeliverectProviderLocation(service: PlatformService, suffix: string) {
+  const repository = (service as any).repository as InMemoryPlatformRepository;
+  const account = await repository.upsertProviderAccount({
+    provider: "deliverect",
+    externalAccountId: `acct_deliverect_${suffix}`,
+    displayName: `MealOps Deliverect ${suffix}`,
+    environment: "sandbox",
+    status: "sandbox",
+    metadata: { scope: "mealops" },
+    lastSyncedAt: new Date().toISOString(),
+  });
+  const providerLocation = await repository.upsertProviderLocation({
+    providerAccountId: account.id,
+    provider: "deliverect",
+    externalLocationId: `deliverect_location_${suffix}`,
+    externalStoreId: `deliverect_store_${suffix}`,
+    channelLinkId: `channel_link_${suffix}`,
+    channelName: "mealops",
+    name: `MealOps - ${suffix}`,
+    address: "20 Provider Way",
+    timezone: "America/Los_Angeles",
+    status: "sandbox",
+    rawProviderPayload: { fulfillmentTypes: ["pickup", "delivery"] },
+    lastSyncedAt: new Date().toISOString(),
+  });
+  return { repository, account, providerLocation };
+}
+
+function deliverectMenuPayload(suffix: string, eventId = `menu_event_${suffix}`) {
+  return {
+    channelLinkId: `channel_link_${suffix}`,
+    eventId,
+    items: [
+      {
+        menu: "Lunch",
+        categories: [
+          {
+            name: "Entrees",
+            products: [
+              {
+                plu: `ENTREE-${suffix}`,
+                name: `Channel Entree ${suffix}`,
+                description: "Imported from Deliverect Channel push",
+                price: 1500,
+                modifierGroups: [
+                  {
+                    id: `sauce_group_${suffix}`,
+                    name: "Sauce",
+                    min: 1,
+                    max: 1,
+                    modifiers: [
+                      { plu: `SAUCE-A-${suffix}`, name: "Sauce A", price: 0 },
+                      { plu: `SAUCE-B-${suffix}`, name: "Sauce B", price: 100 },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function provisionDeliverectMenuRestaurant(service: PlatformService, suffix: string) {
+  const setup = await createDeliverectProviderLocation(service, suffix);
+  const provisioned = await service.provisionProviderLocation(authenticatedPlatformAdmin(), setup.providerLocation.id);
+  const menuResult = await service.ingestDeliverectMenuUpdate(deliverectMenuPayload(suffix));
+  const menu = await service.getMenu(provisioned.restaurant.id);
+  return { ...setup, provisioned, menuResult, menu };
+}
+
+function deliverectOrderIntent(
+  restaurantId: string,
+  reference: string,
+  itemId: string,
+  modifiers: CanonicalOrderIntent["items"][number]["modifiers"],
+  metadata: Record<string, unknown>,
+): CanonicalOrderIntent {
+  return {
+    restaurant_id: restaurantId,
+    agent_id: "agent_coachimhungry",
+    external_order_reference: reference,
+    customer: { name: "Channel Guest", email: "guest@example.com", phone: "555-0100" },
+    fulfillment_type: "pickup",
+    requested_fulfillment_time: futureIso(24),
+    headcount: 2,
+    payment_policy: "required_before_submit",
+    items: [{ item_id: itemId, quantity: 1, modifiers }],
+    dietary_constraints: [],
+    substitution_policy: "strict",
+    metadata,
+  };
+}
+
 const openServers: import("node:http").Server[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   await Promise.all(
     openServers.splice(0).map(
       (server) =>
@@ -990,6 +1095,145 @@ describe("PlatformService", () => {
     expect(replayVersions.filter((version) => version.status === "published")).toHaveLength(1);
   });
 
+  it("records failed Deliverect menu normalization without replacing the current published menu", async () => {
+    const service = createService();
+    const admin = authenticatedPlatformAdmin();
+    const setup = await provisionDeliverectMenuRestaurant(service, "failed_menu");
+    const before = await service.getMenu(setup.provisioned.restaurant.id);
+
+    await expect(
+      service.ingestDeliverectMenuUpdate({
+        channelLinkId: "channel_link_failed_menu",
+        eventId: "menu_event_failed_menu_bad",
+        items: [{ menu: "Empty", categories: [] }],
+      }),
+    ).rejects.toThrow("No importable menu items");
+
+    const after = await service.getMenu(setup.provisioned.restaurant.id);
+    const snapshots = await service.listProviderMenuSnapshots(admin, {
+      provider: "deliverect",
+      restaurantId: setup.provisioned.restaurant.id,
+      status: "failed",
+    });
+    const versions = await service.listCanonicalMenuVersions(admin, setup.provisioned.restaurant.id);
+
+    expect(after.version?.id).toBe(before.version?.id);
+    expect(after.items.map((item) => item.id)).toEqual(before.items.map((item) => item.id));
+    expect(snapshots[0]).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        externalEventId: "menu_event_failed_menu_bad",
+        error: expect.stringContaining("No importable menu items"),
+      }),
+    );
+    expect(versions.filter((version) => version.status === "published")).toHaveLength(1);
+  });
+
+  it("blocks stale carts when a newer canonical Deliverect menu version is published", async () => {
+    const service = createService();
+    const setup = await provisionDeliverectMenuRestaurant(service, "version_drift");
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const oldVersionId = setup.menu.version!.id;
+
+    await service.ingestDeliverectMenuUpdate({
+      ...deliverectMenuPayload("version_drift", "menu_event_version_drift_2"),
+      updatedAt: "2026-06-09T18:00:00.000Z",
+    });
+
+    const validation = await service.validateOrder(
+      deliverectOrderIntent(
+        setup.provisioned.restaurant.id,
+        "stale-cart-version-drift",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: oldVersionId },
+      ),
+    );
+
+    expect(validation.valid).toBe(false);
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "menu_version_stale" }),
+      ]),
+    );
+  });
+
+  it("enforces unavailable item validation from Deliverect canonical menus", async () => {
+    const service = createService();
+    const setup = await createDeliverectProviderLocation(service, "unavailable_item");
+    const provisioned = await service.provisionProviderLocation(authenticatedPlatformAdmin(), setup.providerLocation.id);
+    await service.ingestDeliverectMenuUpdate({
+      channelLinkId: "channel_link_unavailable_item",
+      eventId: "menu_event_unavailable_item",
+      items: [
+        {
+          menu: "Lunch",
+          categories: [
+            {
+              name: "Entrees",
+              products: [{ plu: "UNAVAILABLE-ITEM", name: "Unavailable Entree", price: 1200, status: "unavailable" }],
+            },
+          ],
+        },
+      ],
+    });
+    const menu = await service.getMenu(provisioned.restaurant.id);
+
+    const validation = await service.validateOrder(
+      deliverectOrderIntent(provisioned.restaurant.id, "unavailable-item-validation", menu.items[0].id, [], {
+        menu_version_id: menu.version!.id,
+      }),
+    );
+
+    expect(validation.valid).toBe(false);
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "item_unavailable" }),
+      ]),
+    );
+  });
+
+  it("enforces Deliverect modifier required and max-selection rules", async () => {
+    const service = createService();
+    const setup = await provisionDeliverectMenuRestaurant(service, "modifier_rules");
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const [firstModifier, secondModifier] = setup.menu.modifiers;
+
+    const missingRequired = await service.validateOrder(
+      deliverectOrderIntent(setup.provisioned.restaurant.id, "missing-required-modifier", item.id, [], {
+        menu_version_id: setup.menu.version!.id,
+      }),
+    );
+    const tooMany = await service.validateOrder(
+      deliverectOrderIntent(
+        setup.provisioned.restaurant.id,
+        "too-many-modifiers",
+        item.id,
+        [
+          { modifier_group_id: group.id, modifier_id: firstModifier.id, quantity: 1 },
+          { modifier_group_id: group.id, modifier_id: secondModifier.id, quantity: 1 },
+        ],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+    );
+
+    expect(missingRequired.valid).toBe(false);
+    expect(missingRequired.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "required_modifier_missing" }),
+      ]),
+    );
+    expect(tooMany.valid).toBe(false);
+    expect(tooMany.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "too_many_modifiers" }),
+      ]),
+    );
+  });
+
   it("replaces canonical menus without deleting prior menu records", async () => {
     const service = createService();
     const repository = (service as any).repository as InMemoryPlatformRepository;
@@ -1511,7 +1755,7 @@ describe("PlatformService", () => {
     const rawPayload = JSON.stringify(menuPushPayload);
     const hmacSignature = createHmac("sha256", "channel_link_route_menu_push").update(rawPayload, "utf8").digest("hex");
 
-    const response = await fetch(`${baseUrl}/api/internal/menus/deliverect`, {
+    const response = await fetch(`${baseUrl}/api/webhooks/deliverect/channel/menu`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1560,7 +1804,13 @@ describe("PlatformService", () => {
     const { server, baseUrl } = await startServer(service);
     openServers.push(server);
 
-    const response = await fetch(`${baseUrl}/api/internal/deliverect/channel/register`, {
+    const discovery = await fetch(`${baseUrl}/api/webhooks/deliverect/channel`, {
+      headers: {
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "phantom.example.test",
+      },
+    });
+    const response = await fetch(`${baseUrl}/api/webhooks/deliverect/channel/register`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1576,15 +1826,28 @@ describe("PlatformService", () => {
       }),
     });
     const payload = await response.json();
+    const discoveryPayload = await discovery.json();
     const providerLocations = await repository.listProviderLocations();
 
+    expect(discovery.status).toBe(200);
+    expect(discoveryPayload).toEqual(
+      expect.objectContaining({
+        statusUpdateURL: "https://phantom.example.test/api/webhooks/deliverect/channel/order-status",
+        menuUpdateURL: "https://phantom.example.test/api/webhooks/deliverect/channel/menu",
+        snoozeUnsnoozeURL: "https://phantom.example.test/api/webhooks/deliverect/channel/snooze",
+        busyModeURL: "https://phantom.example.test/api/webhooks/deliverect/channel/busy-mode",
+        updatePrepTimeURL: "https://phantom.example.test/api/webhooks/deliverect/channel/prep-time",
+        courierUpdateURL: "https://phantom.example.test/api/webhooks/deliverect/channel/courier",
+        paymentUpdateURL: "https://phantom.example.test/api/webhooks/deliverect/channel/payment",
+      }),
+    );
     expect(response.status).toBe(200);
     expect(payload).toEqual(
       expect.objectContaining({
-        statusUpdateURL: "https://phantom.example.test/api/internal/deliverect/channel/order-status",
-        menuUpdateURL: "https://phantom.example.test/api/internal/deliverect/channel/menu",
-        snoozeUnsnoozeURL: "https://phantom.example.test/api/internal/deliverect/channel/snooze",
-        busyModeURL: "https://phantom.example.test/api/internal/deliverect/channel/busy-mode",
+        statusUpdateURL: "https://phantom.example.test/api/webhooks/deliverect/channel/order-status",
+        menuUpdateURL: "https://phantom.example.test/api/webhooks/deliverect/channel/menu",
+        snoozeUnsnoozeURL: "https://phantom.example.test/api/webhooks/deliverect/channel/snooze",
+        busyModeURL: "https://phantom.example.test/api/webhooks/deliverect/channel/busy-mode",
       }),
     );
     expect(providerLocations).toEqual(
@@ -1597,6 +1860,33 @@ describe("PlatformService", () => {
         }),
       ]),
     );
+  });
+
+  it("handles duplicate Deliverect Channel registration webhooks idempotently", async () => {
+    const service = createServiceWithEnv({
+      deliverectBaseUrl: "https://api.staging.deliverect.com",
+      deliverectAccountId: "acct_duplicate_registration",
+      deliverectScope: "mealops",
+    });
+    const payload = {
+      eventId: "evt_duplicate_registration",
+      status: "active",
+      channelLocationId: "external_duplicate_loc",
+      channelLinkId: "channel_link_duplicate_registration",
+      locationId: "deliverect_duplicate_loc",
+      channelLinkName: "MealOps Duplicate",
+    };
+
+    const first = await service.ingestDeliverectChannelRegistration(payload, "https://staging-phantom.up.railway.app");
+    const second = await service.ingestDeliverectChannelRegistration(payload, "https://staging-phantom.up.railway.app");
+    const locations = await service.listProviderLocations(authenticatedPlatformAdmin());
+    const events = await service.listProviderEvents(authenticatedPlatformAdmin(), { provider: "deliverect" });
+
+    expect(first.duplicate).toBe(false);
+    expect(second.duplicate).toBe(true);
+    expect(second.webhooks.menuUpdateURL).toBe("https://staging-phantom.up.railway.app/api/webhooks/deliverect/channel/menu");
+    expect(locations.filter((location) => location.channelLinkId === "channel_link_duplicate_registration")).toHaveLength(1);
+    expect(events.filter((event) => event.externalEventId === "evt_duplicate_registration")).toHaveLength(1);
   });
 
   it("applies Deliverect Channel snooze updates to canonical item availability", async () => {
@@ -1671,6 +1961,61 @@ describe("PlatformService", () => {
 
     expect(result.changedItemCount).toBe(1);
     expect(menu.items[0]).toEqual(expect.objectContaining({ availability: "unavailable" }));
+  });
+
+  it("applies Deliverect unsnooze and busy mode updates idempotently", async () => {
+    const service = createService();
+    const admin = authenticatedPlatformAdmin();
+    const setup = await provisionDeliverectMenuRestaurant(service, "busy_unsnooze");
+    const item = setup.menu.items[0];
+
+    const snooze = await service.ingestDeliverectChannelSnoozeUpdate({
+      eventId: "evt_busy_unsnooze_snooze",
+      channelLinkId: "channel_link_busy_unsnooze",
+      operations: [
+        {
+          action: "snooze",
+          data: { items: [{ plu: item.posRef.externalId }] },
+        },
+      ],
+    });
+    const unsnooze = await service.ingestDeliverectChannelSnoozeUpdate({
+      eventId: "evt_busy_unsnooze_unsnooze",
+      channelLinkId: "channel_link_busy_unsnooze",
+      operations: [
+        {
+          action: "unsnooze",
+          data: { items: [{ plu: item.posRef.externalId }] },
+        },
+      ],
+    });
+    const busy = await service.ingestDeliverectChannelBusyMode({
+      eventId: "evt_busy_unsnooze_busy",
+      channelLinkId: "channel_link_busy_unsnooze",
+      status: "paused",
+      until: "2026-06-09T20:00:00.000Z",
+    });
+    const replayBusy = await service.ingestDeliverectChannelBusyMode({
+      eventId: "evt_busy_unsnooze_busy",
+      channelLinkId: "channel_link_busy_unsnooze",
+      status: "paused",
+      until: "2026-06-09T20:00:00.000Z",
+    });
+    const menu = await service.getMenu(setup.provisioned.restaurant.id);
+    const locations = await service.listProviderLocations(admin, setup.account.id);
+
+    expect(snooze.changedItemCount).toBe(1);
+    expect(unsnooze.changedItemCount).toBe(1);
+    expect(menu.items[0]).toEqual(expect.objectContaining({ availability: "available" }));
+    expect(busy.providerLocationStatus).toBe("disabled");
+    expect(replayBusy.eventId).toBe(busy.eventId);
+    expect(locations[0].rawProviderPayload.channelState).toEqual(
+      expect.objectContaining({
+        busyMode: expect.objectContaining({
+          payload: expect.objectContaining({ status: "paused" }),
+        }),
+      }),
+    );
   });
 
   it("lists and returns provider event ingestion records for platform admins", async () => {
@@ -1781,6 +2126,28 @@ describe("PlatformService", () => {
     expect(completedEvents).toHaveLength(1);
   });
 
+  it("stores unknown Deliverect order statuses without changing Phantom order state and replays safely", async () => {
+    const service = createService();
+    const order = await submitSampleOrder(service, "deliverect-event-ref-unknown");
+    const before = await service.getOrder(order.restaurantId, order.id);
+    const payload = {
+      id: "evt_deliverect_unknown_status",
+      type: "order_status",
+      status: "waiting_for_provider_magic",
+      channelOrderId: "deliverect-event-ref-unknown",
+      timeStamp: "2026-06-09T18:30:00.000Z",
+    };
+
+    const first = await service.ingestProviderEvent("deliverect", "order_status", payload);
+    const replay = await service.ingestProviderEvent("deliverect", "order_status", payload);
+    const after = await service.getOrder(order.restaurantId, order.id);
+
+    expect(first.status).toBe("received");
+    expect(replay.id).toBe(first.id);
+    expect(after.order.status).toBe(before.order.status);
+    expect(after.statusEvents.filter((event) => event.providerEventId === "evt_deliverect_unknown_status")).toHaveLength(0);
+  });
+
   it("ignores out-of-order Deliverect events after terminal statuses", async () => {
     const service = createService();
     const order = await submitSampleOrder(service, "deliverect-event-ref-terminal");
@@ -1811,6 +2178,142 @@ describe("PlatformService", () => {
         expect.objectContaining({
           status: "accepted",
           message: "Deliverect checkout.accepted reported accepted.",
+        }),
+      ]),
+    );
+  });
+
+  it("retries transient Deliverect create-order failures and records retry history", async () => {
+    const service = createServiceWithEnv({
+      deliverectBaseUrl: "https://deliverect.staging.test",
+      deliverectAccessToken: "staging-token",
+      deliverectScope: "mealops",
+      deliverectRequestTimeoutMs: 1000,
+      posRetryBaseDelayMs: 1,
+    });
+    const setup = await provisionDeliverectMenuRestaurant(service, "retry_success");
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "temporary outage" }), { status: 500 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ channelOrderId: "deliverect_retry_order_1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const order = await service.submitAgentOrder(
+      deliverectOrderIntent(
+        setup.provisioned.restaurant.id,
+        "deliverect-retry-success",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+    );
+    const submission = await service.submitOrderToPOS(setup.provisioned.restaurant.id, order.id);
+    const detail = await service.getOrder(setup.provisioned.restaurant.id, order.id);
+    const submittedPayload = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://deliverect.staging.test/mealops/order/channel_link_retry_success");
+    expect(submission).toEqual(
+      expect.objectContaining({
+        status: "submitted",
+        externalOrderId: "deliverect_retry_order_1",
+      }),
+    );
+    expect(submittedPayload).toEqual(
+      expect.objectContaining({
+        channelLinkId: "channel_link_retry_success",
+        items: [
+          expect.objectContaining({
+            plu: "ENTREE-retry_success",
+            subItems: [expect.objectContaining({ plu: "SAUCE-A-retry_success" })],
+          }),
+        ],
+      }),
+    );
+    expect(detail.retries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ stage: "pos_submit", attemptNumber: 1, status: "failed" }),
+        expect.objectContaining({ stage: "pos_submit", attemptNumber: 2, status: "succeeded" }),
+      ]),
+    );
+  });
+
+  it("does not duplicate Deliverect create-order calls for repeated POS submissions", async () => {
+    const service = createServiceWithEnv({
+      deliverectBaseUrl: "https://deliverect.staging.test",
+      deliverectAccessToken: "staging-token",
+      deliverectScope: "mealops",
+      posRetryBaseDelayMs: 1,
+    });
+    const setup = await provisionDeliverectMenuRestaurant(service, "duplicate_submit");
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ channelOrderId: "deliverect_duplicate_order_1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const order = await service.submitAgentOrder(
+      deliverectOrderIntent(
+        setup.provisioned.restaurant.id,
+        "deliverect-duplicate-submit",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+    );
+    const first = await service.submitOrderToPOS(setup.provisioned.restaurant.id, order.id);
+    const second = await service.submitOrderToPOS(setup.provisioned.restaurant.id, order.id);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(second.id).toBe(first.id);
+    expect(second.externalOrderId).toBe("deliverect_duplicate_order_1");
+  });
+
+  it("stores permanent Deliverect create-order failures for debugging", async () => {
+    const service = createServiceWithEnv({
+      deliverectBaseUrl: "https://deliverect.staging.test",
+      deliverectAccessToken: "staging-token",
+      deliverectScope: "mealops",
+      posRetryBaseDelayMs: 1,
+    });
+    const setup = await provisionDeliverectMenuRestaurant(service, "permanent_failure");
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ message: "invalid channel order" }), { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const order = await service.submitAgentOrder(
+      deliverectOrderIntent(
+        setup.provisioned.restaurant.id,
+        "deliverect-permanent-failure",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+    );
+    const submission = await service.submitOrderToPOS(setup.provisioned.restaurant.id, order.id);
+    const detail = await service.getOrder(setup.provisioned.restaurant.id, order.id);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(submission).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        externalOrderId: undefined,
+        response: { message: "invalid channel order" },
+      }),
+    );
+    expect(detail.order.status).toBe("failed");
+    expect(detail.retries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: "pos_submit",
+          attemptNumber: 1,
+          status: "succeeded",
+          responseSnapshot: expect.objectContaining({ status: "failed" }),
         }),
       ]),
     );

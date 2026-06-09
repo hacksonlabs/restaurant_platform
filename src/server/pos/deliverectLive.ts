@@ -130,6 +130,9 @@ export class DeliverectAdapterLive implements POSAdapter {
     });
     const responsePayload = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (response.status === 408 || response.status === 429 || response.status >= 500) {
+        throw deliverectError(`Deliverect channel order transient failure: ${response.status} ${this.readError(responsePayload)}`);
+      }
       return {
         ok: false,
         externalOrderId: null,
@@ -170,13 +173,17 @@ export class DeliverectAdapterLive implements POSAdapter {
     checks.push({ key: "config", ok: configured.ok, message: configured.message });
     checks.push({
       key: "account_id",
-      ok: Boolean(this.accountId(connection)),
-      message: this.accountId(connection) ? "Deliverect account ID is configured." : "Missing Deliverect account ID.",
+      ok: true,
+      message: this.accountId(connection)
+        ? "Deliverect account ID is available for diagnostics."
+        : "Deliverect account ID was not provided; Channel order routing will use channelLinkId.",
     });
     checks.push({
       key: "store_id",
-      ok: Boolean(this.storeId(connection)),
-      message: this.storeId(connection) ? "Deliverect store ID is configured." : "Missing Deliverect store ID.",
+      ok: true,
+      message: this.storeId(connection)
+        ? "Deliverect store ID is available for diagnostics."
+        : "Deliverect store ID was not provided; Channel order routing will use channelLinkId.",
     });
     checks.push({
       key: "channel_link_id",
@@ -255,12 +262,6 @@ export class DeliverectAdapterLive implements POSAdapter {
         ok: false,
         message: "Provide DELIVERECT_ACCESS_TOKEN or DELIVERECT_CLIENT_ID and DELIVERECT_CLIENT_SECRET before enabling live Deliverect mode.",
       };
-    }
-    if (!this.accountId(connection)) {
-      return { ok: false, message: "Deliverect account ID is required for live Deliverect mode." };
-    }
-    if (!this.storeId(connection)) {
-      return { ok: false, message: "Deliverect store ID is required for live Deliverect mode." };
     }
     if (!this.channelLinkId(connection)) {
       return { ok: false, message: "Deliverect channel link ID is required for live Deliverect mode." };
@@ -347,10 +348,23 @@ export class DeliverectAdapterLive implements POSAdapter {
       Authorization: `Bearer ${accessToken}`,
       ...(init.headers ?? {}),
     };
-    return fetch(`${env.deliverectBaseUrl.replace(/\/$/, "")}${path}`, {
-      ...init,
-      headers,
-    });
+    const timeoutMs = env.deliverectRequestTimeoutMs || 10_000;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(`${env.deliverectBaseUrl.replace(/\/$/, "")}${path}`, {
+        ...init,
+        headers,
+        signal: init.signal ?? controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw deliverectError(`Deliverect request timeout after ${timeoutMs}ms.`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private calculateChannelTotals(order: CanonicalOrderIntent, context: POSContext) {

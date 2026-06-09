@@ -7,6 +7,8 @@ const REQUIRED_TABLES = [
   "pos_connections",
   "provider_accounts",
   "provider_locations",
+  "provider_menu_snapshots",
+  "canonical_menu_versions",
   "canonical_menu_items",
   "canonical_modifier_groups",
   "canonical_modifiers",
@@ -39,7 +41,12 @@ const REQUIRED_TABLES = [
 const REQUIRED_COLUMNS: Record<string, readonly string[]> = {
   restaurant_locations: ["latitude", "longitude"],
   pos_connections: ["provider_account_id", "provider_location_id"],
-  canonical_menu_items: ["image_url"],
+  provider_locations: ["channel_link_id", "channel_name", "raw_provider_payload", "mapped_restaurant_id"],
+  provider_menu_snapshots: ["provider_location_id", "restaurant_id", "channel_link_id", "payload_hash", "external_event_id", "raw_payload", "error", "processed_at"],
+  canonical_menu_versions: ["provider_menu_snapshot_id", "version_hash", "status", "metadata", "published_at"],
+  canonical_menu_items: ["image_url", "menu_version_id", "sort_order", "tax_metadata", "pos_ref"],
+  canonical_modifier_groups: ["menu_version_id", "sort_order"],
+  canonical_modifiers: ["menu_version_id", "sort_order", "tax_metadata"],
   agents: ["partner_id"],
   partner_credentials: ["scopes", "revoked_at", "environment"],
   platform_admin_users: ["password_hash", "status"],
@@ -48,6 +55,8 @@ const REQUIRED_COLUMNS: Record<string, readonly string[]> = {
   order_validation_results: ["idempotency_key"],
   order_quotes: ["idempotency_key"],
   pos_order_submissions: ["payload_snapshot", "attempt_count"],
+  order_status_events: ["source", "provider", "provider_event_id", "external_status", "raw_event_ref"],
+  event_ingestion_records: ["payload_hash"],
 } as const;
 
 function authHeaders(env: AppEnv) {

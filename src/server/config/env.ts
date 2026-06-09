@@ -58,6 +58,8 @@ export interface AppEnv {
   deliverectStoreId: string;
   deliverectChannelLinkId: string;
   deliverectWebhookSecret: string;
+  deliverectRequestTimeoutMs: number;
+  posRetryBaseDelayMs: number;
   demoPhantomApiKey: string;
   restaurantAuthEmail: string;
   restaurantAuthPassword: string;
@@ -107,6 +109,8 @@ export function getEnv(): AppEnv {
     deliverectStoreId: text(process.env.DELIVERECT_STORE_ID),
     deliverectChannelLinkId: text(process.env.DELIVERECT_CHANNEL_LINK_ID),
     deliverectWebhookSecret: text(process.env.DELIVERECT_WEBHOOK_SECRET),
+    deliverectRequestTimeoutMs: int(process.env.DELIVERECT_REQUEST_TIMEOUT_MS, 10_000),
+    posRetryBaseDelayMs: int(process.env.POS_RETRY_BASE_DELAY_MS, 75),
     demoPhantomApiKey: text(process.env.DEMO_PHANTOM_API_KEY, "coachimhungry_demo_live_local_key"),
     restaurantAuthEmail: text(process.env.RESTAURANT_AUTH_EMAIL, "dev@rest.com"),
     restaurantAuthPassword: text(process.env.RESTAURANT_AUTH_PASSWORD, "password"),

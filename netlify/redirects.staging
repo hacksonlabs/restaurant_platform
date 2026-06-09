@@ -1,0 +1,4 @@
+/api/* https://staging-phantom.up.railway.app/api/:splat 200
+/mcp/* https://staging-phantom.up.railway.app/mcp/:splat 200
+/demo-images/* https://staging-phantom.up.railway.app/demo-images/:splat 200
+/* /index.html 200
