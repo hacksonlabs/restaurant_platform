@@ -1,4 +1,4 @@
-export type POSProvider = "toast" | "square" | "deliverect" | "olo";
+export type POSProvider = "mock" | "toast" | "square" | "deliverect" | "olo";
 export type OperatorRole = "owner" | "staff" | "viewer";
 export type POSConnectionStatus =
   | "not_connected"
@@ -69,6 +69,8 @@ export interface POSConnection {
   id: string;
   restaurantId: string;
   provider: POSProvider;
+  providerAccountId?: string;
+  providerLocationId?: string;
   status: POSConnectionStatus;
   mode: "mock" | "live";
   restaurantGuid?: string;
@@ -78,12 +80,83 @@ export interface POSConnection {
   metadata: Record<string, unknown>;
 }
 
+export type ProviderEnvironment = "sandbox" | "production";
+
+export interface ProviderAccount {
+  id: string;
+  provider: POSProvider;
+  externalAccountId: string;
+  displayName: string;
+  environment: ProviderEnvironment;
+  status: POSConnectionStatus;
+  metadata: Record<string, unknown>;
+  lastSyncedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProviderLocation {
+  id: string;
+  providerAccountId: string;
+  provider: POSProvider;
+  externalLocationId: string;
+  externalStoreId?: string;
+  channelLinkId?: string;
+  channelName?: string;
+  name: string;
+  address?: string;
+  timezone?: string;
+  status: POSConnectionStatus;
+  mappedRestaurantId?: string;
+  rawProviderPayload: Record<string, unknown>;
+  lastSyncedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ProviderMenuSnapshotStatus = "received" | "processed" | "failed" | "ignored";
+
+export interface ProviderMenuSnapshot {
+  id: string;
+  provider: POSProvider;
+  providerLocationId?: string;
+  restaurantId?: string;
+  channelLinkId?: string;
+  payloadHash: string;
+  externalEventId?: string;
+  status: ProviderMenuSnapshotStatus;
+  rawPayload: Record<string, unknown>;
+  error?: string;
+  receivedAt: string;
+  processedAt?: string;
+}
+
+export type CanonicalMenuVersionStatus = "draft" | "published" | "failed" | "retired";
+
+export interface CanonicalMenuVersion {
+  id: string;
+  restaurantId: string;
+  provider: POSProvider;
+  providerMenuSnapshotId?: string;
+  versionHash: string;
+  status: CanonicalMenuVersionStatus;
+  itemCount: number;
+  categoryCount: number;
+  modifierGroupCount: number;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  publishedAt?: string;
+}
+
 export interface CanonicalModifier {
   id: string;
   modifierGroupId: string;
   name: string;
   priceCents: number;
   isAvailable: boolean;
+  menuVersionId?: string;
+  sortOrder?: number;
+  taxMetadata?: Record<string, unknown>;
 }
 
 export interface CanonicalModifierGroup {
@@ -94,6 +167,8 @@ export interface CanonicalModifierGroup {
   required: boolean;
   minSelections: number;
   maxSelections: number | null;
+  menuVersionId?: string;
+  sortOrder?: number;
 }
 
 export interface CanonicalMenuItem {
@@ -107,6 +182,9 @@ export interface CanonicalMenuItem {
   availability: "available" | "unavailable";
   mappingStatus: "mapped" | "needs_review";
   modifierGroupIds: string[];
+  menuVersionId?: string;
+  sortOrder?: number;
+  taxMetadata?: Record<string, unknown>;
   posRef: {
     provider: POSProvider;
     externalId: string;
@@ -321,7 +399,7 @@ export interface RestaurantSignupInput {
   password: string;
 }
 
-export type OnboardingProvider = "deliverect" | "olo" | "pos";
+export type OnboardingProvider = "olo" | "pos";
 
 export interface OnboardingDiscoveredLocation {
   id: string;
@@ -494,6 +572,11 @@ export interface StatusEvent {
   status: AgentOrderStatus;
   message: string;
   createdAt: string;
+  source?: "manager" | "agent" | "system" | "provider";
+  provider?: POSProvider;
+  providerEventId?: string;
+  externalStatus?: string;
+  rawEventRef?: string;
 }
 
 export interface AgentOrderRecord {
@@ -599,6 +682,7 @@ export interface EventIngestionRecord {
   provider: "toast" | "deliverect";
   eventType: string;
   externalEventId?: string;
+  payloadHash?: string;
   orderId?: string;
   status: "received" | "processed" | "failed" | "ignored";
   payload: Record<string, unknown>;
@@ -703,9 +787,11 @@ export interface POSContext {
   restaurant: Restaurant;
   location: RestaurantLocation;
   connection: POSConnection;
+  menuVersion?: CanonicalMenuVersion;
   menuItems: CanonicalMenuItem[];
   modifierGroups: CanonicalModifierGroup[];
   modifiers: CanonicalModifier[];
+  menuMappings?: POSMenuMapping[];
 }
 
 export interface RestaurantReportingSnapshot {

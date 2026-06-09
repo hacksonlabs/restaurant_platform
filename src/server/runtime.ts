@@ -11,5 +11,5 @@ export async function createPlatformService(env: AppEnv) {
     ? new InMemoryPlatformRepository(env.demoPhantomApiKey)
     : new SupabasePlatformRepository(createPostgresPool(env));
   const operatorAuth = env.demoMode ? undefined : new SupabaseOperatorAuthClient(env);
-  return new PlatformService(repository, new POSAdapterRegistry(env.posMode, env), operatorAuth);
+  return new PlatformService(repository, new POSAdapterRegistry(env.posMode, env), operatorAuth, env);
 }

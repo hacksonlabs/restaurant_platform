@@ -1,0 +1,11 @@
+{
+  "id": "evt_deliverect_checkout_completed_sample",
+  "type": "checkout.completed",
+  "checkoutId": "checkout_sample_123",
+  "status": "completed",
+  "metadata": {
+    "phantomOrderReference": "replace-with-phantom-external-order-reference",
+    "phantomRestaurantId": "rest_gdczn7pb",
+    "phantomAgentId": "agent_coachimhungry"
+  }
+}

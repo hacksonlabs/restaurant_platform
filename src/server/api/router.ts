@@ -6,6 +6,7 @@ import {
   createPartnerCredentialSchema,
   createPartnerSchema,
   createTeamMemberSchema,
+  mapProviderLocationSchema,
   onboardingActivateSchema,
   onboardingAccessRequestSchema,
   onboardingDiscoverSchema,
@@ -42,6 +43,30 @@ function parseInboundProvider(value: string): "toast" | "deliverect" {
   throw new Error(`Unsupported provider ${value}.`);
 }
 
+function parseOptionalPOSProvider(value: unknown) {
+  if (value === undefined) return undefined;
+  if (value === "mock" || value === "toast" || value === "square" || value === "deliverect" || value === "olo") {
+    return value;
+  }
+  throw new Error(`Unsupported provider ${String(value)}.`);
+}
+
+function parseOptionalInboundProvider(value: unknown) {
+  if (value === undefined) return undefined;
+  if (value === "toast" || value === "deliverect") {
+    return value;
+  }
+  throw new Error(`Unsupported provider ${String(value)}.`);
+}
+
+function parseOptionalProviderEventStatus(value: unknown) {
+  if (value === undefined) return undefined;
+  if (value === "received" || value === "processed" || value === "failed" || value === "ignored") {
+    return value;
+  }
+  throw new Error(`Unsupported provider event status ${String(value)}.`);
+}
+
 function normalizeQueryText(value: unknown) {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
@@ -52,6 +77,39 @@ function parseOptionalNumber(value: unknown) {
   if (typeof value !== "string" || !value.trim()) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function firstHeaderValue(value: unknown) {
+  if (typeof value === "string" && value.trim()) return value.split(",")[0]?.trim();
+  if (Array.isArray(value)) {
+    const first = value.find((entry) => typeof entry === "string" && entry.trim());
+    return typeof first === "string" ? first.split(",")[0]?.trim() : undefined;
+  }
+  return undefined;
+}
+
+function publicWebhookBaseUrl(request: any) {
+  const explicit =
+    process.env.DELIVERECT_WEBHOOK_BASE_URL ||
+    process.env.PUBLIC_BASE_URL ||
+    process.env.APP_BASE_URL ||
+    "";
+  if (explicit.trim()) return explicit.trim().replace(/\/$/, "");
+  const forwardedProto = firstHeaderValue(request.headers["x-forwarded-proto"]);
+  const forwardedHost = firstHeaderValue(request.headers["x-forwarded-host"]);
+  const proto = forwardedProto || request.protocol || "http";
+  const host = forwardedHost || request.get?.("host") || request.headers.host;
+  if (!host) {
+    throw new Error("Unable to determine public webhook host. Set DELIVERECT_WEBHOOK_BASE_URL.");
+  }
+  return `${proto}://${host}`.replace(/\/$/, "");
+}
+
+function verifyDeliverectWebhook(service: PlatformService, request: any) {
+  service.verifyProviderWebhook("deliverect", request.headers, {
+    rawBody: request.rawBody,
+    payload: request.body,
+  });
 }
 
 export function createApiRouter(service: PlatformService) {
@@ -117,6 +175,90 @@ export function createApiRouter(service: PlatformService) {
   router.use("/restaurants", requireRestaurantSession(service));
 
   router.use("/admin", requirePlatformAdminSession(service));
+
+  router.get(
+    "/admin/provider-accounts",
+    asyncHandler(async (request, response) => {
+      const provider = parseOptionalPOSProvider(request.query.provider);
+      response.json(await service.listProviderAccounts(request.platformAdminSession!, provider));
+    }),
+  );
+
+  router.get(
+    "/admin/provider-locations",
+    asyncHandler(async (request, response) => {
+      const providerAccountId = typeof request.query.providerAccountId === "string" ? request.query.providerAccountId : undefined;
+      response.json(await service.listProviderLocations(request.platformAdminSession!, providerAccountId));
+    }),
+  );
+
+  router.get(
+    "/admin/provider-events",
+    asyncHandler(async (request, response) => {
+      response.json(
+        await service.listProviderEvents(request.platformAdminSession!, {
+          provider: parseOptionalInboundProvider(request.query.provider),
+          status: parseOptionalProviderEventStatus(request.query.status),
+          limit: parseOptionalNumber(request.query.limit),
+        }),
+      );
+    }),
+  );
+
+  router.get(
+    "/admin/provider-events/:eventId",
+    asyncHandler(async (request, response) => {
+      response.json(await service.getProviderEvent(request.platformAdminSession!, request.params.eventId));
+    }),
+  );
+
+  router.get(
+    "/admin/provider-menu-snapshots",
+    asyncHandler(async (request, response) => {
+      const providerLocationId = typeof request.query.providerLocationId === "string" ? request.query.providerLocationId : undefined;
+      const restaurantId = typeof request.query.restaurantId === "string" ? request.query.restaurantId : undefined;
+      response.json(
+        await service.listProviderMenuSnapshots(request.platformAdminSession!, {
+          provider: parseOptionalPOSProvider(request.query.provider),
+          providerLocationId,
+          restaurantId,
+          status: parseOptionalProviderEventStatus(request.query.status),
+          limit: parseOptionalNumber(request.query.limit),
+        }),
+      );
+    }),
+  );
+
+  router.get(
+    "/admin/provider-menu-snapshots/:snapshotId",
+    asyncHandler(async (request, response) => {
+      response.json(await service.getProviderMenuSnapshot(request.platformAdminSession!, request.params.snapshotId));
+    }),
+  );
+
+  router.get(
+    "/admin/canonical-menu-versions",
+    asyncHandler(async (request, response) => {
+      const restaurantId = typeof request.query.restaurantId === "string" ? request.query.restaurantId : undefined;
+      response.json(await service.listCanonicalMenuVersions(request.platformAdminSession!, restaurantId));
+    }),
+  );
+
+  router.post(
+    "/admin/provider-locations/:providerLocationId/map",
+    asyncHandler(async (request, response) => {
+      const input = mapProviderLocationSchema.parse(request.body);
+      response.json(
+        await service.mapProviderLocationToRestaurant(
+          request.platformAdminSession!,
+          request.params.providerLocationId,
+          input.restaurantId,
+          input.mode,
+          input.status,
+        ),
+      );
+    }),
+  );
 
   router.get(
     "/admin/partners",
@@ -568,6 +710,16 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.get(
+    "/agent/restaurants/:restaurantId",
+    rateLimit({ key: (request) => `agent:${request.header("x-agent-api-key") ?? request.ip ?? "local"}:restaurant-detail`, limit: 120, windowMs: 60_000, message: "Too many agent requests." }),
+    requireAgentApiKey(service),
+    asyncHandler(async (request, response) => {
+      service.assertAgentScope(request.agentKey!, "restaurants:read");
+      response.json(await service.getAgentRestaurantDetail(request.params.restaurantId, request.agentKey!.agentId));
+    }),
+  );
+
+  router.get(
     "/agent/restaurants/:restaurantId/menu",
     rateLimit({ key: (request) => `agent:${request.header("x-agent-api-key") ?? request.ip ?? "local"}:menu`, limit: 120, windowMs: 60_000, message: "Too many agent requests." }),
     requireAgentApiKey(service),
@@ -627,13 +779,98 @@ export function createApiRouter(service: PlatformService) {
   router.post(
     "/internal/events/:provider",
     asyncHandler(async (request, response) => {
+      const provider = parseInboundProvider(request.params.provider);
+      service.verifyProviderWebhook(provider, request.headers, {
+        rawBody: (request as any).rawBody,
+        payload: request.body,
+      });
       response.json(
         await service.ingestProviderEvent(
-          parseInboundProvider(request.params.provider),
+          provider,
           String(request.body?.type ?? "unknown"),
           request.body ?? {},
         ),
       );
+    }),
+  );
+
+  router.get(
+    "/internal/deliverect/channel/webhooks",
+    asyncHandler(async (request, response) => {
+      response.json(service.buildDeliverectChannelWebhookUrls(publicWebhookBaseUrl(request)));
+    }),
+  );
+
+  router.post(
+    "/internal/deliverect/channel/register",
+    asyncHandler(async (request, response) => {
+      verifyDeliverectWebhook(service, request);
+      const result = await service.ingestDeliverectChannelRegistration(request.body ?? {}, publicWebhookBaseUrl(request));
+      response.json(result.webhooks);
+    }),
+  );
+
+  router.post(
+    "/internal/deliverect/channel/menu",
+    asyncHandler(async (request, response) => {
+      verifyDeliverectWebhook(service, request);
+      response.json(await service.ingestDeliverectMenuUpdate(request.body ?? {}));
+    }),
+  );
+
+  router.post(
+    "/internal/deliverect/channel/order-status",
+    asyncHandler(async (request, response) => {
+      verifyDeliverectWebhook(service, request);
+      response.json(await service.ingestDeliverectChannelEvent("order_status", request.body ?? {}));
+    }),
+  );
+
+  router.post(
+    "/internal/deliverect/channel/snooze",
+    asyncHandler(async (request, response) => {
+      verifyDeliverectWebhook(service, request);
+      response.json(await service.ingestDeliverectChannelSnoozeUpdate(request.body ?? {}));
+    }),
+  );
+
+  router.post(
+    "/internal/deliverect/channel/busy-mode",
+    asyncHandler(async (request, response) => {
+      verifyDeliverectWebhook(service, request);
+      response.json(await service.ingestDeliverectChannelBusyMode(request.body ?? {}));
+    }),
+  );
+
+  router.post(
+    "/internal/deliverect/channel/prep-time",
+    asyncHandler(async (request, response) => {
+      verifyDeliverectWebhook(service, request);
+      response.json(await service.ingestDeliverectChannelEvent("prep_time", request.body ?? {}));
+    }),
+  );
+
+  router.post(
+    "/internal/deliverect/channel/courier",
+    asyncHandler(async (request, response) => {
+      verifyDeliverectWebhook(service, request);
+      response.json(await service.ingestDeliverectChannelEvent("courier_update", request.body ?? {}));
+    }),
+  );
+
+  router.post(
+    "/internal/deliverect/channel/payment",
+    asyncHandler(async (request, response) => {
+      verifyDeliverectWebhook(service, request);
+      response.json(await service.ingestDeliverectChannelEvent("payment_update", request.body ?? {}));
+    }),
+  );
+
+  router.post(
+    "/internal/menus/deliverect",
+    asyncHandler(async (request, response) => {
+      verifyDeliverectWebhook(service, request);
+      response.json(await service.ingestDeliverectMenuUpdate(request.body ?? {}));
     }),
   );
 

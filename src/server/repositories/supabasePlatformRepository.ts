@@ -9,6 +9,7 @@ import type {
   AgentOrderRecord,
   AuditLog,
   CanonicalMenuItem,
+  CanonicalMenuVersion,
   CanonicalModifier,
   CanonicalModifierGroup,
   EventIngestionRecord,
@@ -24,6 +25,9 @@ import type {
   POSConnection,
   POSMenuMapping,
   POSOrderSubmission,
+  ProviderAccount,
+  ProviderLocation,
+  ProviderMenuSnapshot,
   ReportingDailyMetric,
   ReportingDateRange,
   Restaurant,
@@ -44,6 +48,7 @@ import type {
 import type { OperatorIdentity } from "../auth/supabaseAuth";
 import type {
   AgentListEntry,
+  CanonicalMenuReplacement,
   DashboardStats,
   OrderDetailRecord,
   OrderGraphInput,
@@ -87,10 +92,7 @@ function mapRestaurant(row: any): Restaurant {
 }
 
 function posProviderForOnboarding(provider: OnboardingActivateInput["provider"]): Restaurant["posProvider"] {
-  if (provider === "deliverect" || provider === "olo") {
-    return provider;
-  }
-  return "toast";
+  return provider === "olo" ? "olo" : "toast";
 }
 
 function templateRestaurantNameForLocation(locationName: string) {
@@ -106,6 +108,40 @@ function onboardingLocationArea(locationName: string) {
 function templateRestaurantIdFromMetadata(metadata: Record<string, unknown> | undefined) {
   const templateRestaurantId = metadata?.templateRestaurantId;
   return typeof templateRestaurantId === "string" && templateRestaurantId ? templateRestaurantId : null;
+}
+
+const FULFILLMENT_TYPE_VALUES = new Set(["pickup", "delivery", "catering"]);
+
+function readProviderFulfillmentTypes(providerLocation: ProviderLocation) {
+  const raw = providerLocation.rawProviderPayload;
+  const candidates = [
+    raw.fulfillmentTypes,
+    raw.fulfillment_types,
+    raw.fulfillmentTypesSupported,
+    raw.fulfillment_types_supported,
+    raw.orderTypes,
+    raw.order_types,
+    raw.services,
+    raw.channelLink && typeof raw.channelLink === "object" ? (raw.channelLink as Record<string, unknown>).fulfillmentTypes : undefined,
+    raw.channelLink && typeof raw.channelLink === "object" ? (raw.channelLink as Record<string, unknown>).orderTypes : undefined,
+    raw.store && typeof raw.store === "object" ? (raw.store as Record<string, unknown>).fulfillmentTypes : undefined,
+    raw.store && typeof raw.store === "object" ? (raw.store as Record<string, unknown>).orderTypes : undefined,
+  ];
+
+  const values = candidates.flatMap((candidate) => {
+    if (Array.isArray(candidate)) return candidate;
+    if (typeof candidate === "string") return candidate.split(",");
+    return [];
+  });
+
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value).trim().toLowerCase())
+        .map((value) => value === "takeaway" || value === "takeout" || value === "collection" ? "pickup" : value)
+        .filter((value): value is "pickup" | "delivery" | "catering" => FULFILLMENT_TYPE_VALUES.has(value)),
+    ),
+  );
 }
 
 async function findExistingOnboardingRestaurantMatch(pool: Pool, locationSeed: OnboardingDiscoveredLocation) {
@@ -165,6 +201,8 @@ function mapPOSConnection(row: any): POSConnection {
     id: row.id,
     restaurantId: row.restaurant_id,
     provider: row.provider,
+    providerAccountId: row.provider_account_id ?? undefined,
+    providerLocationId: row.provider_location_id ?? undefined,
     status: row.status,
     mode: row.mode,
     restaurantGuid: row.restaurant_guid ?? undefined,
@@ -172,6 +210,76 @@ function mapPOSConnection(row: any): POSConnection {
     metadata: row.metadata ?? {},
     lastTestedAt: row.last_tested_at ?? undefined,
     lastSyncedAt: row.last_synced_at ?? undefined,
+  };
+}
+
+function mapProviderAccount(row: any): ProviderAccount {
+  return {
+    id: row.id,
+    provider: row.provider,
+    externalAccountId: row.external_account_id,
+    displayName: row.display_name,
+    environment: row.environment,
+    status: row.status,
+    metadata: row.metadata ?? {},
+    lastSyncedAt: row.last_synced_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapProviderLocation(row: any): ProviderLocation {
+  return {
+    id: row.id,
+    providerAccountId: row.provider_account_id,
+    provider: row.provider,
+    externalLocationId: row.external_location_id,
+    externalStoreId: row.external_store_id ?? undefined,
+    channelLinkId: row.channel_link_id ?? undefined,
+    channelName: row.channel_name ?? undefined,
+    name: row.name,
+    address: row.address ?? undefined,
+    timezone: row.timezone ?? undefined,
+    status: row.status,
+    mappedRestaurantId: row.mapped_restaurant_id ?? undefined,
+    rawProviderPayload: row.raw_provider_payload ?? {},
+    lastSyncedAt: row.last_synced_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapProviderMenuSnapshot(row: any): ProviderMenuSnapshot {
+  return {
+    id: row.id,
+    provider: row.provider,
+    providerLocationId: row.provider_location_id ?? undefined,
+    restaurantId: row.restaurant_id ?? undefined,
+    channelLinkId: row.channel_link_id ?? undefined,
+    payloadHash: row.payload_hash,
+    externalEventId: row.external_event_id ?? undefined,
+    status: row.status,
+    rawPayload: row.raw_payload ?? {},
+    error: row.error ?? undefined,
+    receivedAt: isoTimestamp(row.received_at),
+    processedAt: row.processed_at ? isoTimestamp(row.processed_at) : undefined,
+  };
+}
+
+function mapCanonicalMenuVersion(row: any): CanonicalMenuVersion {
+  return {
+    id: row.id,
+    restaurantId: row.restaurant_id,
+    provider: row.provider,
+    providerMenuSnapshotId: row.provider_menu_snapshot_id ?? undefined,
+    versionHash: row.version_hash,
+    status: row.status,
+    itemCount: row.item_count,
+    categoryCount: row.category_count,
+    modifierGroupCount: row.modifier_group_count,
+    metadata: row.metadata ?? {},
+    createdAt: isoTimestamp(row.created_at),
+    publishedAt: row.published_at ? isoTimestamp(row.published_at) : undefined,
   };
 }
 
@@ -184,6 +292,8 @@ function mapModifierGroup(row: any): CanonicalModifierGroup {
     required: row.required,
     minSelections: row.min_selections,
     maxSelections: row.max_selections,
+    menuVersionId: row.menu_version_id ?? undefined,
+    sortOrder: row.sort_order ?? undefined,
   };
 }
 
@@ -194,6 +304,9 @@ function mapModifier(row: any): CanonicalModifier {
     name: row.name,
     priceCents: row.price_cents,
     isAvailable: row.is_available,
+    menuVersionId: row.menu_version_id ?? undefined,
+    sortOrder: row.sort_order ?? undefined,
+    taxMetadata: row.tax_metadata ?? undefined,
   };
 }
 
@@ -209,6 +322,9 @@ function mapMenuItem(row: any): CanonicalMenuItem {
     availability: row.availability,
     mappingStatus: row.mapping_status,
     modifierGroupIds: row.modifier_group_ids ?? [],
+    menuVersionId: row.menu_version_id ?? undefined,
+    sortOrder: row.sort_order ?? undefined,
+    taxMetadata: row.tax_metadata ?? undefined,
     posRef: row.pos_ref ?? {},
   };
 }
@@ -421,7 +537,12 @@ function mapStatusEvent(row: any): StatusEvent {
     orderId: row.order_id,
     status: row.status,
     message: row.message,
-    createdAt: row.created_at,
+    createdAt: isoTimestamp(row.created_at),
+    source: row.source ?? undefined,
+    provider: row.provider ?? undefined,
+    providerEventId: row.provider_event_id ?? undefined,
+    externalStatus: row.external_status ?? undefined,
+    rawEventRef: row.raw_event_ref ?? undefined,
   };
 }
 
@@ -492,6 +613,7 @@ function mapEventIngestion(row: any): EventIngestionRecord {
     provider: row.provider,
     eventType: row.event_type,
     externalEventId: row.external_event_id ?? undefined,
+    payloadHash: row.payload_hash ?? undefined,
     orderId: row.order_id ?? undefined,
     status: row.status,
     payload: row.payload ?? {},
@@ -1358,18 +1480,22 @@ export class SupabasePlatformRepository implements PlatformRepository {
     const result = await this.pool.query(
       `update pos_connections
        set provider = $2,
-           status = $3,
-           mode = $4,
-           restaurant_guid = $5,
-           location_id = $6,
-           metadata = $7::jsonb,
-           last_tested_at = $8,
-           last_synced_at = $9
+           provider_account_id = $3,
+           provider_location_id = $4,
+           status = $5,
+           mode = $6,
+           restaurant_guid = $7,
+           location_id = $8,
+           metadata = $9::jsonb,
+           last_tested_at = $10,
+           last_synced_at = $11
        where id = $1
        returning *`,
       [
         connectionId,
         updated.provider,
+        updated.providerAccountId ?? null,
+        updated.providerLocationId ?? null,
         updated.status,
         updated.mode,
         updated.restaurantGuid ?? null,
@@ -1380,6 +1506,325 @@ export class SupabasePlatformRepository implements PlatformRepository {
       ],
     );
     return mapPOSConnection(result.rows[0]);
+  }
+
+  async listProviderAccounts(provider?: POSConnection["provider"]) {
+    const result = provider
+      ? await this.pool.query("select * from provider_accounts where provider = $1 order by updated_at desc", [provider])
+      : await this.pool.query("select * from provider_accounts order by updated_at desc");
+    return result.rows.map(mapProviderAccount);
+  }
+
+  async upsertProviderAccount(input: Omit<ProviderAccount, "id" | "createdAt" | "updatedAt"> & { id?: string }) {
+    const now = new Date().toISOString();
+    const id = input.id ?? createId("provideracct");
+    const result = await this.pool.query(
+      `insert into provider_accounts
+       (id, provider, external_account_id, display_name, environment, status, metadata, last_synced_at, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $9)
+       on conflict (provider, external_account_id, environment) do update set
+         display_name = excluded.display_name,
+         status = excluded.status,
+         metadata = excluded.metadata,
+         last_synced_at = excluded.last_synced_at,
+         updated_at = excluded.updated_at
+       returning *`,
+      [
+        id,
+        input.provider,
+        input.externalAccountId,
+        input.displayName,
+        input.environment,
+        input.status,
+        JSON.stringify(input.metadata ?? {}),
+        input.lastSyncedAt ?? null,
+        now,
+      ],
+    );
+    return mapProviderAccount(result.rows[0]);
+  }
+
+  async listProviderLocations(providerAccountId?: string) {
+    const result = providerAccountId
+      ? await this.pool.query(
+          "select * from provider_locations where provider_account_id = $1 order by name asc, channel_name asc nulls last",
+          [providerAccountId],
+        )
+      : await this.pool.query("select * from provider_locations order by updated_at desc");
+    return result.rows.map(mapProviderLocation);
+  }
+
+  async upsertProviderLocation(input: Omit<ProviderLocation, "id" | "createdAt" | "updatedAt"> & { id?: string }) {
+    const now = new Date().toISOString();
+    const id = input.id ?? createId("providerloc");
+    const existing = await this.pool.query(
+      `select id from provider_locations
+       where provider_account_id = $1
+         and (
+           (
+             external_location_id = $2
+             and coalesce(channel_link_id, '') = coalesce($3, '')
+           )
+           or (
+             $3 is not null
+             and channel_link_id = $3
+           )
+         )
+       limit 1`,
+      [input.providerAccountId, input.externalLocationId, input.channelLinkId ?? null],
+    );
+    const recordId = (existing.rows[0]?.id as string | undefined) ?? id;
+    const result = await this.pool.query(
+      `insert into provider_locations
+       (id, provider_account_id, provider, external_location_id, external_store_id, channel_link_id, channel_name, name, address, timezone, status, mapped_restaurant_id, raw_provider_payload, last_synced_at, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $15)
+       on conflict (id) do update set
+         provider = excluded.provider,
+         external_location_id = excluded.external_location_id,
+         external_store_id = excluded.external_store_id,
+         channel_link_id = excluded.channel_link_id,
+         channel_name = excluded.channel_name,
+         name = excluded.name,
+         address = excluded.address,
+         timezone = excluded.timezone,
+         status = excluded.status,
+         mapped_restaurant_id = coalesce(provider_locations.mapped_restaurant_id, excluded.mapped_restaurant_id),
+         raw_provider_payload = excluded.raw_provider_payload,
+         last_synced_at = excluded.last_synced_at,
+         updated_at = excluded.updated_at
+       returning *`,
+      [
+        recordId,
+        input.providerAccountId,
+        input.provider,
+        input.externalLocationId,
+        input.externalStoreId ?? null,
+        input.channelLinkId ?? null,
+        input.channelName ?? null,
+        input.name,
+        input.address ?? null,
+        input.timezone ?? null,
+        input.status,
+        input.mappedRestaurantId ?? null,
+        JSON.stringify(input.rawProviderPayload ?? {}),
+        input.lastSyncedAt ?? null,
+        now,
+      ],
+    );
+    return mapProviderLocation(result.rows[0]);
+  }
+
+  async mapProviderLocationToRestaurant(input: {
+    providerLocationId: string;
+    restaurantId: string;
+    mode: POSConnection["mode"];
+    status: POSConnection["status"];
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const providerLocationResult = await client.query("select * from provider_locations where id = $1 limit 1", [
+        input.providerLocationId,
+      ]);
+      const providerLocation = providerLocationResult.rows[0] ? mapProviderLocation(providerLocationResult.rows[0]) : null;
+      if (!providerLocation) throw required(null, `Provider location ${input.providerLocationId} not found.`);
+
+      const providerAccountResult = await client.query("select * from provider_accounts where id = $1 limit 1", [
+        providerLocation.providerAccountId,
+      ]);
+      const providerAccount = providerAccountResult.rows[0] ? mapProviderAccount(providerAccountResult.rows[0]) : null;
+      if (!providerAccount) throw required(null, `Provider account ${providerLocation.providerAccountId} not found.`);
+
+      const currentResult = await client.query("select * from pos_connections where restaurant_id = $1 limit 1", [
+        input.restaurantId,
+      ]);
+      const current = currentResult.rows[0] ? mapPOSConnection(currentResult.rows[0]) : null;
+      if (!current) throw required(null, `POS connection for restaurant ${input.restaurantId} not found.`);
+
+      const metadata = {
+        ...current.metadata,
+        providerAccountRecordId: providerAccount.id,
+        providerLocationRecordId: providerLocation.id,
+        deliverectAccountId: providerAccount.externalAccountId,
+        deliverectStoreId: providerLocation.externalStoreId ?? providerLocation.externalLocationId,
+        deliverectLocationId: providerLocation.externalLocationId,
+        deliverectChannelLinkId: providerLocation.channelLinkId ?? providerLocation.externalLocationId,
+        deliverectChannelName: providerLocation.channelName,
+        rawProviderLocation: providerLocation.rawProviderPayload,
+      };
+
+      const updateResult = await client.query(
+        `update pos_connections
+         set provider = $2,
+             provider_account_id = $3,
+             provider_location_id = $4,
+             status = $5,
+             mode = $6,
+             location_id = $7,
+             metadata = $8::jsonb,
+             last_synced_at = $9
+         where id = $1
+         returning *`,
+        [
+          current.id,
+          providerLocation.provider,
+          providerAccount.id,
+          providerLocation.id,
+          input.status,
+          input.mode,
+          providerLocation.externalLocationId,
+          JSON.stringify(metadata),
+          providerLocation.lastSyncedAt ?? new Date().toISOString(),
+        ],
+      );
+      await client.query(
+        "update provider_locations set mapped_restaurant_id = $2, updated_at = $3 where id = $1",
+        [providerLocation.id, input.restaurantId, new Date().toISOString()],
+      );
+      await client.query(
+        "update restaurants set pos_provider = $2, updated_at = $3 where id = $1",
+        [input.restaurantId, providerLocation.provider, new Date().toISOString()],
+      );
+      await client.query("commit");
+      return mapPOSConnection(updateResult.rows[0]);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async provisionRestaurantFromProviderLocation(input: {
+    providerLocationId: string;
+    contactEmail: string;
+    contactPhone: string;
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const providerLocationResult = await client.query("select * from provider_locations where id = $1 limit 1", [
+        input.providerLocationId,
+      ]);
+      const providerLocation = providerLocationResult.rows[0] ? mapProviderLocation(providerLocationResult.rows[0]) : null;
+      if (!providerLocation) throw required(null, `Provider location ${input.providerLocationId} not found.`);
+
+      if (providerLocation.mappedRestaurantId) {
+        const restaurantResult = await client.query("select * from restaurants where id = $1 limit 1", [
+          providerLocation.mappedRestaurantId,
+        ]);
+        const connectionResult = await client.query("select * from pos_connections where restaurant_id = $1 limit 1", [
+          providerLocation.mappedRestaurantId,
+        ]);
+        const restaurant = restaurantResult.rows[0] ? mapRestaurant(restaurantResult.rows[0]) : null;
+        const connection = connectionResult.rows[0] ? mapPOSConnection(connectionResult.rows[0]) : null;
+        if (!restaurant || !connection) throw required(null, `Mapped restaurant ${providerLocation.mappedRestaurantId} is incomplete.`);
+        await client.query("commit");
+        return { restaurant, connection, providerLocation, created: false };
+      }
+
+      const providerAccountResult = await client.query("select * from provider_accounts where id = $1 limit 1", [
+        providerLocation.providerAccountId,
+      ]);
+      const providerAccount = providerAccountResult.rows[0] ? mapProviderAccount(providerAccountResult.rows[0]) : null;
+      if (!providerAccount) throw required(null, `Provider account ${providerLocation.providerAccountId} not found.`);
+
+      const now = new Date().toISOString();
+      const restaurantId = createId("rest");
+      const locationId = createId("loc");
+      const posConnectionId = createId("posconn");
+      const rulesId = createId("rules");
+      const permissionId = createId("perm");
+      const coachAgent = await client.query("select id from agents where slug = 'coachimhungry' limit 1");
+      const coachAgentId = coachAgent.rows[0]?.id as string | undefined;
+      const fulfillmentTypes = readProviderFulfillmentTypes(providerLocation);
+      const metadata = {
+        source: "provider_provisioning",
+        providerAccountRecordId: providerAccount.id,
+        providerLocationRecordId: providerLocation.id,
+        deliverectAccountId: providerAccount.externalAccountId,
+        deliverectStoreId: providerLocation.externalStoreId ?? providerLocation.externalLocationId,
+        deliverectLocationId: providerLocation.externalLocationId,
+        deliverectChannelLinkId: providerLocation.channelLinkId ?? providerLocation.externalLocationId,
+        deliverectChannelName: providerLocation.channelName,
+        rawProviderLocation: providerLocation.rawProviderPayload,
+      };
+
+      const restaurantResult = await client.query(
+        `insert into restaurants
+         (id, name, location, timezone, pos_provider, agent_ordering_enabled, default_approval_mode, contact_email, contact_phone, fulfillment_types_supported, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, true, 'auto', $6, $7, $8::text[], $9, $9)
+         returning *`,
+        [
+          restaurantId,
+          providerLocation.name,
+          providerLocation.address ?? providerLocation.name,
+          providerLocation.timezone ?? "America/Los_Angeles",
+          providerLocation.provider,
+          input.contactEmail,
+          input.contactPhone,
+          fulfillmentTypes,
+          now,
+        ],
+      );
+
+      await client.query(
+        `insert into restaurant_locations
+         (id, restaurant_id, name, address1, city, state, postal_code)
+         values ($1, $2, $3, $4, '', '', '')`,
+        [locationId, restaurantId, providerLocation.name, providerLocation.address ?? providerLocation.name],
+      );
+
+      const connectionResult = await client.query(
+        `insert into pos_connections
+         (id, restaurant_id, provider, provider_account_id, provider_location_id, status, mode, restaurant_guid, location_id, metadata, last_tested_at, last_synced_at)
+         values ($1, $2, $3, $4, $5, 'sandbox', 'live', null, $6, $7::jsonb, null, $8)
+         returning *`,
+        [
+          posConnectionId,
+          restaurantId,
+          providerLocation.provider,
+          providerAccount.id,
+          providerLocation.id,
+          providerLocation.externalLocationId,
+          JSON.stringify(metadata),
+          providerLocation.lastSyncedAt ?? now,
+        ],
+      );
+
+      await client.query(
+        `insert into ordering_rules
+         (id, restaurant_id, minimum_lead_time_minutes, max_order_dollar_amount, max_item_quantity, max_headcount, auto_accept_enabled, manager_approval_threshold_cents, blackout_windows, allowed_fulfillment_types, substitution_policy, payment_policy, allowed_agent_ids)
+         values ($1, $2, 0, 2147483647, 2147483647, 2147483647, true, 2147483647, '[]'::jsonb, $3::text[], 'allow_equivalent', 'required_before_submit', $4::text[])`,
+        [rulesId, restaurantId, fulfillmentTypes, coachAgentId ? [coachAgentId] : []],
+      );
+
+      if (coachAgentId) {
+        await client.query(
+          `insert into restaurant_agent_permissions
+           (id, restaurant_id, agent_id, status, notes, last_activity_at)
+           values ($1, $2, $3, 'allowed', 'Auto-allowed during provider location provisioning.', $4)`,
+          [permissionId, restaurantId, coachAgentId, now],
+        );
+      }
+
+      const mappedProviderLocationResult = await client.query(
+        "update provider_locations set mapped_restaurant_id = $2, updated_at = $3 where id = $1 returning *",
+        [providerLocation.id, restaurantId, now],
+      );
+      await client.query("commit");
+      return {
+        restaurant: mapRestaurant(restaurantResult.rows[0]),
+        connection: mapPOSConnection(connectionResult.rows[0]),
+        providerLocation: mapProviderLocation(mappedProviderLocationResult.rows[0]),
+        created: true,
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getLocation(restaurantId: string) {
@@ -1396,28 +1841,373 @@ export class SupabasePlatformRepository implements PlatformRepository {
       templateRestaurantIdFromMetadata(connection?.metadata) ?? (await inferTemplateRestaurantIdForRestaurant(this.pool, restaurantId));
     const sourceRestaurantId =
       itemCountResult.rows[0]?.count > 0 || !templateRestaurantId ? restaurantId : templateRestaurantId;
+    const version = await this.getLatestPublishedMenuVersion(sourceRestaurantId);
+    const versionClause = version ? "and menu_version_id = $2" : "";
+    const versionValues = version ? [sourceRestaurantId, version.id] : [sourceRestaurantId];
 
     const [items, groups, modifiers, mappings] = await Promise.all([
-      this.pool.query("select * from canonical_menu_items where restaurant_id = $1 order by category, name", [sourceRestaurantId]),
-      this.pool.query("select * from canonical_modifier_groups where restaurant_id = $1 order by name", [sourceRestaurantId]),
+      this.pool.query(
+        `select * from canonical_menu_items where restaurant_id = $1 ${versionClause} order by sort_order nulls last, category, name`,
+        versionValues,
+      ),
+      this.pool.query(
+        `select * from canonical_modifier_groups where restaurant_id = $1 ${versionClause} order by sort_order nulls last, name`,
+        versionValues,
+      ),
       this.pool.query(
         `select m.*
          from canonical_modifiers m
          join canonical_modifier_groups g on g.id = m.modifier_group_id
          where g.restaurant_id = $1
-         order by m.name`,
-        [sourceRestaurantId],
+           ${version ? "and m.menu_version_id = $2" : ""}
+         order by m.sort_order nulls last, m.name`,
+        versionValues,
       ),
       this.pool.query("select * from pos_menu_mappings where restaurant_id = $1 order by canonical_type, canonical_id", [
         sourceRestaurantId,
       ]),
     ]);
+    const canonicalIds = new Set([
+      ...items.rows.map((row) => row.id),
+      ...groups.rows.map((row) => row.id),
+      ...modifiers.rows.map((row) => row.id),
+    ]);
     return {
+      version: version ? { ...version, restaurantId } : undefined,
       items: items.rows.map((row) => ({ ...mapMenuItem(row), restaurantId })),
       modifierGroups: groups.rows.map((row) => ({ ...mapModifierGroup(row), restaurantId })),
       modifiers: modifiers.rows.map(mapModifier),
-      mappings: mappings.rows.map((row) => ({ ...mapMapping(row), restaurantId })),
+      mappings: mappings.rows
+        .filter((row) => !version || canonicalIds.has(row.canonical_id))
+        .map((row) => ({ ...mapMapping(row), restaurantId })),
     };
+  }
+
+  async replaceCanonicalMenu(restaurantId: string, menu: CanonicalMenuReplacement, menuVersionId?: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("delete from pos_menu_mappings where restaurant_id = $1", [restaurantId]);
+      await client.query(
+        "update canonical_menu_items set availability = 'unavailable', mapping_status = 'needs_review' where restaurant_id = $1",
+        [restaurantId],
+      );
+
+      for (const group of menu.modifierGroups) {
+        await client.query(
+          `insert into canonical_modifier_groups
+           (id, restaurant_id, name, selection_type, required, min_selections, max_selections, menu_version_id, sort_order)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           on conflict (id) do update set
+             restaurant_id = excluded.restaurant_id,
+             name = excluded.name,
+             selection_type = excluded.selection_type,
+             required = excluded.required,
+             min_selections = excluded.min_selections,
+             max_selections = excluded.max_selections,
+             menu_version_id = excluded.menu_version_id,
+             sort_order = excluded.sort_order`,
+          [
+            group.id,
+            restaurantId,
+            group.name,
+            group.selectionType,
+            group.required,
+            group.minSelections,
+            group.maxSelections,
+            group.menuVersionId ?? menuVersionId ?? null,
+            group.sortOrder ?? null,
+          ],
+        );
+      }
+
+      for (const modifier of menu.modifiers) {
+        await client.query(
+          `insert into canonical_modifiers
+           (id, modifier_group_id, name, price_cents, is_available, menu_version_id, sort_order, tax_metadata)
+           values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+           on conflict (id) do update set
+             modifier_group_id = excluded.modifier_group_id,
+             name = excluded.name,
+             price_cents = excluded.price_cents,
+             is_available = excluded.is_available,
+             menu_version_id = excluded.menu_version_id,
+             sort_order = excluded.sort_order,
+             tax_metadata = excluded.tax_metadata`,
+          [
+            modifier.id,
+            modifier.modifierGroupId,
+            modifier.name,
+            modifier.priceCents,
+            modifier.isAvailable,
+            modifier.menuVersionId ?? menuVersionId ?? null,
+            modifier.sortOrder ?? null,
+            JSON.stringify(modifier.taxMetadata ?? {}),
+          ],
+        );
+      }
+
+      for (const item of menu.items) {
+        await client.query(
+          `insert into canonical_menu_items
+           (id, restaurant_id, category, name, description, image_url, price_cents, availability, mapping_status, modifier_group_ids, menu_version_id, sort_order, tax_metadata, pos_ref)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text[], $11, $12, $13::jsonb, $14::jsonb)
+           on conflict (id) do update set
+             restaurant_id = excluded.restaurant_id,
+             category = excluded.category,
+             name = excluded.name,
+             description = excluded.description,
+             image_url = excluded.image_url,
+             price_cents = excluded.price_cents,
+             availability = excluded.availability,
+             mapping_status = excluded.mapping_status,
+             modifier_group_ids = excluded.modifier_group_ids,
+             menu_version_id = excluded.menu_version_id,
+             sort_order = excluded.sort_order,
+             tax_metadata = excluded.tax_metadata,
+             pos_ref = excluded.pos_ref`,
+          [
+            item.id,
+            restaurantId,
+            item.category,
+            item.name,
+            item.description,
+            item.imageUrl ?? null,
+            item.priceCents,
+            item.availability,
+            item.mappingStatus,
+            item.modifierGroupIds,
+            item.menuVersionId ?? menuVersionId ?? null,
+            item.sortOrder ?? null,
+            JSON.stringify(item.taxMetadata ?? {}),
+            JSON.stringify(item.posRef),
+          ],
+        );
+      }
+
+      for (const mapping of menu.mappings) {
+        await client.query(
+          `insert into pos_menu_mappings
+           (id, restaurant_id, canonical_type, canonical_id, provider, provider_reference, status)
+           values ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            mapping.id,
+            restaurantId,
+            mapping.canonicalType,
+            mapping.canonicalId,
+            mapping.provider,
+            mapping.providerReference,
+            mapping.status,
+          ],
+        );
+      }
+
+      await client.query("commit");
+      return {
+        items: menu.items.map((entry) => ({ ...entry, restaurantId, menuVersionId: entry.menuVersionId ?? menuVersionId })),
+        modifierGroups: menu.modifierGroups.map((entry) => ({ ...entry, restaurantId, menuVersionId: entry.menuVersionId ?? menuVersionId })),
+        modifiers: menu.modifiers.map((entry) => ({ ...entry, menuVersionId: entry.menuVersionId ?? menuVersionId })),
+        mappings: menu.mappings.map((entry) => ({ ...entry, restaurantId })),
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async saveProviderMenuSnapshot(snapshot: Omit<ProviderMenuSnapshot, "id" | "receivedAt"> & { id?: string; receivedAt?: string }) {
+    const result = await this.pool.query(
+      `insert into provider_menu_snapshots
+       (id, provider, provider_location_id, restaurant_id, channel_link_id, payload_hash, external_event_id, status, raw_payload, error, received_at, processed_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
+       returning *`,
+      [
+        snapshot.id ?? createId("menusnap"),
+        snapshot.provider,
+        snapshot.providerLocationId ?? null,
+        snapshot.restaurantId ?? null,
+        snapshot.channelLinkId ?? null,
+        snapshot.payloadHash,
+        snapshot.externalEventId ?? null,
+        snapshot.status,
+        JSON.stringify(snapshot.rawPayload),
+        snapshot.error ?? null,
+        snapshot.receivedAt ?? new Date().toISOString(),
+        snapshot.processedAt ?? null,
+      ],
+    );
+    return mapProviderMenuSnapshot(result.rows[0]);
+  }
+
+  async updateProviderMenuSnapshot(snapshotId: string, patch: Partial<Pick<ProviderMenuSnapshot, "status" | "error" | "processedAt" | "providerLocationId" | "restaurantId" | "channelLinkId">>) {
+    const current = required(
+      (await this.pool.query("select * from provider_menu_snapshots where id = $1 limit 1", [snapshotId])).rows[0],
+      `Provider menu snapshot ${snapshotId} not found.`,
+    );
+    const merged = { ...mapProviderMenuSnapshot(current), ...patch };
+    const result = await this.pool.query(
+      `update provider_menu_snapshots
+       set provider_location_id = $2,
+           restaurant_id = $3,
+           channel_link_id = $4,
+           status = $5,
+           error = $6,
+           processed_at = $7
+       where id = $1
+       returning *`,
+      [
+        snapshotId,
+        merged.providerLocationId ?? null,
+        merged.restaurantId ?? null,
+        merged.channelLinkId ?? null,
+        merged.status,
+        merged.error ?? null,
+        merged.processedAt ?? null,
+      ],
+    );
+    return mapProviderMenuSnapshot(result.rows[0]);
+  }
+
+  async findProviderMenuSnapshot(provider: ProviderMenuSnapshot["provider"], lookup: { externalEventId?: string; payloadHash?: string; excludeId?: string }) {
+    const values: unknown[] = [provider];
+    const conditions = ["provider = $1"];
+    if (lookup.excludeId) {
+      values.push(lookup.excludeId);
+      conditions.push(`id <> $${values.length}`);
+    }
+    if (lookup.externalEventId) {
+      values.push(lookup.externalEventId);
+      conditions.push(`external_event_id = $${values.length}`);
+    } else if (lookup.payloadHash) {
+      values.push(lookup.payloadHash);
+      conditions.push(`payload_hash = $${values.length}`);
+    } else {
+      return null;
+    }
+    const result = await this.pool.query(
+      `select * from provider_menu_snapshots
+       where ${conditions.join(" and ")}
+       order by received_at desc
+       limit 1`,
+      values,
+    );
+    return result.rows[0] ? mapProviderMenuSnapshot(result.rows[0]) : null;
+  }
+
+  async listProviderMenuSnapshots(filter: {
+    provider?: ProviderMenuSnapshot["provider"];
+    providerLocationId?: string;
+    restaurantId?: string;
+    status?: ProviderMenuSnapshot["status"];
+    limit?: number;
+  } = {}) {
+    const values: unknown[] = [];
+    const conditions: string[] = [];
+    if (filter.provider) {
+      values.push(filter.provider);
+      conditions.push(`provider = $${values.length}`);
+    }
+    if (filter.providerLocationId) {
+      values.push(filter.providerLocationId);
+      conditions.push(`provider_location_id = $${values.length}`);
+    }
+    if (filter.restaurantId) {
+      values.push(filter.restaurantId);
+      conditions.push(`restaurant_id = $${values.length}`);
+    }
+    if (filter.status) {
+      values.push(filter.status);
+      conditions.push(`status = $${values.length}`);
+    }
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+    values.push(limit);
+    const where = conditions.length > 0 ? `where ${conditions.join(" and ")}` : "";
+    const result = await this.pool.query(
+      `select * from provider_menu_snapshots ${where} order by received_at desc limit $${values.length}`,
+      values,
+    );
+    return result.rows.map(mapProviderMenuSnapshot);
+  }
+
+  async getProviderMenuSnapshot(snapshotId: string) {
+    const result = await this.pool.query("select * from provider_menu_snapshots where id = $1 limit 1", [snapshotId]);
+    return result.rows[0] ? mapProviderMenuSnapshot(result.rows[0]) : null;
+  }
+
+  async createCanonicalMenuVersion(input: Omit<CanonicalMenuVersion, "id" | "createdAt" | "publishedAt"> & { id?: string; createdAt?: string; publishedAt?: string }) {
+    const result = await this.pool.query(
+      `insert into canonical_menu_versions
+       (id, restaurant_id, provider, provider_menu_snapshot_id, version_hash, status, item_count, category_count, modifier_group_count, metadata, created_at, published_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
+       returning *`,
+      [
+        input.id ?? createId("menuver"),
+        input.restaurantId,
+        input.provider,
+        input.providerMenuSnapshotId ?? null,
+        input.versionHash,
+        input.status,
+        input.itemCount,
+        input.categoryCount,
+        input.modifierGroupCount,
+        JSON.stringify(input.metadata ?? {}),
+        input.createdAt ?? new Date().toISOString(),
+        input.publishedAt ?? null,
+      ],
+    );
+    return mapCanonicalMenuVersion(result.rows[0]);
+  }
+
+  async publishCanonicalMenuVersion(versionId: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const currentResult = await client.query("select * from canonical_menu_versions where id = $1 limit 1", [versionId]);
+      const current = required(currentResult.rows[0], `Canonical menu version ${versionId} not found.`);
+      await client.query(
+        `update canonical_menu_versions
+         set status = 'retired'
+         where restaurant_id = $1 and status = 'published' and id <> $2`,
+        [current.restaurant_id, versionId],
+      );
+      const published = await client.query(
+        `update canonical_menu_versions
+         set status = 'published', published_at = now()
+         where id = $1
+         returning *`,
+        [versionId],
+      );
+      await client.query("commit");
+      return mapCanonicalMenuVersion(published.rows[0]);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getLatestPublishedMenuVersion(restaurantId: string) {
+    const result = await this.pool.query(
+      `select * from canonical_menu_versions
+       where restaurant_id = $1 and status = 'published'
+       order by published_at desc nulls last, created_at desc
+       limit 1`,
+      [restaurantId],
+    );
+    return result.rows[0] ? mapCanonicalMenuVersion(result.rows[0]) : null;
+  }
+
+  async listCanonicalMenuVersions(restaurantId?: string) {
+    const result = restaurantId
+      ? await this.pool.query(
+          "select * from canonical_menu_versions where restaurant_id = $1 order by created_at desc",
+          [restaurantId],
+        )
+      : await this.pool.query("select * from canonical_menu_versions order by created_at desc");
+    return result.rows.map(mapCanonicalMenuVersion);
   }
 
   async getRules(restaurantId: string) {
@@ -2209,8 +2999,22 @@ export class SupabasePlatformRepository implements PlatformRepository {
     const id = createId("evt");
     const createdAt = new Date().toISOString();
     const result = await this.pool.query(
-      "insert into order_status_events (id, order_id, status, message, created_at) values ($1, $2, $3, $4, $5) returning *",
-      [id, event.orderId, event.status, event.message, createdAt],
+      `insert into order_status_events
+       (id, order_id, status, message, source, provider, provider_event_id, external_status, raw_event_ref, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       returning *`,
+      [
+        id,
+        event.orderId,
+        event.status,
+        event.message,
+        event.source ?? "system",
+        event.provider ?? null,
+        event.providerEventId ?? null,
+        event.externalStatus ?? null,
+        event.rawEventRef ?? null,
+        createdAt,
+      ],
     );
     return mapStatusEvent(result.rows[0]);
   }
@@ -2307,12 +3111,73 @@ export class SupabasePlatformRepository implements PlatformRepository {
   async saveEventIngestion(record: Omit<EventIngestionRecord, "id" | "createdAt">) {
     const result = await this.pool.query(
       `insert into event_ingestion_records
-       (id, provider, event_type, external_event_id, order_id, status, payload, created_at, processed_at)
-       values ($1, $2, $3, $4, $5, $6, $7::jsonb, now(), $8)
+       (id, provider, event_type, external_event_id, payload_hash, order_id, status, payload, created_at, processed_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, now(), $9)
        returning *`,
-      [createId("evt_ingest"), record.provider, record.eventType, record.externalEventId ?? null, record.orderId ?? null, record.status, JSON.stringify(record.payload), record.processedAt ?? null],
+      [
+        createId("evt_ingest"),
+        record.provider,
+        record.eventType,
+        record.externalEventId ?? null,
+        record.payloadHash ?? null,
+        record.orderId ?? null,
+        record.status,
+        JSON.stringify(record.payload),
+        record.processedAt ?? null,
+      ],
     );
     return mapEventIngestion(result.rows[0]);
+  }
+
+  async findEventIngestion(provider: EventIngestionRecord["provider"], externalEventId: string) {
+    const result = await this.pool.query(
+      "select * from event_ingestion_records where provider = $1 and external_event_id = $2 order by created_at desc limit 1",
+      [provider, externalEventId],
+    );
+    return result.rows[0] ? mapEventIngestion(result.rows[0]) : null;
+  }
+
+  async findEventIngestionByPayloadHash(provider: EventIngestionRecord["provider"], payloadHash: string, eventType?: string) {
+    const result = eventType
+      ? await this.pool.query(
+          "select * from event_ingestion_records where provider = $1 and payload_hash = $2 and event_type = $3 order by created_at desc limit 1",
+          [provider, payloadHash, eventType],
+        )
+      : await this.pool.query(
+          "select * from event_ingestion_records where provider = $1 and payload_hash = $2 order by created_at desc limit 1",
+          [provider, payloadHash],
+        );
+    return result.rows[0] ? mapEventIngestion(result.rows[0]) : null;
+  }
+
+  async getEventIngestion(eventId: string) {
+    const result = await this.pool.query("select * from event_ingestion_records where id = $1", [eventId]);
+    return result.rows[0] ? mapEventIngestion(result.rows[0]) : null;
+  }
+
+  async listEventIngestions(filter: {
+    provider?: EventIngestionRecord["provider"];
+    status?: EventIngestionRecord["status"];
+    limit?: number;
+  } = {}) {
+    const conditions: string[] = [];
+    const values: unknown[] = [];
+    if (filter.provider) {
+      values.push(filter.provider);
+      conditions.push(`provider = $${values.length}`);
+    }
+    if (filter.status) {
+      values.push(filter.status);
+      conditions.push(`status = $${values.length}`);
+    }
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+    values.push(limit);
+    const where = conditions.length > 0 ? `where ${conditions.join(" and ")}` : "";
+    const result = await this.pool.query(
+      `select * from event_ingestion_records ${where} order by created_at desc limit $${values.length}`,
+      values,
+    );
+    return result.rows.map(mapEventIngestion);
   }
 
   async listAuditLogsForOrder(orderId: string) {

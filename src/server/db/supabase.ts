@@ -5,6 +5,8 @@ const REQUIRED_TABLES = [
   "restaurants",
   "restaurant_locations",
   "pos_connections",
+  "provider_accounts",
+  "provider_locations",
   "canonical_menu_items",
   "canonical_modifier_groups",
   "canonical_modifiers",
@@ -36,6 +38,7 @@ const REQUIRED_TABLES = [
 
 const REQUIRED_COLUMNS: Record<string, readonly string[]> = {
   restaurant_locations: ["latitude", "longitude"],
+  pos_connections: ["provider_account_id", "provider_location_id"],
   canonical_menu_items: ["image_url"],
   agents: ["partner_id"],
   partner_credentials: ["scopes", "revoked_at", "environment"],

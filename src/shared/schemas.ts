@@ -78,7 +78,7 @@ export const patchRestaurantSchema = z.object({
   name: z.string().min(1).optional(),
   location: z.string().min(1).optional(),
   timezone: z.string().min(1).optional(),
-  posProvider: z.enum(["toast", "square", "deliverect", "olo"]).optional(),
+  posProvider: z.enum(["mock", "toast", "square", "deliverect", "olo"]).optional(),
   agentOrderingEnabled: z.boolean().optional(),
   defaultApprovalMode: z.enum(["auto", "manual_review", "threshold_review"]).optional(),
   contactEmail: z.string().email().optional(),
@@ -126,24 +126,30 @@ export const restaurantSignupSchema = z.object({
 });
 
 export const onboardingDiscoverSchema = z.object({
-  provider: z.enum(["deliverect", "olo", "pos"]),
+  provider: z.enum(["olo", "pos"]),
   query: z.string().min(1),
 });
 
 export const onboardingAccessRequestSchema = z.object({
-  provider: z.enum(["deliverect", "olo", "pos"]),
+  provider: z.enum(["olo", "pos"]),
   providerAccountId: z.string().min(1),
   providerLocationIds: z.array(z.string().min(1)).min(1),
   email: z.string().email(),
 });
 
 export const onboardingActivateSchema = z.object({
-  provider: z.enum(["deliverect", "olo", "pos"]),
+  provider: z.enum(["olo", "pos"]),
   providerAccountId: z.string().min(1),
   providerLocationIds: z.array(z.string().min(1)).min(1),
   fullName: z.string().min(1),
   email: z.string().email(),
   password: z.string().min(8),
+});
+
+export const mapProviderLocationSchema = z.object({
+  restaurantId: z.string().min(1),
+  mode: z.enum(["mock", "live"]).default("live"),
+  status: z.enum(["sandbox", "connected"]).default("sandbox"),
 });
 
 export const createTeamMemberSchema = z.object({

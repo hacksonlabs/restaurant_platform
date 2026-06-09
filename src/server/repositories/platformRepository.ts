@@ -14,6 +14,7 @@ import type {
   AgentOrderRecord,
   AuditLog,
   CanonicalMenuItem,
+  CanonicalMenuVersion,
   CanonicalModifier,
   CanonicalModifierGroup,
   EventIngestionRecord,
@@ -27,6 +28,9 @@ import type {
   PartnerCredential,
   POSConnection,
   POSMenuMapping,
+  ProviderAccount,
+  ProviderLocation,
+  ProviderMenuSnapshot,
   POSOrderSubmission,
   ReportingDailyMetric,
   ReportingDateRange,
@@ -85,6 +89,13 @@ export interface DashboardStats {
   ordersNeedingReview: number;
 }
 
+export interface CanonicalMenuReplacement {
+  items: CanonicalMenuItem[];
+  modifierGroups: CanonicalModifierGroup[];
+  modifiers: CanonicalModifier[];
+  mappings: POSMenuMapping[];
+}
+
 export interface ReportingSnapshotRecord {
   metrics: ReportingDailyMetric[];
   topItems: Array<{ name: string; count: number }>;
@@ -112,6 +123,40 @@ function onboardingLocationArea(locationName: string) {
 function templateRestaurantIdFromMetadata(metadata: Record<string, unknown> | undefined) {
   const templateRestaurantId = metadata?.templateRestaurantId;
   return typeof templateRestaurantId === "string" && templateRestaurantId ? templateRestaurantId : null;
+}
+
+const FULFILLMENT_TYPE_VALUES = new Set(["pickup", "delivery", "catering"]);
+
+function readProviderFulfillmentTypes(providerLocation: ProviderLocation) {
+  const raw = providerLocation.rawProviderPayload;
+  const candidates = [
+    raw.fulfillmentTypes,
+    raw.fulfillment_types,
+    raw.fulfillmentTypesSupported,
+    raw.fulfillment_types_supported,
+    raw.orderTypes,
+    raw.order_types,
+    raw.services,
+    raw.channelLink && typeof raw.channelLink === "object" ? (raw.channelLink as Record<string, unknown>).fulfillmentTypes : undefined,
+    raw.channelLink && typeof raw.channelLink === "object" ? (raw.channelLink as Record<string, unknown>).orderTypes : undefined,
+    raw.store && typeof raw.store === "object" ? (raw.store as Record<string, unknown>).fulfillmentTypes : undefined,
+    raw.store && typeof raw.store === "object" ? (raw.store as Record<string, unknown>).orderTypes : undefined,
+  ];
+
+  const values = candidates.flatMap((candidate) => {
+    if (Array.isArray(candidate)) return candidate;
+    if (typeof candidate === "string") return candidate.split(",");
+    return [];
+  });
+
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value).trim().toLowerCase())
+        .map((value) => value === "takeaway" || value === "takeout" || value === "collection" ? "pickup" : value)
+        .filter((value): value is "pickup" | "delivery" | "catering" => FULFILLMENT_TYPE_VALUES.has(value)),
+    ),
+  );
 }
 
 function findExistingOnboardingRestaurantMatch(
@@ -205,13 +250,45 @@ export interface PlatformRepository {
   updateRestaurant(restaurantId: string, patch: Partial<Restaurant>): Promise<Restaurant>;
   getPOSConnection(restaurantId: string): Promise<POSConnection | null>;
   updatePOSConnection(connectionId: string, patch: Partial<POSConnection>): Promise<POSConnection>;
+  listProviderAccounts(provider?: POSConnection["provider"]): Promise<ProviderAccount[]>;
+  upsertProviderAccount(input: Omit<ProviderAccount, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<ProviderAccount>;
+  listProviderLocations(providerAccountId?: string): Promise<ProviderLocation[]>;
+  upsertProviderLocation(input: Omit<ProviderLocation, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<ProviderLocation>;
+  mapProviderLocationToRestaurant(input: {
+    providerLocationId: string;
+    restaurantId: string;
+    mode: POSConnection["mode"];
+    status: POSConnection["status"];
+  }): Promise<POSConnection>;
+  provisionRestaurantFromProviderLocation(input: {
+    providerLocationId: string;
+    contactEmail: string;
+    contactPhone: string;
+  }): Promise<{ restaurant: Restaurant; connection: POSConnection; providerLocation: ProviderLocation; created: boolean }>;
   getLocation(restaurantId: string): Promise<RestaurantLocation | null>;
   getMenu(restaurantId: string): Promise<{
+    version?: CanonicalMenuVersion;
     items: CanonicalMenuItem[];
     modifierGroups: CanonicalModifierGroup[];
     modifiers: CanonicalModifier[];
     mappings: POSMenuMapping[];
   }>;
+  replaceCanonicalMenu(restaurantId: string, menu: CanonicalMenuReplacement, menuVersionId?: string): Promise<CanonicalMenuReplacement>;
+  saveProviderMenuSnapshot(snapshot: Omit<ProviderMenuSnapshot, "id" | "receivedAt"> & { id?: string; receivedAt?: string }): Promise<ProviderMenuSnapshot>;
+  updateProviderMenuSnapshot(snapshotId: string, patch: Partial<Pick<ProviderMenuSnapshot, "status" | "error" | "processedAt" | "providerLocationId" | "restaurantId" | "channelLinkId">>): Promise<ProviderMenuSnapshot>;
+  findProviderMenuSnapshot(provider: ProviderMenuSnapshot["provider"], lookup: { externalEventId?: string; payloadHash?: string; excludeId?: string }): Promise<ProviderMenuSnapshot | null>;
+  listProviderMenuSnapshots(filter?: {
+    provider?: ProviderMenuSnapshot["provider"];
+    providerLocationId?: string;
+    restaurantId?: string;
+    status?: ProviderMenuSnapshot["status"];
+    limit?: number;
+  }): Promise<ProviderMenuSnapshot[]>;
+  getProviderMenuSnapshot(snapshotId: string): Promise<ProviderMenuSnapshot | null>;
+  createCanonicalMenuVersion(input: Omit<CanonicalMenuVersion, "id" | "createdAt" | "publishedAt"> & { id?: string; createdAt?: string; publishedAt?: string }): Promise<CanonicalMenuVersion>;
+  publishCanonicalMenuVersion(versionId: string): Promise<CanonicalMenuVersion>;
+  getLatestPublishedMenuVersion(restaurantId: string): Promise<CanonicalMenuVersion | null>;
+  listCanonicalMenuVersions(restaurantId?: string): Promise<CanonicalMenuVersion[]>;
   getRules(restaurantId: string): Promise<OrderingRule | null>;
   updateRules(restaurantId: string, patch: Partial<OrderingRule>): Promise<OrderingRule>;
   listAgents(restaurantId: string): Promise<AgentListEntry[]>;
@@ -301,6 +378,14 @@ export interface PlatformRepository {
   saveRetryAttempt(attempt: Omit<RetryAttempt, "id" | "createdAt">): Promise<RetryAttempt>;
   listRetryAttempts(orderId: string): Promise<RetryAttempt[]>;
   getOperationalDiagnostics(restaurantId: string): Promise<OperationalDiagnosticsSnapshot>;
+  findEventIngestion(provider: EventIngestionRecord["provider"], externalEventId: string): Promise<EventIngestionRecord | null>;
+  findEventIngestionByPayloadHash(provider: EventIngestionRecord["provider"], payloadHash: string, eventType?: string): Promise<EventIngestionRecord | null>;
+  getEventIngestion(eventId: string): Promise<EventIngestionRecord | null>;
+  listEventIngestions(filter?: {
+    provider?: EventIngestionRecord["provider"];
+    status?: EventIngestionRecord["status"];
+    limit?: number;
+  }): Promise<EventIngestionRecord[]>;
   saveEventIngestion(record: Omit<EventIngestionRecord, "id" | "createdAt">): Promise<EventIngestionRecord>;
   listAuditLogsForOrder(orderId: string): Promise<AuditLog[]>;
 }
@@ -310,10 +395,7 @@ function notFound(entity: string, id: string): Error {
 }
 
 function posProviderForOnboarding(provider: OnboardingActivateInput["provider"]): Restaurant["posProvider"] {
-  if (provider === "deliverect" || provider === "olo") {
-    return provider;
-  }
-  return "toast";
+  return provider === "olo" ? "olo" : "toast";
 }
 
 function computeTopItems(
@@ -1184,8 +1266,259 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     return updated;
   }
 
+  async listProviderAccounts(provider?: POSConnection["provider"]) {
+    return provider
+      ? this.state.providerAccounts.filter((entry) => entry.provider === provider)
+      : this.state.providerAccounts;
+  }
+
+  async upsertProviderAccount(input: Omit<ProviderAccount, "id" | "createdAt" | "updatedAt"> & { id?: string }) {
+    const now = new Date().toISOString();
+    const existingIndex = this.state.providerAccounts.findIndex(
+      (entry) =>
+        entry.id === input.id ||
+        (
+          entry.provider === input.provider &&
+          entry.externalAccountId === input.externalAccountId &&
+          entry.environment === input.environment
+        ),
+    );
+    const existing = existingIndex >= 0 ? this.state.providerAccounts[existingIndex] : null;
+    const record: ProviderAccount = {
+      id: existing?.id ?? input.id ?? createId("provideracct"),
+      provider: input.provider,
+      externalAccountId: input.externalAccountId,
+      displayName: input.displayName,
+      environment: input.environment,
+      status: input.status,
+      metadata: input.metadata,
+      lastSyncedAt: input.lastSyncedAt,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    if (existingIndex >= 0) {
+      this.state.providerAccounts[existingIndex] = record;
+    } else {
+      this.state.providerAccounts.unshift(record);
+    }
+    return record;
+  }
+
+  async listProviderLocations(providerAccountId?: string) {
+    return providerAccountId
+      ? this.state.providerLocations.filter((entry) => entry.providerAccountId === providerAccountId)
+      : this.state.providerLocations;
+  }
+
+  async upsertProviderLocation(input: Omit<ProviderLocation, "id" | "createdAt" | "updatedAt"> & { id?: string }) {
+    const now = new Date().toISOString();
+    const existingIndex = this.state.providerLocations.findIndex(
+      (entry) =>
+        entry.id === input.id ||
+        (
+          entry.providerAccountId === input.providerAccountId &&
+          entry.externalLocationId === input.externalLocationId &&
+          (entry.channelLinkId ?? "") === (input.channelLinkId ?? "")
+        ) ||
+        (
+          Boolean(input.channelLinkId) &&
+          entry.providerAccountId === input.providerAccountId &&
+          entry.channelLinkId === input.channelLinkId
+        ),
+    );
+    const existing = existingIndex >= 0 ? this.state.providerLocations[existingIndex] : null;
+    const record: ProviderLocation = {
+      id: existing?.id ?? input.id ?? createId("providerloc"),
+      providerAccountId: input.providerAccountId,
+      provider: input.provider,
+      externalLocationId: input.externalLocationId,
+      externalStoreId: input.externalStoreId,
+      channelLinkId: input.channelLinkId,
+      channelName: input.channelName,
+      name: input.name,
+      address: input.address,
+      timezone: input.timezone,
+      status: input.status,
+      mappedRestaurantId: input.mappedRestaurantId,
+      rawProviderPayload: input.rawProviderPayload,
+      lastSyncedAt: input.lastSyncedAt,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    if (existingIndex >= 0) {
+      this.state.providerLocations[existingIndex] = record;
+    } else {
+      this.state.providerLocations.unshift(record);
+    }
+    return record;
+  }
+
+  async mapProviderLocationToRestaurant(input: {
+    providerLocationId: string;
+    restaurantId: string;
+    mode: POSConnection["mode"];
+    status: POSConnection["status"];
+  }) {
+    const providerLocationIndex = this.state.providerLocations.findIndex((entry) => entry.id === input.providerLocationId);
+    if (providerLocationIndex < 0) throw notFound("Provider location", input.providerLocationId);
+    const providerLocation = {
+      ...this.state.providerLocations[providerLocationIndex],
+      mappedRestaurantId: input.restaurantId,
+      updatedAt: new Date().toISOString(),
+    };
+    this.state.providerLocations[providerLocationIndex] = providerLocation;
+    const providerAccount = this.state.providerAccounts.find((entry) => entry.id === providerLocation.providerAccountId);
+    if (!providerAccount) throw notFound("Provider account", providerLocation.providerAccountId);
+
+    const existingIndex = this.state.posConnections.findIndex((entry) => entry.restaurantId === input.restaurantId);
+    if (existingIndex < 0) throw notFound("POS connection for restaurant", input.restaurantId);
+    const existing = this.state.posConnections[existingIndex];
+    const metadata = {
+      ...existing.metadata,
+      providerAccountRecordId: providerAccount.id,
+      providerLocationRecordId: providerLocation.id,
+      deliverectAccountId: providerAccount.externalAccountId,
+      deliverectStoreId: providerLocation.externalStoreId ?? providerLocation.externalLocationId,
+      deliverectLocationId: providerLocation.externalLocationId,
+      deliverectChannelLinkId: providerLocation.channelLinkId ?? providerLocation.externalLocationId,
+      deliverectChannelName: providerLocation.channelName,
+      rawProviderLocation: providerLocation.rawProviderPayload,
+    };
+    const updated: POSConnection = {
+      ...existing,
+      provider: providerLocation.provider,
+      providerAccountId: providerAccount.id,
+      providerLocationId: providerLocation.id,
+      status: input.status,
+      mode: input.mode,
+      locationId: providerLocation.externalLocationId,
+      metadata,
+      lastSyncedAt: providerLocation.lastSyncedAt ?? existing.lastSyncedAt,
+    };
+    this.state.posConnections[existingIndex] = updated;
+    this.state.restaurants = this.state.restaurants.map((restaurant) =>
+      restaurant.id === input.restaurantId
+        ? { ...restaurant, posProvider: providerLocation.provider, updatedAt: new Date().toISOString() }
+        : restaurant,
+    );
+    return updated;
+  }
+
+  async provisionRestaurantFromProviderLocation(input: {
+    providerLocationId: string;
+    contactEmail: string;
+    contactPhone: string;
+  }) {
+    const providerLocationIndex = this.state.providerLocations.findIndex((entry) => entry.id === input.providerLocationId);
+    if (providerLocationIndex < 0) throw notFound("Provider location", input.providerLocationId);
+    const providerLocation = this.state.providerLocations[providerLocationIndex];
+    const existingRestaurant = providerLocation.mappedRestaurantId
+      ? this.state.restaurants.find((entry) => entry.id === providerLocation.mappedRestaurantId) ?? null
+      : null;
+    if (existingRestaurant) {
+      const connection = this.state.posConnections.find((entry) => entry.restaurantId === existingRestaurant.id);
+      if (!connection) throw notFound("POS connection for restaurant", existingRestaurant.id);
+      return { restaurant: existingRestaurant, connection, providerLocation, created: false };
+    }
+
+    const providerAccount = this.state.providerAccounts.find((entry) => entry.id === providerLocation.providerAccountId);
+    if (!providerAccount) throw notFound("Provider account", providerLocation.providerAccountId);
+    const now = new Date().toISOString();
+    const restaurantId = createId("rest");
+    const locationId = createId("loc");
+    const posConnectionId = createId("posconn");
+    const rulesId = createId("rules");
+    const permissionId = createId("perm");
+    const coachAgent = this.state.agents.find((entry) => entry.slug === "coachimhungry");
+    const fulfillmentTypes = readProviderFulfillmentTypes(providerLocation);
+    const metadata = {
+      source: "provider_provisioning",
+      providerAccountRecordId: providerAccount.id,
+      providerLocationRecordId: providerLocation.id,
+      deliverectAccountId: providerAccount.externalAccountId,
+      deliverectStoreId: providerLocation.externalStoreId ?? providerLocation.externalLocationId,
+      deliverectLocationId: providerLocation.externalLocationId,
+      deliverectChannelLinkId: providerLocation.channelLinkId ?? providerLocation.externalLocationId,
+      deliverectChannelName: providerLocation.channelName,
+      rawProviderLocation: providerLocation.rawProviderPayload,
+    };
+    const restaurant: Restaurant = {
+      id: restaurantId,
+      name: providerLocation.name,
+      location: providerLocation.address ?? providerLocation.name,
+      timezone: providerLocation.timezone ?? "America/Los_Angeles",
+      posProvider: providerLocation.provider,
+      agentOrderingEnabled: true,
+      defaultApprovalMode: "auto",
+      contactEmail: input.contactEmail,
+      contactPhone: input.contactPhone,
+      fulfillmentTypesSupported: fulfillmentTypes,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const connection: POSConnection = {
+      id: posConnectionId,
+      restaurantId,
+      provider: providerLocation.provider,
+      providerAccountId: providerAccount.id,
+      providerLocationId: providerLocation.id,
+      status: "sandbox",
+      mode: "live",
+      locationId: providerLocation.externalLocationId,
+      lastSyncedAt: providerLocation.lastSyncedAt ?? now,
+      metadata,
+    };
+    this.state.restaurants.unshift(restaurant);
+    this.state.locations.unshift({
+      id: locationId,
+      restaurantId,
+      name: providerLocation.name,
+      address1: providerLocation.address ?? providerLocation.name,
+      city: "",
+      state: "",
+      postalCode: "",
+      latitude: null,
+      longitude: null,
+    });
+    this.state.posConnections.unshift(connection);
+    this.state.orderingRules.unshift({
+      id: rulesId,
+      restaurantId,
+      minimumLeadTimeMinutes: 0,
+      maxOrderDollarAmount: 2147483647,
+      maxItemQuantity: 2147483647,
+      maxHeadcount: 2147483647,
+      autoAcceptEnabled: true,
+      managerApprovalThresholdCents: 2147483647,
+      blackoutWindows: [],
+      allowedFulfillmentTypes: fulfillmentTypes,
+      substitutionPolicy: "allow_equivalent",
+      paymentPolicy: "required_before_submit",
+      allowedAgentIds: coachAgent ? [coachAgent.id] : [],
+    });
+    if (coachAgent) {
+      this.state.permissions.unshift({
+        id: permissionId,
+        restaurantId,
+        agentId: coachAgent.id,
+        status: "allowed",
+        notes: "Auto-allowed during provider location provisioning.",
+        lastActivityAt: now,
+      });
+    }
+    const updatedProviderLocation = { ...providerLocation, mappedRestaurantId: restaurantId, updatedAt: now };
+    this.state.providerLocations[providerLocationIndex] = updatedProviderLocation;
+    return { restaurant, connection, providerLocation: updatedProviderLocation, created: true };
+  }
+
   async getLocation(restaurantId: string) {
     return this.state.locations.find((entry) => entry.restaurantId === restaurantId) ?? null;
+  }
+
+  private latestPublishedMenuVersionForRestaurant(restaurantId: string) {
+    return this.state.canonicalMenuVersions
+      .filter((entry) => entry.restaurantId === restaurantId && entry.status === "published")
+      .sort((left, right) => new Date(right.publishedAt ?? right.createdAt).getTime() - new Date(left.publishedAt ?? left.createdAt).getTime())[0] ?? null;
   }
 
   async getMenu(restaurantId: string) {
@@ -1200,19 +1533,160 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       this.state.menuItems.some((entry) => entry.restaurantId === restaurantId) || !templateRestaurantId
         ? restaurantId
         : templateRestaurantId;
+    const version = this.latestPublishedMenuVersionForRestaurant(sourceRestaurantId);
+    const items = this.state.menuItems
+      .filter((entry) => entry.restaurantId === sourceRestaurantId)
+      .filter((entry) => !version || entry.menuVersionId === version.id)
+      .map((entry) => ({ ...entry, restaurantId }))
+      .sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0) || left.category.localeCompare(right.category) || left.name.localeCompare(right.name));
+    const modifierGroups = this.state.modifierGroups
+      .filter((entry) => entry.restaurantId === sourceRestaurantId)
+      .filter((entry) => !version || entry.menuVersionId === version.id)
+      .map((entry) => ({ ...entry, restaurantId }))
+      .sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0) || left.name.localeCompare(right.name));
+    const modifierGroupIds = new Set(modifierGroups.map((entry) => entry.id));
+    const modifiers = this.state.modifiers
+      .filter((entry) => modifierGroupIds.has(entry.modifierGroupId))
+      .filter((entry) => !version || entry.menuVersionId === version.id)
+      .sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0) || left.name.localeCompare(right.name));
+    const canonicalIds = new Set([
+      ...items.map((entry) => entry.id),
+      ...modifierGroups.map((entry) => entry.id),
+      ...modifiers.map((entry) => entry.id),
+    ]);
 
     return {
-      items: this.state.menuItems
-        .filter((entry) => entry.restaurantId === sourceRestaurantId)
-        .map((entry) => ({ ...entry, restaurantId })),
-      modifierGroups: this.state.modifierGroups
-        .filter((entry) => entry.restaurantId === sourceRestaurantId)
-        .map((entry) => ({ ...entry, restaurantId })),
-      modifiers: this.state.modifiers,
+      version: version ? { ...version, restaurantId } : undefined,
+      items,
+      modifierGroups,
+      modifiers,
       mappings: this.state.posMappings
         .filter((entry) => entry.restaurantId === sourceRestaurantId)
+        .filter((entry) => !version || canonicalIds.has(entry.canonicalId))
         .map((entry) => ({ ...entry, restaurantId })),
     };
+  }
+
+  async replaceCanonicalMenu(restaurantId: string, menu: CanonicalMenuReplacement, menuVersionId?: string) {
+    this.state.menuItems = this.state.menuItems.map((entry) =>
+      entry.restaurantId === restaurantId
+        ? { ...entry, availability: "unavailable", mappingStatus: "needs_review" }
+        : entry,
+    );
+    this.state.posMappings = this.state.posMappings.filter((entry) => entry.restaurantId !== restaurantId);
+
+    const replacement: CanonicalMenuReplacement = {
+      items: menu.items.map((entry) => ({ ...entry, restaurantId, menuVersionId: entry.menuVersionId ?? menuVersionId })),
+      modifierGroups: menu.modifierGroups.map((entry) => ({ ...entry, restaurantId, menuVersionId: entry.menuVersionId ?? menuVersionId })),
+      modifiers: menu.modifiers.map((entry) => ({ ...entry, menuVersionId: entry.menuVersionId ?? menuVersionId })),
+      mappings: menu.mappings.map((entry) => ({ ...entry, restaurantId })),
+    };
+    replacement.modifierGroups.forEach((group) => {
+      const index = this.state.modifierGroups.findIndex((entry) => entry.id === group.id);
+      if (index >= 0) this.state.modifierGroups[index] = group;
+      else this.state.modifierGroups.unshift(group);
+    });
+    replacement.modifiers.forEach((modifier) => {
+      const index = this.state.modifiers.findIndex((entry) => entry.id === modifier.id);
+      if (index >= 0) this.state.modifiers[index] = modifier;
+      else this.state.modifiers.unshift(modifier);
+    });
+    replacement.items.forEach((item) => {
+      const index = this.state.menuItems.findIndex((entry) => entry.id === item.id);
+      if (index >= 0) this.state.menuItems[index] = item;
+      else this.state.menuItems.unshift(item);
+    });
+    this.state.posMappings.unshift(...replacement.mappings);
+    return replacement;
+  }
+
+  async saveProviderMenuSnapshot(snapshot: Omit<ProviderMenuSnapshot, "id" | "receivedAt"> & { id?: string; receivedAt?: string }) {
+    const record: ProviderMenuSnapshot = {
+      ...snapshot,
+      id: snapshot.id ?? createId("menusnap"),
+      receivedAt: snapshot.receivedAt ?? new Date().toISOString(),
+    };
+    this.state.providerMenuSnapshots.unshift(record);
+    return record;
+  }
+
+  async updateProviderMenuSnapshot(snapshotId: string, patch: Partial<Pick<ProviderMenuSnapshot, "status" | "error" | "processedAt" | "providerLocationId" | "restaurantId" | "channelLinkId">>) {
+    const index = this.state.providerMenuSnapshots.findIndex((entry) => entry.id === snapshotId);
+    if (index < 0) throw notFound("Provider menu snapshot", snapshotId);
+    const updated = { ...this.state.providerMenuSnapshots[index], ...patch };
+    this.state.providerMenuSnapshots[index] = updated;
+    return updated;
+  }
+
+  async findProviderMenuSnapshot(provider: ProviderMenuSnapshot["provider"], lookup: { externalEventId?: string; payloadHash?: string; excludeId?: string }) {
+    return this.state.providerMenuSnapshots.find((entry) =>
+      entry.provider === provider &&
+      entry.id !== lookup.excludeId &&
+      (
+        Boolean(lookup.externalEventId && entry.externalEventId === lookup.externalEventId) ||
+        Boolean(!lookup.externalEventId && lookup.payloadHash && entry.payloadHash === lookup.payloadHash)
+      )
+    ) ?? null;
+  }
+
+  async listProviderMenuSnapshots(filter: {
+    provider?: ProviderMenuSnapshot["provider"];
+    providerLocationId?: string;
+    restaurantId?: string;
+    status?: ProviderMenuSnapshot["status"];
+    limit?: number;
+  } = {}) {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+    return this.state.providerMenuSnapshots
+      .filter((entry) => !filter.provider || entry.provider === filter.provider)
+      .filter((entry) => !filter.providerLocationId || entry.providerLocationId === filter.providerLocationId)
+      .filter((entry) => !filter.restaurantId || entry.restaurantId === filter.restaurantId)
+      .filter((entry) => !filter.status || entry.status === filter.status)
+      .slice(0, limit);
+  }
+
+  async getProviderMenuSnapshot(snapshotId: string) {
+    return this.state.providerMenuSnapshots.find((entry) => entry.id === snapshotId) ?? null;
+  }
+
+  async createCanonicalMenuVersion(input: Omit<CanonicalMenuVersion, "id" | "createdAt" | "publishedAt"> & { id?: string; createdAt?: string; publishedAt?: string }) {
+    const record: CanonicalMenuVersion = {
+      ...input,
+      id: input.id ?? createId("menuver"),
+      createdAt: input.createdAt ?? new Date().toISOString(),
+      publishedAt: input.publishedAt,
+    };
+    this.state.canonicalMenuVersions.unshift(record);
+    return record;
+  }
+
+  async publishCanonicalMenuVersion(versionId: string) {
+    const index = this.state.canonicalMenuVersions.findIndex((entry) => entry.id === versionId);
+    if (index < 0) throw notFound("Canonical menu version", versionId);
+    const current = this.state.canonicalMenuVersions[index];
+    this.state.canonicalMenuVersions = this.state.canonicalMenuVersions.map((entry) =>
+      entry.restaurantId === current.restaurantId && entry.status === "published" && entry.id !== versionId
+        ? { ...entry, status: "retired" }
+        : entry,
+    );
+    const refreshedIndex = this.state.canonicalMenuVersions.findIndex((entry) => entry.id === versionId);
+    const published = {
+      ...this.state.canonicalMenuVersions[refreshedIndex],
+      status: "published" as const,
+      publishedAt: new Date().toISOString(),
+    };
+    this.state.canonicalMenuVersions[refreshedIndex] = published;
+    return published;
+  }
+
+  async getLatestPublishedMenuVersion(restaurantId: string) {
+    return this.latestPublishedMenuVersionForRestaurant(restaurantId);
+  }
+
+  async listCanonicalMenuVersions(restaurantId?: string) {
+    return this.state.canonicalMenuVersions
+      .filter((entry) => !restaurantId || entry.restaurantId === restaurantId)
+      .sort((left, right) => new Date(right.publishedAt ?? right.createdAt).getTime() - new Date(left.publishedAt ?? left.createdAt).getTime());
   }
 
   async getRules(restaurantId: string) {
@@ -1787,6 +2261,34 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const created: EventIngestionRecord = { ...record, id: createId("evt_ingest"), createdAt: new Date().toISOString() };
     this.state.ingestedEvents.unshift(created);
     return created;
+  }
+
+  async findEventIngestion(provider: EventIngestionRecord["provider"], externalEventId: string) {
+    return this.state.ingestedEvents.find((entry) => entry.provider === provider && entry.externalEventId === externalEventId) ?? null;
+  }
+
+  async findEventIngestionByPayloadHash(provider: EventIngestionRecord["provider"], payloadHash: string, eventType?: string) {
+    return this.state.ingestedEvents.find((entry) =>
+      entry.provider === provider &&
+      entry.payloadHash === payloadHash &&
+      (!eventType || entry.eventType === eventType)
+    ) ?? null;
+  }
+
+  async getEventIngestion(eventId: string) {
+    return this.state.ingestedEvents.find((entry) => entry.id === eventId) ?? null;
+  }
+
+  async listEventIngestions(filter: {
+    provider?: EventIngestionRecord["provider"];
+    status?: EventIngestionRecord["status"];
+    limit?: number;
+  } = {}) {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+    return this.state.ingestedEvents
+      .filter((entry) => !filter.provider || entry.provider === filter.provider)
+      .filter((entry) => !filter.status || entry.status === filter.status)
+      .slice(0, limit);
   }
 
   async listAuditLogsForOrder(orderId: string) {

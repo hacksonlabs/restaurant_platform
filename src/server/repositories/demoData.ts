@@ -4,6 +4,8 @@ import type {
   Agent,
   AgentApiKey,
   PartnerCredential,
+  ProviderAccount,
+  ProviderLocation,
   OperatorMembership,
   OperatorSession,
   OperatorUser,
@@ -12,6 +14,7 @@ import type {
   AgentOrderRecord,
   AuditLog,
   CanonicalMenuItem,
+  CanonicalMenuVersion,
   CanonicalModifier,
   CanonicalModifierGroup,
   EventIngestionRecord,
@@ -23,6 +26,7 @@ import type {
   PlatformAdminUser,
   POSConnection,
   POSMenuMapping,
+  ProviderMenuSnapshot,
   ReportingDailyMetric,
   Restaurant,
   RestaurantAgentPermission,
@@ -39,6 +43,10 @@ export interface DemoSeedState {
   modifierGroups: CanonicalModifierGroup[];
   modifiers: CanonicalModifier[];
   posMappings: POSMenuMapping[];
+  providerAccounts: ProviderAccount[];
+  providerLocations: ProviderLocation[];
+  providerMenuSnapshots: ProviderMenuSnapshot[];
+  canonicalMenuVersions: CanonicalMenuVersion[];
   partners: Partner[];
   agents: Agent[];
   agentApiKeys: AgentApiKey[];
@@ -127,7 +135,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     deliveryFee: 299,
     minimumOrder: 2500,
     supportsCatering: true,
-    posProvider: "toast",
+    posProvider: "mock",
     agentOrderingEnabled: true,
     defaultApprovalMode: "auto",
     contactEmail: "ops@lbsteakhouse.example",
@@ -152,7 +160,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
   const posConnection: POSConnection = {
     id: "posconn_lb_toast",
     restaurantId,
-    provider: "toast",
+    provider: "mock",
     status: "sandbox",
     mode: "mock",
     restaurantGuid: "toast-rest-guid-lb-steakhouse",
@@ -629,7 +637,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       deliveryFee: input.deliveryFee,
       minimumOrder: input.minimumOrder,
       supportsCatering: input.supportsCatering ?? true,
-      posProvider: "toast",
+      posProvider: "mock",
       agentOrderingEnabled: true,
       defaultApprovalMode: "threshold_review",
       contactEmail: input.contactEmail,
@@ -654,7 +662,7 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
     const posConnection: POSConnection = {
       id: `posconn_${input.restaurantId.replace(/^rest_/, "")}_toast`,
       restaurantId: input.restaurantId,
-      provider: "toast",
+      provider: "mock",
       status: "sandbox",
       mode: "mock",
       restaurantGuid: `toast-rest-guid-${input.restaurantId.replace(/^rest_/, "")}`,
@@ -1275,6 +1283,10 @@ export function createDemoSeed(demoPhantomApiKey: string): DemoSeedState {
       midnightNoodleBar.posConnection,
       harborSandwichCo.posConnection,
     ],
+    providerAccounts: [],
+    providerLocations: [],
+    providerMenuSnapshots: [],
+    canonicalMenuVersions: [],
     menuItems: [
       ...menuItems,
       ...pizzaPalace.menuItems,

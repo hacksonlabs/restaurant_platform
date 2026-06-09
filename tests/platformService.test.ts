@@ -1,14 +1,19 @@
 import express from "express";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApiRouter } from "../src/server/api/router";
 import { InMemoryPlatformRepository } from "../src/server/repositories/platformRepository";
 import { PlatformService } from "../src/server/services/platformService";
 import type { OperatorIdentity } from "../src/server/auth/supabaseAuth";
+import type { AppEnv } from "../src/server/config/env";
 import type { AuthenticatedOperator, AuthenticatedPlatformAdmin, CanonicalOrderIntent } from "../src/shared/types";
 
 function createService() {
   return new PlatformService(new InMemoryPlatformRepository("coachimhungry_demo_live_local_key"));
+}
+
+function createServiceWithEnv(env: Partial<AppEnv>) {
+  return new PlatformService(new InMemoryPlatformRepository("coachimhungry_demo_live_local_key"), undefined, undefined, env as AppEnv);
 }
 
 function createAuthBackedService(authProvider: {
@@ -42,7 +47,11 @@ async function submitSampleOrder(service: PlatformService, reference: string) {
 
 async function startServer(service: PlatformService) {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({
+    verify: (request: any, _response, buffer) => {
+      request.rawBody = buffer.toString("utf8");
+    },
+  }));
   app.use("/api", createApiRouter(service));
   const server = await new Promise<import("node:http").Server>((resolve) => {
     const running = app.listen(0, () => resolve(running));
@@ -642,6 +651,402 @@ describe("PlatformService", () => {
     await expect(service.loginPlatformAdmin("dev@rest.com", "password")).rejects.toThrow("Invalid admin email or password.");
   });
 
+  it("maps multiple Deliverect provider locations from one account to separate restaurants", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const admin = authenticatedPlatformAdmin();
+    const account = await repository.upsertProviderAccount({
+      provider: "deliverect",
+      externalAccountId: "acct_deliverect_test",
+      displayName: "MealOps Deliverect Sandbox",
+      environment: "sandbox",
+      status: "sandbox",
+      metadata: { scope: "mealops" },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const location1 = await repository.upsertProviderLocation({
+      providerAccountId: account.id,
+      provider: "deliverect",
+      externalLocationId: "deliverect_location_1",
+      externalStoreId: "deliverect_store_1",
+      channelLinkId: "channel_link_location_1_mealops",
+      channelName: "mealops",
+      name: "MealOps - Test Location 1",
+      address: "1 Test Way",
+      timezone: "America/Los_Angeles",
+      status: "sandbox",
+      rawProviderPayload: { fulfillmentTypes: ["pickup"] },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const location2 = await repository.upsertProviderLocation({
+      providerAccountId: account.id,
+      provider: "deliverect",
+      externalLocationId: "deliverect_location_2",
+      externalStoreId: "deliverect_store_2",
+      channelLinkId: "channel_link_location_2_mealops",
+      channelName: "mealops",
+      name: "MealOps - Test Location 2",
+      address: "2 Test Way",
+      timezone: "America/Los_Angeles",
+      status: "sandbox",
+      rawProviderPayload: { fulfillmentTypes: ["pickup"] },
+      lastSyncedAt: new Date().toISOString(),
+    });
+
+    const connection1 = await service.mapProviderLocationToRestaurant(admin, location1.id, "rest_pizza_palace", "live", "sandbox");
+    const connection2 = await service.mapProviderLocationToRestaurant(admin, location2.id, "rest_green_leaf_salads", "live", "sandbox");
+    const locations = await service.listProviderLocations(admin, account.id);
+    const mappedRestaurant = await service.getRestaurant("rest_pizza_palace");
+    const mappedRules = await service.getRules("rest_pizza_palace");
+
+    expect(connection1.providerAccountId).toBe(account.id);
+    expect(connection2.providerAccountId).toBe(account.id);
+    expect(connection1.providerLocationId).toBe(location1.id);
+    expect(connection2.providerLocationId).toBe(location2.id);
+    expect(connection1.metadata.deliverectAccountId).toBe("acct_deliverect_test");
+    expect(connection1.metadata.deliverectLocationId).toBe("deliverect_location_1");
+    expect(connection1.metadata.deliverectChannelLinkId).toBe("channel_link_location_1_mealops");
+    expect(connection2.metadata.deliverectLocationId).toBe("deliverect_location_2");
+    expect(connection2.metadata.deliverectChannelLinkId).toBe("channel_link_location_2_mealops");
+    expect(mappedRestaurant.fulfillmentTypesSupported).toEqual(["pickup"]);
+    expect(mappedRules.allowedFulfillmentTypes).toEqual(["pickup"]);
+    expect(locations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: location1.id, mappedRestaurantId: "rest_pizza_palace" }),
+        expect.objectContaining({ id: location2.id, mappedRestaurantId: "rest_green_leaf_salads" }),
+      ]),
+    );
+  });
+
+  it("updates an existing provider location when Channel registration returns the same channel link", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const account = await repository.upsertProviderAccount({
+      provider: "deliverect",
+      externalAccountId: "acct_deliverect_test",
+      displayName: "MealOps Deliverect Sandbox",
+      environment: "sandbox",
+      status: "sandbox",
+      metadata: { scope: "mealops" },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const manualLocation = await repository.upsertProviderLocation({
+      providerAccountId: account.id,
+      provider: "deliverect",
+      externalLocationId: "manual_location_id",
+      externalStoreId: "manual_location_id",
+      channelLinkId: "channel_link_location_1_mealops",
+      channelName: "mealops",
+      name: "MealOps - Test Location 1",
+      address: "Manual address",
+      timezone: "America/Los_Angeles",
+      status: "sandbox",
+      rawProviderPayload: { source: "manual" },
+      lastSyncedAt: new Date().toISOString(),
+    });
+
+    const channelRegistrationLocation = await repository.upsertProviderLocation({
+      providerAccountId: account.id,
+      provider: "deliverect",
+      externalLocationId: "STORE0005",
+      externalStoreId: "store_123",
+      channelLinkId: "channel_link_location_1_mealops",
+      channelName: "mealops",
+      name: "MealOps - Test Location 1",
+      address: "1 Main Street, Ghent",
+      timezone: "Europe/Brussels",
+      status: "connected",
+      rawProviderPayload: { source: "channel_registration", fulfillmentTypes: ["pickup", "delivery"] },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const locations = await service.listProviderLocations(authenticatedPlatformAdmin(), account.id);
+
+    expect(channelRegistrationLocation.id).toBe(manualLocation.id);
+    expect(locations).toHaveLength(1);
+    expect(locations[0]).toEqual(
+      expect.objectContaining({
+        id: manualLocation.id,
+        externalLocationId: "STORE0005",
+        externalStoreId: "store_123",
+        address: "1 Main Street, Ghent",
+        status: "connected",
+      }),
+    );
+  });
+
+  it("provisions a provider location as an orderable restaurant with welcoming defaults", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const admin = authenticatedPlatformAdmin();
+    const account = await repository.upsertProviderAccount({
+      provider: "deliverect",
+      externalAccountId: "acct_deliverect_test",
+      displayName: "MealOps Deliverect Sandbox",
+      environment: "sandbox",
+      status: "sandbox",
+      metadata: { scope: "mealops" },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const providerLocation = await repository.upsertProviderLocation({
+      providerAccountId: account.id,
+      provider: "deliverect",
+      externalLocationId: "deliverect_location_provision",
+      externalStoreId: "deliverect_store_provision",
+      channelLinkId: "channel_link_provision_mealops",
+      channelName: "mealops",
+      name: "MealOps - Test Location Provision",
+      address: "10 Provider Way",
+      timezone: "America/Los_Angeles",
+      status: "sandbox",
+      rawProviderPayload: { fulfillmentTypes: ["pickup"] },
+      lastSyncedAt: new Date().toISOString(),
+    });
+
+    const result = await service.provisionProviderLocation(admin, providerLocation.id);
+    const rules = await service.getRules(result.restaurant.id);
+    const agents = await service.listAgents(result.restaurant.id);
+    const coach = agents.find((entry) => entry.agent.slug === "coachimhungry");
+
+    expect(result.created).toBe(true);
+    expect(result.restaurant.posProvider).toBe("deliverect");
+    expect(result.connection.provider).toBe("deliverect");
+    expect(result.connection.providerLocationId).toBe(providerLocation.id);
+    expect(rules.autoAcceptEnabled).toBe(true);
+    expect(rules.minimumLeadTimeMinutes).toBe(0);
+    expect(rules.maxOrderDollarAmount).toBe(2147483647);
+    expect(rules.maxHeadcount).toBe(2147483647);
+    expect(result.restaurant.fulfillmentTypesSupported).toEqual(["pickup"]);
+    expect(rules.allowedFulfillmentTypes).toEqual(["pickup"]);
+    expect(rules.allowedAgentIds).toContain("agent_coachimhungry");
+    expect(coach?.permission.status).toBe("allowed");
+  });
+
+  it("imports Deliverect menu update webhooks by channel link", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const admin = authenticatedPlatformAdmin();
+    const account = await repository.upsertProviderAccount({
+      provider: "deliverect",
+      externalAccountId: "acct_deliverect_menu_push",
+      displayName: "MealOps Deliverect Menu Push",
+      environment: "sandbox",
+      status: "sandbox",
+      metadata: { scope: "mealops" },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const providerLocation = await repository.upsertProviderLocation({
+      providerAccountId: account.id,
+      provider: "deliverect",
+      externalLocationId: "deliverect_location_menu_push",
+      externalStoreId: "deliverect_store_menu_push",
+      channelLinkId: "channel_link_menu_push",
+      channelName: "mealops",
+      name: "MealOps - Menu Push Location",
+      address: "20 Provider Way",
+      timezone: "America/Los_Angeles",
+      status: "sandbox",
+      rawProviderPayload: {},
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const provisioned = await service.provisionProviderLocation(admin, providerLocation.id);
+
+    const result = await service.ingestDeliverectMenuUpdate({
+      channelLinkId: "channel_link_menu_push",
+      eventId: "menu_push_event_1",
+      items: [
+        {
+          menuId: "menu_lunch",
+          menu: "Lunch",
+          categories: [
+            {
+              name: "Bowls",
+              products: [
+                {
+                  plu: "mealops_bowl_001",
+                  name: "MealOps Bowl",
+                  description: "Imported from Deliverect push",
+                  price: 1499,
+                  modifierGroups: [
+                    {
+                      id: "sauce_group",
+                      name: "Sauce",
+                      modifiers: [{ plu: "sauce_hot", name: "Hot Sauce", price: 50 }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const menu = await service.getMenu(provisioned.restaurant.id);
+    const events = await service.listProviderEvents(admin, { provider: "deliverect", limit: 5 });
+    const snapshots = await service.listProviderMenuSnapshots(admin, {
+      provider: "deliverect",
+      restaurantId: provisioned.restaurant.id,
+    });
+    const versions = await service.listCanonicalMenuVersions(admin, provisioned.restaurant.id);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: true,
+        restaurantId: provisioned.restaurant.id,
+        providerLocationId: providerLocation.id,
+        channelLinkId: "channel_link_menu_push",
+        snapshotId: expect.any(String),
+        menuVersionId: expect.any(String),
+        itemCount: 1,
+        needsReview: 0,
+      }),
+    );
+    expect(menu.version).toEqual(
+      expect.objectContaining({
+        id: result.menuVersionId,
+        status: "published",
+        providerMenuSnapshotId: result.snapshotId,
+      }),
+    );
+    expect(menu.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "MealOps Bowl",
+          menuVersionId: result.menuVersionId,
+          mappingStatus: "mapped",
+          posRef: expect.objectContaining({ externalId: "mealops_bowl_001" }),
+        }),
+      ]),
+    );
+    expect(snapshots[0]).toEqual(
+      expect.objectContaining({
+        id: result.snapshotId,
+        providerLocationId: providerLocation.id,
+        restaurantId: provisioned.restaurant.id,
+        channelLinkId: "channel_link_menu_push",
+        externalEventId: "menu_push_event_1",
+        status: "processed",
+      }),
+    );
+    expect(versions[0]).toEqual(
+      expect.objectContaining({
+        id: result.menuVersionId,
+        providerMenuSnapshotId: result.snapshotId,
+        status: "published",
+        itemCount: 1,
+      }),
+    );
+    expect(events[0]).toEqual(
+      expect.objectContaining({
+        eventType: "menu_update",
+        externalEventId: "menu_push_event_1",
+        status: "processed",
+      }),
+    );
+
+    const replay = await service.ingestDeliverectMenuUpdate({
+      channelLinkId: "channel_link_menu_push",
+      eventId: "menu_push_event_1",
+      items: [
+        {
+          menuId: "menu_lunch",
+          menu: "Lunch",
+          categories: [
+            {
+              name: "Bowls",
+              products: [
+                {
+                  plu: "mealops_bowl_001",
+                  name: "MealOps Bowl",
+                  description: "Imported from Deliverect push",
+                  price: 1499,
+                  modifierGroups: [
+                    {
+                      id: "sauce_group",
+                      name: "Sauce",
+                      modifiers: [{ plu: "sauce_hot", name: "Hot Sauce", price: 50 }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const replaySnapshots = await service.listProviderMenuSnapshots(admin, {
+      provider: "deliverect",
+      restaurantId: provisioned.restaurant.id,
+    });
+    const replayVersions = await service.listCanonicalMenuVersions(admin, provisioned.restaurant.id);
+
+    expect(replay).toEqual(
+      expect.objectContaining({
+        duplicate: true,
+        previousSnapshotId: result.snapshotId,
+      }),
+    );
+    expect(replaySnapshots).toHaveLength(2);
+    expect(replaySnapshots[0]).toEqual(expect.objectContaining({ status: "ignored" }));
+    expect(replayVersions.filter((version) => version.status === "published")).toHaveLength(1);
+  });
+
+  it("replaces canonical menus without deleting prior menu records", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const before = await service.getMenu("rest_lb_steakhouse");
+    const oldItem = before.items[0];
+    expect(oldItem).toBeTruthy();
+
+    const replacement = await service.replaceCanonicalMenu(
+      "rest_lb_steakhouse",
+      {
+        items: [
+          {
+            id: "item_imported_bowl",
+            restaurantId: "rest_lb_steakhouse",
+            category: "Bowls",
+            name: "Imported Bowl",
+            description: "Imported from Deliverect",
+            priceCents: 1299,
+            availability: "available",
+            mappingStatus: "mapped",
+            modifierGroupIds: [],
+            posRef: {
+              provider: "deliverect",
+              externalId: "bowl_001",
+            },
+          },
+        ],
+        modifierGroups: [],
+        modifiers: [],
+        mappings: [
+          {
+            id: "map_imported_bowl",
+            restaurantId: "rest_lb_steakhouse",
+            canonicalType: "item",
+            canonicalId: "item_imported_bowl",
+            provider: "deliverect",
+            providerReference: "bowl_001",
+            status: "mapped",
+          },
+        ],
+      },
+      "Imported test menu.",
+    );
+    const menu = await service.getMenu("rest_lb_steakhouse");
+    const staleItem = ((repository as any).state.menuItems as typeof before.items).find((entry) => entry.id === oldItem.id);
+
+    expect(replacement.items).toHaveLength(1);
+    expect(menu.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: "item_imported_bowl" })]));
+    expect(staleItem).toEqual(
+      expect.objectContaining({
+        id: oldItem.id,
+        availability: "unavailable",
+        mappingStatus: "needs_review",
+      }),
+    );
+  });
+
   it("creates, rotates, and revokes partner credentials through platform admin methods", async () => {
     const service = createService();
     const admin = authenticatedPlatformAdmin();
@@ -1002,7 +1407,7 @@ describe("PlatformService", () => {
         expect.objectContaining({
           id: "rest_lb_steakhouse",
           name: "LB Steakhouse",
-          posProvider: "toast",
+          posProvider: "mock",
           permissionStatus: "allowed",
         }),
       ]),
@@ -1032,7 +1437,386 @@ describe("PlatformService", () => {
     expect(payload.eventType).toBe("checkout.completed");
   });
 
-  it("discovers Deliverect onboarding locations through the backend API", async () => {
+  it("rejects provider events when a configured webhook secret is missing or wrong", async () => {
+    const service = createServiceWithEnv({ deliverectWebhookSecret: "deliverect-secret" });
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+
+    const missing = await fetch(`${baseUrl}/api/internal/events/deliverect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "evt_missing_secret", type: "checkout.completed" }),
+    });
+    const wrong = await fetch(`${baseUrl}/api/internal/events/deliverect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-deliverect-webhook-secret": "wrong" },
+      body: JSON.stringify({ id: "evt_wrong_secret", type: "checkout.completed" }),
+    });
+    const accepted = await fetch(`${baseUrl}/api/internal/events/deliverect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-deliverect-webhook-secret": "deliverect-secret" },
+      body: JSON.stringify({ id: "evt_right_secret", type: "checkout.completed" }),
+    });
+
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({ error: "deliverect webhook verification failed." });
+    expect(wrong.status).toBe(400);
+    expect(accepted.status).toBe(200);
+    expect((await accepted.json()).provider).toBe("deliverect");
+  });
+
+  it("accepts Deliverect menu update webhooks and imports the mapped restaurant menu", async () => {
+    const service = createServiceWithEnv({ deliverectWebhookSecret: "deliverect-secret" });
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const admin = authenticatedPlatformAdmin();
+    const account = await repository.upsertProviderAccount({
+      provider: "deliverect",
+      externalAccountId: "acct_deliverect_route_menu_push",
+      displayName: "MealOps Deliverect Route Menu Push",
+      environment: "sandbox",
+      status: "sandbox",
+      metadata: { scope: "mealops" },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const providerLocation = await repository.upsertProviderLocation({
+      providerAccountId: account.id,
+      provider: "deliverect",
+      externalLocationId: "deliverect_route_location",
+      externalStoreId: "deliverect_route_store",
+      channelLinkId: "channel_link_route_menu_push",
+      channelName: "mealops",
+      name: "MealOps - Route Menu Push",
+      status: "sandbox",
+      rawProviderPayload: {},
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const provisioned = await service.provisionProviderLocation(admin, providerLocation.id);
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const menuPushPayload = {
+      channelLinkId: "channel_link_route_menu_push",
+      eventId: "route_menu_push_event",
+      items: [
+        {
+          menu: "Lunch",
+          categories: [
+            {
+              name: "Sandwiches",
+              products: [{ plu: "route_sando_001", name: "Route Sandwich", price: 1199 }],
+            },
+          ],
+        },
+      ],
+    };
+    const rawPayload = JSON.stringify(menuPushPayload);
+    const hmacSignature = createHmac("sha256", "channel_link_route_menu_push").update(rawPayload, "utf8").digest("hex");
+
+    const response = await fetch(`${baseUrl}/api/internal/menus/deliverect`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Server-Authorization-HMAC-SHA256": hmacSignature,
+      },
+      body: rawPayload,
+    });
+    const payload = await response.json();
+    const menu = await service.getMenu(provisioned.restaurant.id);
+
+    expect(response.status).toBe(200);
+    expect(payload).toEqual(
+      expect.objectContaining({
+        ok: true,
+        restaurantId: provisioned.restaurant.id,
+        channelLinkId: "channel_link_route_menu_push",
+        itemCount: 1,
+      }),
+    );
+    expect(menu.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Route Sandwich",
+          posRef: expect.objectContaining({ externalId: "route_sando_001" }),
+        }),
+      ]),
+    );
+  });
+
+  it("registers a Deliverect Channel link and returns the required webhook URLs", async () => {
+    const service = createServiceWithEnv({
+      deliverectBaseUrl: "https://api.staging.deliverect.com",
+      deliverectAccountId: "acct_route_registration",
+      deliverectScope: "mealops",
+    });
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    await repository.upsertProviderAccount({
+      provider: "deliverect",
+      externalAccountId: "acct_route_registration",
+      displayName: "MealOps Deliverect Registration",
+      environment: "sandbox",
+      status: "sandbox",
+      metadata: { scope: "mealops" },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+
+    const response = await fetch(`${baseUrl}/api/internal/deliverect/channel/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "phantom.example.test",
+      },
+      body: JSON.stringify({
+        status: "active",
+        channelLocationId: "external_loc_123",
+        channelLinkId: "channel_link_registered",
+        locationId: "deliverect_loc_123",
+        channelLinkName: "MealOps",
+      }),
+    });
+    const payload = await response.json();
+    const providerLocations = await repository.listProviderLocations();
+
+    expect(response.status).toBe(200);
+    expect(payload).toEqual(
+      expect.objectContaining({
+        statusUpdateURL: "https://phantom.example.test/api/internal/deliverect/channel/order-status",
+        menuUpdateURL: "https://phantom.example.test/api/internal/deliverect/channel/menu",
+        snoozeUnsnoozeURL: "https://phantom.example.test/api/internal/deliverect/channel/snooze",
+        busyModeURL: "https://phantom.example.test/api/internal/deliverect/channel/busy-mode",
+      }),
+    );
+    expect(providerLocations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          externalLocationId: "deliverect_loc_123",
+          channelLinkId: "channel_link_registered",
+          channelName: "mealops",
+          status: "connected",
+        }),
+      ]),
+    );
+  });
+
+  it("applies Deliverect Channel snooze updates to canonical item availability", async () => {
+    const service = createService();
+    const repository = (service as any).repository as InMemoryPlatformRepository;
+    const admin = authenticatedPlatformAdmin();
+    const account = await repository.upsertProviderAccount({
+      provider: "deliverect",
+      externalAccountId: "acct_deliverect_snooze",
+      displayName: "MealOps Deliverect Snooze",
+      environment: "sandbox",
+      status: "sandbox",
+      metadata: { scope: "mealops" },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const providerLocation = await repository.upsertProviderLocation({
+      providerAccountId: account.id,
+      provider: "deliverect",
+      externalLocationId: "deliverect_snooze_location",
+      channelLinkId: "channel_link_snooze",
+      channelName: "mealops",
+      name: "MealOps - Snooze Location",
+      status: "sandbox",
+      rawProviderPayload: {},
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const provisioned = await service.provisionProviderLocation(admin, providerLocation.id);
+    await service.replaceCanonicalMenu(provisioned.restaurant.id, {
+      items: [
+        {
+          id: "item_deliverect_snooze_burger",
+          restaurantId: provisioned.restaurant.id,
+          category: "Burgers",
+          name: "Snooze Burger",
+          description: "",
+          priceCents: 1299,
+          availability: "available",
+          mappingStatus: "mapped",
+          modifierGroupIds: [],
+          posRef: { provider: "deliverect", externalId: "BURG-SNOOZE" },
+        },
+      ],
+      modifierGroups: [],
+      modifiers: [],
+      mappings: [
+        {
+          id: "map_deliverect_snooze_burger",
+          restaurantId: provisioned.restaurant.id,
+          canonicalType: "item",
+          canonicalId: "item_deliverect_snooze_burger",
+          provider: "deliverect",
+          providerReference: "BURG-SNOOZE",
+          status: "mapped",
+        },
+      ],
+    });
+
+    const result = await service.ingestDeliverectChannelSnoozeUpdate({
+      accountId: "acct_deliverect_snooze",
+      locationId: "deliverect_snooze_location",
+      channelLinkId: "channel_link_snooze",
+      operations: [
+        {
+          action: "snooze",
+          data: {
+            items: [{ plu: "BURG-SNOOZE", snoozeStart: "2026-06-09T18:00:00Z", snoozeEnd: "2026-06-09T20:00:00Z" }],
+          },
+        },
+      ],
+    });
+    const menu = await service.getMenu(provisioned.restaurant.id);
+
+    expect(result.changedItemCount).toBe(1);
+    expect(menu.items[0]).toEqual(expect.objectContaining({ availability: "unavailable" }));
+  });
+
+  it("lists and returns provider event ingestion records for platform admins", async () => {
+    const service = createService();
+    const admin = authenticatedPlatformAdmin();
+    const event = await service.ingestProviderEvent("deliverect", "checkout.completed", {
+      id: "evt_deliverect_admin_list",
+      type: "checkout.completed",
+      status: "completed",
+      metadata: {
+        phantomOrderReference: "missing-order-reference",
+      },
+    });
+
+    const events = await service.listProviderEvents(admin, { provider: "deliverect", status: "ignored", limit: 10 });
+    const detail = await service.getProviderEvent(admin, event.id);
+
+    expect(events).toEqual([expect.objectContaining({ id: event.id, provider: "deliverect", status: "ignored" })]);
+    expect(detail).toEqual(expect.objectContaining({ id: event.id, externalEventId: "evt_deliverect_admin_list" }));
+  });
+
+  it("exposes provider event ingestion records through the platform admin API", async () => {
+    const service = createService();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const event = await service.ingestProviderEvent("deliverect", "checkout.completed", {
+      id: "evt_deliverect_admin_api",
+      type: "checkout.completed",
+      status: "completed",
+      metadata: {
+        phantomOrderReference: "missing-order-reference",
+      },
+    });
+
+    const unauthorized = await fetch(`${baseUrl}/api/admin/provider-events?provider=deliverect`);
+    const adminLogin = await fetch(`${baseUrl}/api/admin/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "akayla@mealops.ai", password: "password" }),
+    });
+    const adminCookie = adminLogin.headers.get("set-cookie") ?? "";
+    const list = await fetch(`${baseUrl}/api/admin/provider-events?provider=deliverect&status=ignored&limit=5`, {
+      headers: { cookie: adminCookie },
+    });
+    const detail = await fetch(`${baseUrl}/api/admin/provider-events/${event.id}`, {
+      headers: { cookie: adminCookie },
+    });
+
+    expect(unauthorized.status).toBe(401);
+    expect(adminLogin.status).toBe(200);
+    expect(list.status).toBe(200);
+    expect(await list.json()).toEqual([
+      expect.objectContaining({ id: event.id, provider: "deliverect", status: "ignored" }),
+    ]);
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toEqual(expect.objectContaining({ id: event.id, payload: expect.any(Object) }));
+  });
+
+  it("processes Deliverect checkout events into Phantom order status updates", async () => {
+    const service = createService();
+    const order = await submitSampleOrder(service, "deliverect-event-ref-1");
+
+    const event = await service.ingestProviderEvent("deliverect", "checkout.completed", {
+      id: "evt_deliverect_completed_1",
+      type: "checkout.completed",
+      checkoutId: "checkout_deliverect_1",
+      status: "completed",
+      metadata: {
+        phantomOrderReference: "deliverect-event-ref-1",
+      },
+    });
+    const detail = await service.getOrder(order.restaurantId, order.id);
+
+    expect(event.status).toBe("processed");
+    expect(event.orderId).toBe(order.id);
+    expect(detail.order.status).toBe("completed");
+    expect(detail.statusEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          orderId: order.id,
+          status: "completed",
+          message: "Deliverect checkout.completed reported completed.",
+        }),
+      ]),
+    );
+  });
+
+  it("deduplicates repeated Deliverect events by external event id", async () => {
+    const service = createService();
+    const order = await submitSampleOrder(service, "deliverect-event-ref-dedupe");
+    const payload = {
+      id: "evt_deliverect_duplicate_1",
+      type: "checkout.completed",
+      checkoutId: "checkout_deliverect_duplicate_1",
+      status: "completed",
+      metadata: {
+        phantomOrderReference: "deliverect-event-ref-dedupe",
+      },
+    };
+
+    const first = await service.ingestProviderEvent("deliverect", "checkout.completed", payload);
+    const second = await service.ingestProviderEvent("deliverect", "checkout.completed", payload);
+    const detail = await service.getOrder(order.restaurantId, order.id);
+    const completedEvents = detail.statusEvents.filter((event) => event.status === "completed");
+
+    expect(second.id).toBe(first.id);
+    expect(second.status).toBe("processed");
+    expect(completedEvents).toHaveLength(1);
+  });
+
+  it("ignores out-of-order Deliverect events after terminal statuses", async () => {
+    const service = createService();
+    const order = await submitSampleOrder(service, "deliverect-event-ref-terminal");
+
+    const completed = await service.ingestProviderEvent("deliverect", "checkout.completed", {
+      id: "evt_deliverect_terminal_completed",
+      type: "checkout.completed",
+      status: "completed",
+      metadata: {
+        phantomOrderReference: "deliverect-event-ref-terminal",
+      },
+    });
+    const stale = await service.ingestProviderEvent("deliverect", "checkout.accepted", {
+      id: "evt_deliverect_terminal_accepted",
+      type: "checkout.accepted",
+      status: "accepted",
+      metadata: {
+        phantomOrderReference: "deliverect-event-ref-terminal",
+      },
+    });
+    const detail = await service.getOrder(order.restaurantId, order.id);
+
+    expect(completed.status).toBe("processed");
+    expect(stale.status).toBe("ignored");
+    expect(detail.order.status).toBe("completed");
+    expect(detail.statusEvents).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "accepted",
+          message: "Deliverect checkout.accepted reported accepted.",
+        }),
+      ]),
+    );
+  });
+
+  it("discovers Olo onboarding locations through the backend API", async () => {
     const service = createService();
     const { server, baseUrl } = await startServer(service);
     openServers.push(server);
@@ -1040,16 +1824,16 @@ describe("PlatformService", () => {
     const response = await fetch(`${baseUrl}/api/onboarding/discover`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: "deliverect", query: "Sunnyvale" }),
+      body: JSON.stringify({ provider: "olo", query: "Palo Alto" }),
     });
     const payload = await response.json();
 
     expect(response.status).toBe(200);
-    expect(payload.provider).toBe("deliverect");
+    expect(payload.provider).toBe("olo");
     expect(payload.locations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          name: "Green Leaf Salads - Sunnyvale",
+          name: "Green Leaf Salads - Palo Alto",
         }),
       ]),
     );
@@ -1064,9 +1848,9 @@ describe("PlatformService", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        provider: "deliverect",
-        providerAccountId: "acct_deliverect_demo_001",
-        providerLocationIds: ["deliv_loc_1", "deliv_loc_2"],
+        provider: "olo",
+        providerAccountId: "acct_olo_demo_001",
+        providerLocationIds: ["olo_loc_1", "olo_loc_2"],
         email: "owner@example.com",
       }),
     });
@@ -1080,7 +1864,7 @@ describe("PlatformService", () => {
 
     expect(getResponse.status).toBe(200);
     expect(fetched.email).toBe("owner@example.com");
-    expect(fetched.providerLocationIds).toEqual(["deliv_loc_1", "deliv_loc_2"]);
+    expect(fetched.providerLocationIds).toEqual(["olo_loc_1", "olo_loc_2"]);
   });
 
   it("activates onboarding and signs the operator into the console", async () => {
@@ -1092,9 +1876,9 @@ describe("PlatformService", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        provider: "deliverect",
-        providerAccountId: "acct_deliverect_demo_001",
-        providerLocationIds: ["deliv_loc_1", "deliv_loc_2"],
+        provider: "pos",
+        providerAccountId: "acct_pos_demo_001",
+        providerLocationIds: ["pos_loc_1", "pos_loc_2"],
         fullName: "Chain Owner",
         email: "chain.owner@example.com",
         password: "password123",
@@ -1133,9 +1917,9 @@ describe("PlatformService", () => {
     const repository = (service as any).repository as InMemoryPlatformRepository;
     const authenticated = await repository.createOnboardingOperatorAccount({
       activation: {
-        provider: "deliverect",
-        providerAccountId: "acct_deliverect_demo_001",
-        providerLocationIds: ["deliv_loc_3"],
+        provider: "pos",
+        providerAccountId: "acct_pos_demo_001",
+        providerLocationIds: ["pos_loc_3"],
         fullName: "Chain Owner",
         email: "fallback.owner@example.com",
         password: "password123",
@@ -1143,7 +1927,7 @@ describe("PlatformService", () => {
       accountName: "Green Leaf Salads",
       locations: [
         {
-          id: "deliv_loc_3",
+          id: "pos_loc_3",
           name: "Green Leaf Salads - Palo Alto",
           address: "855 El Camino Real, Palo Alto, CA 94301",
           timezone: "America/Los_Angeles",
@@ -1159,7 +1943,7 @@ describe("PlatformService", () => {
       metadata: {
         source: "onboarding",
         accountName: "Green Leaf Salads",
-        providerLocationId: "deliv_loc_3",
+        providerLocationId: "pos_loc_3",
       },
     });
 

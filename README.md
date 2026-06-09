@@ -187,7 +187,7 @@ Provider events:
 ## Deliverect and mealops integration
 
 - Deliverect remote MCP server: [https://developers.deliverect.com/mcp](https://developers.deliverect.com/mcp)
-- Deliverect Commerce API reference: [https://developers.deliverect.com/reference/commerce-channel-api](https://developers.deliverect.com/reference/commerce-channel-api)
+- Deliverect Channel-first integration notes: [DELIVERECT_MEALOPS_INTEGRATION.md](/Users/akayla/Desktop/restaurant_platform/DELIVERECT_MEALOPS_INTEGRATION.md)
 - Phantom now exposes the minimum agent contract that `mealops_platform` / CoachImHungry needs:
   - restaurant discovery
   - full menu retrieval

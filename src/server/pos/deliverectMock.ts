@@ -21,7 +21,7 @@ export class DeliverectAdapterMock implements POSAdapter {
     return {
       ok: true,
       status: connection.status === "not_connected" ? "sandbox" : connection.status,
-      message: "Mock Deliverect commerce connection is healthy.",
+      message: "Mock Deliverect Channel connection is healthy.",
       checkedAt: new Date().toISOString(),
     };
   }
@@ -69,7 +69,7 @@ export class DeliverectAdapterMock implements POSAdapter {
       feesCents: 0,
       tipCents,
       totalCents: subtotalCents + taxCents + tipCents,
-      message: "Mock Deliverect basket quote generated.",
+      message: "Mock Deliverect Channel quote generated from Phantom canonical menu.",
     };
   }
 
@@ -134,7 +134,7 @@ export class DeliverectAdapterMock implements POSAdapter {
             ? `Mock catalog is loaded with ${context.menuItems.length} canonical items.`
             : "Mock catalog is empty.",
         },
-        { key: "quote_readiness", ok: true, message: "Mock basket pricing is ready." },
+        { key: "quote_readiness", ok: true, message: "Mock canonical menu quote pricing is ready." },
         { key: "submit_readiness", ok: true, message: "Mock checkout submission is ready." },
       ],
     };

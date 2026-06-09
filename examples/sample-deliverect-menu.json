@@ -1,0 +1,42 @@
+{
+  "items": [
+    {
+      "menuId": "menu_lunch",
+      "menu": "Lunch",
+      "categories": [
+        {
+          "name": "Bowls",
+          "products": [
+            {
+              "plu": "bowl_001",
+              "name": "Chicken Bowl",
+              "description": "Rice, chicken, greens, and sauce",
+              "price": 1299,
+              "status": "available",
+              "modifierGroups": [
+                {
+                  "id": "sauce_group",
+                  "name": "Sauce",
+                  "min": 0,
+                  "max": 2,
+                  "modifiers": [
+                    {
+                      "plu": "sauce_hot",
+                      "name": "Hot Sauce",
+                      "price": 50
+                    },
+                    {
+                      "plu": "sauce_garlic",
+                      "name": "Garlic Sauce",
+                      "price": 75
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

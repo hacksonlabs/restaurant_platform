@@ -62,38 +62,19 @@ export class DeliverectAdapterLive implements POSAdapter {
 
   async syncMenu(connection: POSConnection, context: POSContext): Promise<MenuSyncResult> {
     this.assertConfigured(connection);
-    const menus = await this.deliverectFetch(
-      `/commerce/${this.accountId(connection)}/stores/${this.storeId(connection)}/menus`,
-    );
-    const payload = await menus.json().catch(() => ({}));
-    if (!menus.ok) {
-      throw deliverectError(`Deliverect store menus request failed: ${menus.status} ${this.readError(payload)}`);
-    }
-    const menuCount = Array.isArray(payload) ? payload.length : Array.isArray((payload as any).data) ? (payload as any).data.length : undefined;
     return {
       status: "success",
       syncedAt: new Date().toISOString(),
       itemCount: context.menuItems.length,
       categoryCount: new Set(context.menuItems.map((item) => item.category)).size,
       modifierGroupCount: context.modifierGroups.length,
-      message: `Deliverect store menus fetched successfully${typeof menuCount === "number" ? ` (${menuCount} published menu(s)).` : "."}`,
+      message: "Deliverect Channel API menu sync is handled through inbound menu push/import; canonical catalog is ready for order payload mapping.",
     };
   }
 
   async validateOrder(order: CanonicalOrderIntent, context: POSContext): Promise<OrderValidationResult> {
     this.assertConfigured(context.connection);
     const issues = this.localReadinessIssues(order, context);
-    if (issues.length === 0) {
-      try {
-        await this.createBasket(order, context, true);
-      } catch (error) {
-        issues.push({
-          code: "deliverect_basket_validation_failed",
-          message: error instanceof Error ? error.message : "Deliverect basket validation failed.",
-          severity: "error",
-        });
-      }
-    }
     return {
       id: `deliverect_live_validation_${Date.now()}`,
       orderId: order.external_order_reference,
@@ -105,8 +86,7 @@ export class DeliverectAdapterLive implements POSAdapter {
 
   async quoteOrder(order: CanonicalOrderIntent, context: POSContext): Promise<OrderQuoteResult> {
     this.assertConfigured(context.connection);
-    const basket = await this.createBasket(order, context, false);
-    const totals = this.extractBasketTotals(basket);
+    const totals = this.calculateChannelTotals(order, context);
     return {
       ok: true,
       subtotalCents: totals.subtotalCents,
@@ -114,7 +94,7 @@ export class DeliverectAdapterLive implements POSAdapter {
       feesCents: totals.feesCents,
       tipCents: totals.tipCents,
       totalCents: totals.totalCents,
-      message: "Deliverect basket quote generated.",
+      message: "Deliverect Channel API local quote generated from canonical menu prices.",
     };
   }
 
@@ -125,158 +105,62 @@ export class DeliverectAdapterLive implements POSAdapter {
     context: POSContext,
   ): Promise<POSPaymentSessionResult> {
     this.assertConfigured(context.connection);
-    const basket = await this.createBasket(order, context, false);
-    const basketId = this.readBasketId(basket);
-    if (!basketId) {
-      return {
-        ok: false,
-        status: "failed",
-        redirectUrl: null,
-        paymentReference: null,
-        totalCents: quote.totalCents,
-        currency: "USD",
-        message: "Deliverect basket creation succeeded but no basket ID was returned.",
-        raw: basket,
-      };
-    }
-
-    const gateway = await this.getPreferredGateway(context.connection);
-    const response = await this.deliverectFetch(
-      `/pay/channel/${this.channelLinkId(context.connection)}/payments`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          basketId,
-          amount: quote.totalCents,
-          currency: "USD",
-          gatewayId: gateway.gatewayId,
-          returnUrl: paymentSession.successUrl,
-          cancelUrl: paymentSession.cancelUrl,
-          reference: order.external_order_reference,
-          metadata: {
-            phantomOrderReference: order.external_order_reference,
-            phantomRestaurantId: order.restaurant_id,
-            phantomAgentId: order.agent_id,
-          },
-        }),
-      },
-    );
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: "failed",
-        redirectUrl: null,
-        paymentReference: null,
-        totalCents: quote.totalCents,
-        currency: "USD",
-        message: `Deliverect payment request failed: ${response.status} ${this.readError(payload)}`,
-        raw: payload,
-      };
-    }
-
-    const paymentReference = this.readString(payload, "paymentId") ?? this.readString(payload, "id") ?? null;
-    const redirectUrl =
-      this.readString(payload, "redirectUrl") ??
-      this.readString(payload, "url") ??
-      this.readString((payload as any).links, "checkout") ??
-      this.readString((payload as any).links, "payment") ??
-      null;
-
-    if (!redirectUrl) {
-      return {
-        ok: false,
-        status: "failed",
-        redirectUrl: null,
-        paymentReference,
-        totalCents: quote.totalCents,
-        currency: "USD",
-        message: "Deliverect payment request succeeded but no redirect URL was returned.",
-        raw: payload,
-      };
-    }
-
     return {
-      ok: true,
-      status: "redirect_required",
-      redirectUrl,
-      paymentReference,
+      ok: false,
+      status: "failed",
+      redirectUrl: null,
+      paymentReference: null,
       totalCents: quote.totalCents,
       currency: "USD",
-      message: "Deliverect Pay session created.",
+      message: "Deliverect Channel API expects payment to be handled by the channel before order submission.",
       raw: {
-        ...payload,
-        gatewayId: gateway.gatewayId,
-        basketId,
+        successUrl: paymentSession.successUrl,
+        cancelUrl: paymentSession.cancelUrl,
+        orderReference: order.external_order_reference,
       },
     };
   }
 
   async submitOrder(order: CanonicalOrderIntent, quote: OrderQuoteResult, context: POSContext): Promise<POSSubmissionResult> {
     this.assertConfigured(context.connection);
-    const basket = await this.createBasket(order, context, false);
-    const basketId = this.readBasketId(basket);
-    if (!basketId) {
-      return {
-        ok: false,
-        externalOrderId: null,
-        status: "failed",
-        message: "Deliverect basket creation succeeded but no basket ID was returned.",
-        raw: basket,
-      };
-    }
-
-    const paymentPayload = await this.buildCheckoutPaymentPayload(order, basketId, context.connection);
-    const response = await this.deliverectFetch(`/commerce/${this.accountId(context.connection)}/v2/checkouts`, {
+    const payload = this.buildChannelOrderPayload(order, quote, context);
+    const response = await this.deliverectFetch(`/${this.channelName(context.connection)}/order/${this.channelLinkId(context.connection)}`, {
       method: "POST",
-      body: JSON.stringify({
-        basketId,
-        payment: paymentPayload,
-        metadata: {
-          phantomOrderReference: order.external_order_reference,
-          phantomRestaurantId: order.restaurant_id,
-          phantomAgentId: order.agent_id,
-        },
-      }),
+      body: JSON.stringify(payload),
     });
-    const payload = await response.json().catch(() => ({}));
+    const responsePayload = await response.json().catch(() => ({}));
     if (!response.ok) {
       return {
         ok: false,
         externalOrderId: null,
         status: "failed",
-        message: `Deliverect checkout failed: ${response.status} ${this.readError(payload)}`,
-        raw: payload,
+        message: `Deliverect channel order failed: ${response.status} ${this.readError(responsePayload)}`,
+        raw: responsePayload,
       };
     }
 
     const externalOrderId =
-      this.readString(payload, "checkoutId") ??
-      this.readString(payload, "id") ??
-      this.readString(payload, "orderId") ??
-      basketId;
+      this.readString(responsePayload, "channelOrderId") ??
+      this.readString(responsePayload, "orderId") ??
+      this.readString(responsePayload, "id") ??
+      order.external_order_reference;
 
     return {
       ok: true,
       externalOrderId,
       status: "submitted",
-      message: `Deliverect checkout created. Total submitted: ${quote.totalCents} cents.`,
-      raw: payload,
+      message: `Deliverect channel order submitted. Total submitted: ${quote.totalCents} cents.`,
+      raw: responsePayload,
     };
   }
 
   async getOrderStatus(posOrderId: string, context: POSContext): Promise<POSOrderStatusResult> {
     this.assertConfigured(context.connection);
-    const response = await this.deliverectFetch(`/commerce/${this.accountId(context.connection)}/v2/checkouts/${posOrderId}`);
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw deliverectError(`Deliverect checkout status lookup failed: ${response.status} ${this.readError(payload)}`);
-    }
     return {
       ok: true,
       externalOrderId: posOrderId,
-      status: this.mapCheckoutStatus(payload),
-      message: "Deliverect checkout status retrieved.",
+      status: "submitted_to_pos",
+      message: "Deliverect Channel API status is asynchronous; waiting for order status webhook.",
     };
   }
 
@@ -299,7 +183,14 @@ export class DeliverectAdapterLive implements POSAdapter {
       ok: Boolean(this.channelLinkId(connection)),
       message: this.channelLinkId(connection)
         ? "Deliverect channel link ID is configured."
-        : "Missing Deliverect channel link ID for basket and checkout requests.",
+        : "Missing Deliverect channel link ID for Channel API order requests.",
+    });
+    checks.push({
+      key: "channel_name",
+      ok: Boolean(this.channelName(connection)),
+      message: this.channelName(connection)
+        ? `Deliverect channel name/scope is configured as ${this.channelName(connection)}.`
+        : "Missing Deliverect channel name/scope for Channel API order requests.",
     });
     checks.push({
       key: "menu_sync",
@@ -317,30 +208,29 @@ export class DeliverectAdapterLive implements POSAdapter {
     }
 
     try {
-      const response = await this.deliverectFetch(`/commerce/${this.accountId(connection)}/stores/${this.storeId(connection)}`);
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw deliverectError(`Deliverect store lookup failed: ${response.status} ${this.readError(payload)}`);
-      }
-      checks.push({ key: "auth", ok: true, message: "Deliverect authentication and store lookup succeeded." });
+      await this.getAccessToken();
+      checks.push({ key: "auth", ok: true, message: "Deliverect authentication succeeded for Channel API requests." });
     } catch (error) {
       checks.push({ key: "auth", ok: false, message: error instanceof Error ? error.message : "Deliverect authentication failed." });
     }
 
-    const mappingReady = context.menuItems.every((item) => item.mappingStatus === "mapped");
+    const hasMenuItems = context.menuItems.length > 0;
+    const mappingReady = hasMenuItems && context.menuItems.every((item) => item.mappingStatus === "mapped");
     checks.push({
       key: "quote_readiness",
       ok: mappingReady,
       message: mappingReady
-        ? "Menu items are mapped and ready for Deliverect basket creation."
-        : "At least one canonical item still has mappingStatus=needs_review.",
+        ? "Menu items are mapped and ready for Deliverect Channel API order creation."
+        : hasMenuItems
+          ? "At least one canonical item still has mappingStatus=needs_review."
+          : "No imported canonical menu items are available for Deliverect Channel API order creation.",
     });
     checks.push({
       key: "submit_readiness",
       ok: mappingReady && checks.every((check) => check.ok),
       message: mappingReady
-        ? "Live checkout flow can proceed once the order is quoted and approved."
-        : "Live checkout flow blocked by mapping or configuration gaps.",
+        ? "Live Channel API order submission can proceed once the order is quoted and approved."
+        : "Live Channel API order flow blocked by mapping or configuration gaps.",
     });
     return buildChecks(checks);
   }
@@ -390,8 +280,13 @@ export class DeliverectAdapterLive implements POSAdapter {
     return this.readMetadataString(connection, "deliverectChannelLinkId") || this.env?.deliverectChannelLinkId || "";
   }
 
-  private readBasketId(payload: unknown) {
-    return this.readString(payload, "basketId") ?? this.readString(payload, "id");
+  private channelName(connection?: POSConnection) {
+    return (
+      this.readMetadataString(connection, "deliverectChannelName") ||
+      this.readMetadataString(connection, "channelName") ||
+      this.env?.deliverectScope ||
+      ""
+    ).replace(/^genericChannel:/, "");
   }
 
   private async getAccessToken() {
@@ -412,11 +307,14 @@ export class DeliverectAdapterLive implements POSAdapter {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Accept: "application/json",
       },
       body: JSON.stringify({
-        grantType: "client_credentials",
-        clientId: env.deliverectClientId,
-        clientSecret: env.deliverectClientSecret,
+        client_id: env.deliverectClientId,
+        client_secret: env.deliverectClientSecret,
+        audience: env.deliverectAudience || env.deliverectBaseUrl,
+        grant_type: env.deliverectGrantType || "token",
+        ...(env.deliverectScope ? { scope: env.deliverectScope } : {}),
       }),
     });
     const payload = await response.json().catch(() => ({}));
@@ -430,11 +328,7 @@ export class DeliverectAdapterLive implements POSAdapter {
     if (!accessToken) {
       throw deliverectError("Deliverect authentication succeeded but no access token was returned.");
     }
-    const expiresIn = Number(
-      this.readString(payload, "expires_in") ??
-      this.readString((payload as any).token, "expires_in") ??
-      3600,
-    );
+    const expiresIn = this.readTokenTtlSeconds(payload);
     this.tokenCache = {
       accessToken,
       expiresAt: Date.now() + expiresIn * 1000,
@@ -459,10 +353,46 @@ export class DeliverectAdapterLive implements POSAdapter {
     });
   }
 
+  private calculateChannelTotals(order: CanonicalOrderIntent, context: POSContext) {
+    const menuItemMap = new Map(context.menuItems.map((item) => [item.id, item]));
+    const modifierMap = new Map(context.modifiers.map((modifier) => [modifier.id, modifier]));
+    const subtotalCents = order.items.reduce((sum, item) => {
+      const menuItem = menuItemMap.get(item.item_id);
+      const itemSubtotal = (menuItem?.priceCents ?? 0) * item.quantity;
+      const modifierSubtotal = item.modifiers.reduce((modifierSum, modifier) => {
+        const modifierRecord = modifierMap.get(modifier.modifier_id);
+        return modifierSum + (modifierRecord?.priceCents ?? 0) * modifier.quantity;
+      }, 0);
+      return sum + itemSubtotal + modifierSubtotal;
+    }, 0);
+    const taxCents = this.metadataInteger(order, "tax_cents", "taxCents") ?? Math.round(subtotalCents * 0.09);
+    const feesCents =
+      this.metadataInteger(order, "fees_cents", "feesCents") ??
+      (this.metadataInteger(order, "delivery_cost_cents", "deliveryCostCents") ?? 0) +
+        (this.metadataInteger(order, "service_charge_cents", "serviceChargeCents") ?? 0);
+    const tipCents = this.tipCents(order);
+    return {
+      subtotalCents,
+      taxCents,
+      feesCents,
+      tipCents,
+      totalCents: subtotalCents + taxCents + feesCents + tipCents,
+    };
+  }
+
   private localReadinessIssues(order: CanonicalOrderIntent, context: POSContext): OrderValidationResult["issues"] {
     const issues: OrderValidationResult["issues"] = [];
     const menuItemMap = new Map(context.menuItems.map((item) => [item.id, item]));
     const modifierMap = new Map(context.modifiers.map((modifier) => [modifier.id, modifier]));
+
+    if (order.fulfillment_type === "catering") {
+      issues.push({
+        code: "deliverect_channel_order_type_unsupported",
+        message: "Deliverect Channel API supports pickup, delivery, eat-in, and curbside order types; catering is not mapped yet.",
+        field: "fulfillment_type",
+        severity: "error",
+      });
+    }
 
     order.items.forEach((item, index) => {
       const menuItem = menuItemMap.get(item.item_id);
@@ -498,217 +428,149 @@ export class DeliverectAdapterLive implements POSAdapter {
     return issues;
   }
 
-  private async createBasket(order: CanonicalOrderIntent, context: POSContext, validateOnly: boolean) {
-    const body = {
+  private buildChannelOrderPayload(order: CanonicalOrderIntent, quote: OrderQuoteResult, context: POSContext) {
+    const orderType = this.channelOrderType(order);
+    const deliveryIsAsap = this.deliveryIsAsap(order);
+    const requestedTime = new Date(order.requested_fulfillment_time).toISOString();
+    const paymentDue = order.payment_policy === "invoice_manual" ? quote.totalCents : 0;
+    const serviceCharge = this.metadataInteger(order, "service_charge_cents", "serviceChargeCents") ?? quote.feesCents;
+    const deliveryCost = this.metadataInteger(order, "delivery_cost_cents", "deliveryCostCents") ?? 0;
+    const serviceChargeTax = this.metadataInteger(order, "service_charge_tax_cents", "serviceChargeTaxCents") ?? 0;
+    const deliveryCostTax = this.metadataInteger(order, "delivery_cost_tax_cents", "deliveryCostTaxCents") ?? 0;
+    const discountTotal = this.metadataInteger(order, "discount_total_cents", "discountTotalCents") ?? 0;
+    const discounts = Array.isArray(order.metadata?.discounts) ? order.metadata.discounts : undefined;
+    const note = [
+      order.packaging_instructions,
+      order.dietary_constraints.length > 0 ? `Dietary constraints: ${order.dietary_constraints.join(", ")}` : "",
+      this.metadataString(order, "note", "order_note", "orderNote"),
+    ].filter(Boolean).join("\n");
+
+    return {
+      _id: order.external_order_reference,
+      channelOrderId: order.external_order_reference,
+      channelOrderDisplayId: this.displayOrderId(order.external_order_reference),
       channelLinkId: this.channelLinkId(context.connection),
-      fulfillment: this.mapFulfillment(order),
-      items: order.items.map((item) => this.mapBasketItem(item, context)),
+      orderType,
+      deliveryIsAsap,
+      ...(orderType === 2 ? { deliveryTime: requestedTime } : {}),
+      pickupTime: requestedTime,
+      placedTime: new Date().toISOString(),
+      courier: this.metadataString(order, "courier") ?? "restaurant",
+      decimalDigits: 2,
+      payment: {
+        amount: quote.totalCents,
+        type: order.payment_policy === "invoice_manual" ? 1 : 0,
+        due: paymentDue,
+        rebate: this.metadataInteger(order, "rebate_cents", "rebateCents") ?? 0,
+        commissionType: this.metadataString(order, "commission_type", "commissionType") ?? "",
+      },
+      taxes: quote.taxCents > 0 ? [{ name: "Sales tax", total: quote.taxCents }] : [],
+      taxRemitted: this.metadataInteger(order, "tax_remitted_cents", "taxRemittedCents") ?? 0,
+      items: order.items.map((item) => this.mapChannelOrderItem(item, context)),
+      includeCutlery: Boolean(order.metadata?.include_cutlery ?? order.metadata?.includeCutlery ?? false),
+      orderIsAlreadyPaid: order.payment_policy !== "invoice_manual",
+      ...(note ? { note } : {}),
+      numberOfCustomers: order.headcount,
       customer: {
         name: order.customer.name,
-        email: order.customer.email,
+        companyName: order.customer.teamName,
         phoneNumber: order.customer.phone,
+        email: order.customer.email,
       },
-      metadata: {
-        phantomOrderReference: order.external_order_reference,
-        phantomRestaurantId: order.restaurant_id,
-        phantomAgentId: order.agent_id,
-        validateOnly,
-      },
+      ...(order.fulfillment_type === "delivery" && order.fulfillment_address
+        ? { deliveryAddress: this.mapDeliveryAddress(order) }
+        : {}),
+      deliveryCost,
+      deliveryCostTax,
+      serviceCharge,
+      serviceChargeTax,
+      tip: quote.tipCents,
+      driverTip: this.metadataInteger(order, "driver_tip_cents", "driverTipCents") ?? 0,
+      bagFee: this.metadataInteger(order, "bag_fee_cents", "bagFeeCents") ?? 0,
+      ...(discountTotal !== 0 ? { discountTotal: discountTotal > 0 ? -discountTotal : discountTotal } : {}),
+      ...(discounts ? { discounts } : {}),
     };
-    const response = await this.deliverectFetch(`/commerce/${this.accountId(context.connection)}/baskets`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw deliverectError(`Deliverect basket creation failed: ${response.status} ${this.readError(payload)}`);
-    }
-    const basketId = this.readBasketId(payload);
-    const tipCents = this.tipCents(order);
-    if (!basketId || tipCents <= 0) {
-      return payload;
-    }
-    const tipPayload = await this.updateBasketTip(context.connection, basketId, tipCents);
-    if (isObject(tipPayload)) {
-      return tipPayload;
-    }
+  }
+
+  private channelOrderType(order: CanonicalOrderIntent) {
+    if (order.fulfillment_type === "pickup") return 1;
+    if (order.fulfillment_type === "delivery") return 2;
+    throw deliverectError(`Deliverect Channel API does not support fulfillment type ${order.fulfillment_type}.`);
+  }
+
+  private deliveryIsAsap(order: CanonicalOrderIntent) {
+    const override = order.metadata?.deliveryIsAsap ?? order.metadata?.delivery_is_asap;
+    if (typeof override === "boolean") return override;
+    const requestedAt = new Date(order.requested_fulfillment_time).getTime();
+    return Number.isFinite(requestedAt) && requestedAt - Date.now() <= 30 * 60 * 1000;
+  }
+
+  private displayOrderId(reference: string) {
+    return reference.length > 32 ? reference.slice(-32) : reference;
+  }
+
+  private mapDeliveryAddress(order: CanonicalOrderIntent) {
+    const address = order.fulfillment_address;
+    if (!address) return undefined;
     return {
-      ...(isObject(payload) ? payload : {}),
-      basketId,
-      tip: tipCents,
+      street: address.address1,
+      postalCode: address.postal_code,
+      city: address.city,
+      country: this.metadataString(order, "country", "delivery_country") ?? "US",
+      extraAddressInfo: address.notes,
     };
   }
 
-  private extractSourcePaymentProfile(order: CanonicalOrderIntent) {
-    const source = order.metadata?.source_payment_profile;
-    return isObject(source) ? source : null;
-  }
-
-  private async getPreferredGateway(connection: POSConnection) {
-    const configuredGatewayId = this.readMetadataString(connection, "deliverectGatewayId");
-    if (configuredGatewayId) {
-      return { gatewayId: configuredGatewayId };
-    }
-
-    const response = await this.deliverectFetch(`/pay/channel/${this.channelLinkId(connection)}/gateways`);
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw deliverectError(`Deliverect payment gateways lookup failed: ${response.status} ${this.readError(payload)}`);
-    }
-
-    const gateways = Array.isArray(payload)
-      ? payload
-      : Array.isArray((payload as any).data)
-        ? (payload as any).data
-        : Array.isArray((payload as any).gateways)
-          ? (payload as any).gateways
-          : [];
-
-    const preferredGateway = gateways.find((gateway) => isObject(gateway) && this.readString(gateway, "id"));
-    const gatewayId = preferredGateway ? this.readString(preferredGateway, "id") : null;
-    if (!gatewayId) {
-      throw deliverectError("No Deliverect payment gateway is configured for this channel link.");
-    }
-    return { gatewayId };
-  }
-
-  private async buildCheckoutPaymentPayload(order: CanonicalOrderIntent, basketId: string, connection: POSConnection) {
-    const sourcePaymentProfile = this.extractSourcePaymentProfile(order);
-    const paymentProof = isObject(sourcePaymentProfile?.payment_proof)
-      ? (sourcePaymentProfile?.payment_proof as Record<string, unknown>)
-      : null;
-    const paymentReference =
-      this.readString(paymentProof, "paymentReference") ??
-      this.readString(paymentProof, "payment_reference") ??
-      this.readString(paymentProof, "providerOrderId") ??
-      this.readString(paymentProof, "provider_order_id") ??
-      this.readString(sourcePaymentProfile, "provider_payment_reference");
-
-    if (!paymentReference) {
-      return {
-        type: "third_party",
-        externalId: order.external_order_reference,
-        isPrepaid: order.payment_policy !== "invoice_manual",
-        instrumentType: "online",
-      };
-    }
-
-    const paymentStatus = await this.fetchPaymentStatus(connection, paymentReference);
-    if (!paymentStatus.authorized) {
-      throw deliverectError(
-        `Deliverect payment ${paymentReference} is not ready for checkout (${paymentStatus.status || "pending"}).`,
-      );
-    }
-
-    return {
-      type: "deliverect_pay",
-      paymentId: paymentReference,
-      basketId,
-      isPrepaid: true,
-      instrumentType: "online",
-    };
-  }
-
-  private async fetchPaymentStatus(connection: POSConnection, paymentReference: string) {
-    const response = await this.deliverectFetch(
-      `/pay/channel/${this.channelLinkId(connection)}/payments/${paymentReference}`,
-    );
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw deliverectError(
-        `Deliverect payment status lookup failed: ${response.status} ${this.readError(payload)}`,
-      );
-    }
-
-    const rawStatus =
-      this.readString(payload, "status") ??
-      this.readString((payload as any).payment, "status") ??
-      "";
-    const normalized = rawStatus.toLowerCase();
-    const authorized =
-      normalized.includes("authorized") ||
-      normalized.includes("paid") ||
-      normalized.includes("succeeded") ||
-      normalized.includes("captured");
-
-    return {
-      authorized,
-      status: rawStatus,
-      payload,
-    };
-  }
-
-  private mapFulfillment(order: CanonicalOrderIntent) {
-    return {
-      type: order.fulfillment_type,
-      scheduledTime: order.requested_fulfillment_time,
-      address: order.fulfillment_address
-        ? {
-            address1: order.fulfillment_address.address1,
-            city: order.fulfillment_address.city,
-            state: order.fulfillment_address.state,
-            postalCode: order.fulfillment_address.postal_code,
-            notes: order.fulfillment_address.notes,
-          }
-        : undefined,
-    };
-  }
-
-  private mapBasketItem(item: CanonicalOrderIntent["items"][number], context: POSContext) {
+  private mapChannelOrderItem(item: CanonicalOrderIntent["items"][number], context: POSContext) {
     const menuItem = context.menuItems.find((entry) => entry.id === item.item_id);
+    const itemReference =
+      menuItem?.posRef.provider === "deliverect"
+        ? menuItem.posRef.externalId
+        : this.providerReference(context, "item", item.item_id);
     return {
-      plu: menuItem?.posRef.externalId ?? item.item_id,
-      quantity: item.quantity,
+      plu: itemReference ?? item.item_id,
       name: menuItem?.name ?? item.item_id,
+      price: menuItem?.priceCents ?? 0,
+      quantity: item.quantity,
+      ...(item.notes ? { remark: item.notes } : {}),
       subItems: item.modifiers.map((modifier) => {
         const modifierRecord = context.modifiers.find((entry) => entry.id === modifier.modifier_id);
         return {
-          plu: modifierRecord?.id ?? modifier.modifier_id,
-          quantity: modifier.quantity,
+          plu: this.providerReference(context, "modifier", modifier.modifier_id) ?? modifierRecord?.id ?? modifier.modifier_id,
           name: modifierRecord?.name ?? modifier.modifier_id,
+          price: modifierRecord?.priceCents ?? 0,
+          quantity: modifier.quantity,
         };
       }),
     };
   }
 
-  private extractBasketTotals(payload: unknown) {
-    const subtotalCents = this.findNumericValue(payload, ["subTotal", "subtotal", "subtotalAmount"]);
-    const taxCents = this.findNumericValue(payload, ["tax", "taxTotal", "taxAmount"]);
-    const feesCents =
-      this.findNumericValue(payload, ["serviceCharge", "serviceFee"]) +
-      this.findNumericValue(payload, ["deliveryCost", "deliveryFee"]) +
-      this.findNumericValue(payload, ["bagFee", "smallOrderFee"]);
-    const tipCents = this.findNumericValue(payload, ["tip"]);
-    const fallbackTotal = subtotalCents + taxCents + feesCents + tipCents;
-    const totalCents = this.findNumericValue(payload, ["total", "totalAmount", "paymentAmount"]) || fallbackTotal;
-    return { subtotalCents, taxCents, feesCents, tipCents, totalCents };
+  private providerReference(context: POSContext, canonicalType: "item" | "modifier_group" | "modifier", canonicalId: string) {
+    return context.menuMappings?.find(
+      (mapping) =>
+        mapping.provider === "deliverect" &&
+        mapping.canonicalType === canonicalType &&
+        mapping.canonicalId === canonicalId &&
+        mapping.status === "mapped",
+    )?.providerReference;
   }
 
-  private findNumericValue(payload: unknown, keys: string[]) {
-    if (!isObject(payload)) {
-      return 0;
-    }
+  private metadataString(order: CanonicalOrderIntent, ...keys: string[]) {
     for (const key of keys) {
-      const value = payload[key];
-      if (typeof value === "number" && Number.isFinite(value)) {
-        return Math.round(value);
-      }
-      if (typeof value === "string" && value.trim() && !Number.isNaN(Number(value))) {
-        return Math.round(Number(value));
-      }
+      const value = order.metadata?.[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
     }
-    return 0;
+    return undefined;
   }
 
-  private mapCheckoutStatus(payload: unknown): POSOrderStatusResult["status"] {
-    const rawStatus =
-      this.readString(payload, "status") ??
-      this.readString((payload as any).checkout, "status") ??
-      "pending";
-    const normalized = rawStatus.toLowerCase();
-    if (normalized.includes("completed") || normalized.includes("success")) return "accepted";
-    if (normalized.includes("failed") || normalized.includes("cancel")) return "failed";
-    return "submitted_to_pos";
+  private metadataInteger(order: CanonicalOrderIntent, ...keys: string[]) {
+    for (const key of keys) {
+      const value = order.metadata?.[key];
+      if (typeof value === "number" && Number.isFinite(value)) return Math.round(value);
+      if (typeof value === "string" && value.trim() && !Number.isNaN(Number(value))) return Math.round(Number(value));
+    }
+    return undefined;
   }
 
   private readError(payload: unknown) {
@@ -733,24 +595,26 @@ export class DeliverectAdapterLive implements POSAdapter {
     return typeof value === "string" ? value : typeof value === "number" ? String(value) : undefined;
   }
 
+  private readTokenTtlSeconds(payload: unknown) {
+    const expiresAt = Number(
+      this.readString(payload, "expires_at") ??
+      this.readString((payload as any).token, "expires_at"),
+    );
+    if (Number.isFinite(expiresAt) && expiresAt > 0) {
+      const expiresAtMs = expiresAt > 10_000_000_000 ? expiresAt : expiresAt * 1000;
+      return Math.max(60, Math.floor((expiresAtMs - Date.now()) / 1000));
+    }
+
+    const expiresIn = Number(
+      this.readString(payload, "expires_in") ??
+      this.readString((payload as any).token, "expires_in") ??
+      3600,
+    );
+    return Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 3600;
+  }
+
   private tipCents(order: CanonicalOrderIntent) {
     return Math.max(0, Math.round(Number(order.tip_cents ?? 0) || 0));
   }
 
-  private async updateBasketTip(connection: POSConnection, basketId: string, tipCents: number) {
-    const response = await this.deliverectFetch(
-      `/commerce/${this.accountId(connection)}/baskets/${basketId}/payment`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({
-          tip: tipCents,
-        }),
-      },
-    );
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw deliverectError(`Deliverect basket tip update failed: ${response.status} ${this.readError(payload)}`);
-    }
-    return payload;
-  }
 }

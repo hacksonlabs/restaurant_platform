@@ -1,4 +1,5 @@
 import { canonicalOrderIntentSchema } from "../../shared/schemas";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type {
   Agent,
   AgentApiScope,
@@ -33,11 +34,17 @@ import type {
   ValidationIssue,
   OperatorRole,
   POSProvider,
+  ProviderAccount,
+  ProviderLocation,
+  EventIngestionRecord,
   CreateTeamMemberInput,
   UpdateTeamMemberInput,
 } from "../../shared/types";
 import { POSAdapterRegistry } from "../pos/registry";
-import type { OrderDetailRecord, PlatformRepository } from "../repositories/platformRepository";
+import type { AppEnv } from "../config/env";
+import { normalizeDeliverectEvent } from "../providers/deliverectEventNormalizer";
+import { normalizeDeliverectMenu } from "../providers/deliverectMenuNormalizer";
+import type { CanonicalMenuReplacement, OrderDetailRecord, PlatformRepository } from "../repositories/platformRepository";
 import type { OperatorIdentity } from "../auth/supabaseAuth";
 import { randomToken, sha256 } from "../utils/crypto";
 import { createId } from "../utils/ids";
@@ -59,6 +66,158 @@ function normalizeText(value: unknown): string | null {
   if (value == null) return null;
   const text = String(value).trim();
   return text || null;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readString(payload: unknown, ...keys: string[]) {
+  if (!isObject(payload)) return undefined;
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return undefined;
+}
+
+function findNestedString(payload: unknown, keys: string[], depth = 0): string | undefined {
+  if (depth > 5 || payload == null) return undefined;
+  const direct = readString(payload, ...keys);
+  if (direct) return direct;
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const value = findNestedString(item, keys, depth + 1);
+      if (value) return value;
+    }
+    return undefined;
+  }
+  if (!isObject(payload)) return undefined;
+  for (const value of Object.values(payload)) {
+    const nested = findNestedString(value, keys, depth + 1);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+function extractDeliverectChannelLinkId(payload: unknown) {
+  return findNestedString(payload, ["channelLinkId", "channel_link_id", "channelLinkID", "channelLink"]);
+}
+
+function extractDeliverectMenuEventId(payload: unknown) {
+  return findNestedString(payload, ["eventId", "event_id", "_id", "id", "menuId", "menu_id"]);
+}
+
+function eventPayloadRecord(payload: unknown): Record<string, unknown> {
+  return isObject(payload) && !Array.isArray(payload) ? payload : { menus: payload };
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+  }
+  if (isObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function payloadHash(payload: unknown) {
+  return sha256(stableJson(payload));
+}
+
+function appendPath(baseUrl: string, path: string) {
+  return `${baseUrl.replace(/\/$/, "")}${path}`;
+}
+
+function deliverectProviderStatusFromChannelStatus(status: string | undefined): ProviderLocation["status"] {
+  const normalized = status?.trim().toLowerCase();
+  if (normalized === "inactive" || normalized === "disabled" || normalized === "disable" || normalized === "paused") return "disabled";
+  if (normalized === "active" || normalized === "online") return "connected";
+  return "sandbox";
+}
+
+function headerValue(headers: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = headers[key] ?? headers[key.toLowerCase()];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (Array.isArray(value)) {
+      const first = value.find((entry) => typeof entry === "string" && entry.trim());
+      if (typeof first === "string") return first.trim();
+    }
+  }
+  return undefined;
+}
+
+function normalizeHmacSignature(value: string) {
+  return value.trim().replace(/^sha256=/i, "").trim().toLowerCase();
+}
+
+function hmacSha256(rawBody: string, secret: string) {
+  return createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+}
+
+function timingSafeStringEqual(left: string, right: string) {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+const PROVIDER_FULFILLMENT_TYPE_VALUES = new Set(["pickup", "delivery", "catering"]);
+
+function readFulfillmentTypesFromProviderPayload(providerLocation: ProviderLocation) {
+  const raw = providerLocation.rawProviderPayload;
+  const candidates = [
+    raw.fulfillmentTypes,
+    raw.fulfillment_types,
+    raw.fulfillmentTypesSupported,
+    raw.fulfillment_types_supported,
+    raw.orderTypes,
+    raw.order_types,
+    raw.services,
+    raw.channelLink && typeof raw.channelLink === "object" ? (raw.channelLink as Record<string, unknown>).fulfillmentTypes : undefined,
+    raw.store && typeof raw.store === "object" ? (raw.store as Record<string, unknown>).fulfillmentTypes : undefined,
+  ];
+  return Array.from(
+    new Set(
+      candidates
+        .flatMap((candidate) => {
+          if (Array.isArray(candidate)) return candidate;
+          if (typeof candidate === "string") return candidate.split(",");
+          return [];
+        })
+        .map((value) => String(value).trim().toLowerCase())
+        .map((value) => value === "takeaway" || value === "takeout" || value === "collection" ? "pickup" : value)
+        .filter((value): value is "pickup" | "delivery" | "catering" => PROVIDER_FULFILLMENT_TYPE_VALUES.has(value)),
+    ),
+  );
+}
+
+const EVENT_STATUS_RANK: Partial<Record<AgentOrderStatus, number>> = {
+  received: 1,
+  needs_approval: 2,
+  approved: 3,
+  submitting_to_pos: 4,
+  submitted_to_pos: 5,
+  accepted: 6,
+  preparing: 7,
+  ready: 8,
+  completed: 9,
+  rejected: 10,
+  cancelled: 10,
+  failed: 10,
+};
+
+function shouldApplyProviderStatus(current: AgentOrderStatus, incoming: AgentOrderStatus) {
+  if (current === incoming) return false;
+  const currentRank = EVENT_STATUS_RANK[current] ?? 0;
+  const incomingRank = EVENT_STATUS_RANK[incoming] ?? 0;
+  if (currentRank >= 10) return false;
+  return incomingRank >= currentRank;
 }
 
 function slugify(value: string) {
@@ -104,31 +263,6 @@ function extractPOSTimezone(metadata: Record<string, unknown> | undefined): stri
 }
 
 const ONBOARDING_DISCOVERY_FIXTURES: Record<OnboardingProvider, OnboardingDiscoveredAccount> = {
-  deliverect: {
-    provider: "deliverect",
-    accountId: "acct_deliverect_demo_001",
-    name: "Green Leaf Salads",
-    locations: [
-      {
-        id: "deliv_loc_1",
-        name: "Green Leaf Salads - Sunnyvale",
-        address: "425 N Mathilda Ave, Sunnyvale, CA 94085",
-        timezone: "America/Los_Angeles",
-      },
-      {
-        id: "deliv_loc_2",
-        name: "Green Leaf Salads - Mountain View",
-        address: "301 Castro St, Mountain View, CA 94041",
-        timezone: "America/Los_Angeles",
-      },
-      {
-        id: "deliv_loc_3",
-        name: "Green Leaf Salads - Palo Alto",
-        address: "855 El Camino Real, Palo Alto, CA 94301",
-        timezone: "America/Los_Angeles",
-      },
-    ],
-  },
   olo: {
     provider: "olo",
     accountId: "acct_olo_demo_001",
@@ -199,10 +333,63 @@ export class PlatformService {
       createUserWithPassword(email: string, password: string, fullName: string): Promise<OperatorIdentity>;
       getUserById(userId: string): Promise<OperatorIdentity | null>;
     },
+    private env?: AppEnv,
   ) {}
 
   async listRestaurants() {
     return this.repository.listRestaurants();
+  }
+
+  verifyProviderWebhook(
+    provider: Extract<POSProvider, "toast" | "deliverect">,
+    headers: Record<string, unknown>,
+    body?: { rawBody?: string; payload?: unknown },
+  ) {
+    if (provider === "deliverect") {
+      const hmacSignature = headerValue(
+        headers,
+        "x-server-authorization-hmac-sha256",
+        "X-Server-Authorization-HMAC-SHA256",
+        "x-deliverect-hmac-sha256",
+        "x-deliverect-signature",
+      );
+      if (hmacSignature) {
+        if (!body?.rawBody) {
+          throw new Error("deliverect webhook HMAC verification failed because raw request body was unavailable.");
+        }
+        const channelLinkId = extractDeliverectChannelLinkId(body.payload);
+        const secretCandidates = Array.from(
+          new Set([this.env?.deliverectWebhookSecret, channelLinkId].filter((value): value is string => Boolean(value))),
+        );
+        if (secretCandidates.length === 0) {
+          throw new Error("deliverect webhook HMAC verification failed because no HMAC secret candidate was available.");
+        }
+        const provided = normalizeHmacSignature(hmacSignature);
+        const matched = secretCandidates.some((secret) => timingSafeStringEqual(hmacSha256(body.rawBody!, secret), provided));
+        if (!matched) {
+          throw new Error("deliverect webhook HMAC verification failed.");
+        }
+        return { verified: true, required: true, message: "deliverect webhook HMAC verified." };
+      }
+    }
+
+    const secret = provider === "deliverect" ? this.env?.deliverectWebhookSecret : this.env?.toastWebhookSecret;
+    if (!secret) {
+      return {
+        verified: false,
+        required: false,
+        message: `${provider} webhook secret is not configured; verification skipped.`,
+      };
+    }
+    const headerCandidates =
+      provider === "deliverect"
+        ? ["x-deliverect-webhook-secret", "x-provider-webhook-secret"]
+        : ["x-toast-webhook-secret", "x-provider-webhook-secret"];
+    const provided = headerValue(headers, ...headerCandidates);
+    if (provided !== secret) {
+      throw new Error(`${provider} webhook verification failed.`);
+    }
+    return { verified: true, required: true, message: `${provider} webhook verified.` };
   }
 
   async listAgentRestaurants(agentId: string) {
@@ -268,6 +455,67 @@ export class PlatformService {
       }),
     );
     return allowedEntries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+  }
+
+  async getAgentRestaurantDetail(restaurantId: string, agentId: string) {
+    await this.validateAgentAccess(restaurantId, agentId);
+    const [restaurant, location, rules, menu] = await Promise.all([
+      this.getRestaurant(restaurantId),
+      this.repository.getLocation(restaurantId),
+      this.getRules(restaurantId),
+      this.repository.getMenu(restaurantId),
+    ]);
+    const categories = Array.from(new Set(menu.items.map((item) => item.category))).map((name) => ({
+      name,
+      itemCount: menu.items.filter((item) => item.category === name).length,
+    }));
+    return {
+      restaurant: {
+        id: restaurant.id,
+        name: restaurant.name,
+        location: restaurant.location,
+        timezone: restaurant.timezone,
+        imageUrl: restaurant.imageUrl ?? null,
+        cuisineType: restaurant.cuisineType ?? null,
+        description: restaurant.description ?? null,
+        rating: restaurant.rating ?? null,
+        deliveryFee: restaurant.deliveryFee ?? null,
+        minimumOrder: restaurant.minimumOrder ?? null,
+        supportsCatering: restaurant.supportsCatering ?? false,
+        fulfillmentTypesSupported: restaurant.fulfillmentTypesSupported,
+        defaultApprovalMode: restaurant.defaultApprovalMode,
+        agentOrderingEnabled: restaurant.agentOrderingEnabled,
+      },
+      location: location
+        ? {
+            id: location.id,
+            name: location.name,
+            address1: location.address1,
+            city: location.city,
+            state: location.state,
+            postalCode: location.postalCode,
+            latitude: location.latitude ?? null,
+            longitude: location.longitude ?? null,
+          }
+        : null,
+      rules: {
+        minimumLeadTimeMinutes: rules.minimumLeadTimeMinutes,
+        maxOrderDollarAmount: rules.maxOrderDollarAmount,
+        maxItemQuantity: rules.maxItemQuantity,
+        maxHeadcount: rules.maxHeadcount,
+        allowedFulfillmentTypes: rules.allowedFulfillmentTypes,
+        substitutionPolicy: rules.substitutionPolicy,
+        paymentPolicy: rules.paymentPolicy,
+      },
+      menu: {
+        version: menu.version ?? null,
+        itemCount: menu.items.length,
+        modifierGroupCount: menu.modifierGroups.length,
+        modifierCount: menu.modifiers.length,
+        categories,
+        availableItemCount: menu.items.filter((item) => item.availability === "available").length,
+      },
+    };
   }
 
   async listAccessibleRestaurants(operatorUserId: string) {
@@ -795,6 +1043,533 @@ export class PlatformService {
     return this.repository.getMenu(restaurantId);
   }
 
+  async replaceCanonicalMenu(
+    restaurantId: string,
+    menu: CanonicalMenuReplacement,
+    summary = "Canonical menu imported.",
+    menuVersionId?: string,
+  ) {
+    const replacement = await this.repository.replaceCanonicalMenu(restaurantId, menu, menuVersionId);
+    await this.repository.appendAuditLog({
+      restaurantId,
+      actorType: "system",
+      actorId: "menu_import",
+      action: "menu.imported",
+      targetType: "restaurant",
+      targetId: restaurantId,
+      summary,
+    });
+    return replacement;
+  }
+
+  buildDeliverectChannelWebhookUrls(baseUrl: string) {
+    return {
+      statusUpdateURL: appendPath(baseUrl, "/api/internal/deliverect/channel/order-status"),
+      menuUpdateURL: appendPath(baseUrl, "/api/internal/deliverect/channel/menu"),
+      snoozeUnsnoozeURL: appendPath(baseUrl, "/api/internal/deliverect/channel/snooze"),
+      busyModeURL: appendPath(baseUrl, "/api/internal/deliverect/channel/busy-mode"),
+      updatePrepTimeURL: appendPath(baseUrl, "/api/internal/deliverect/channel/prep-time"),
+      courierUpdateURL: appendPath(baseUrl, "/api/internal/deliverect/channel/courier"),
+      paymentUpdateURL: appendPath(baseUrl, "/api/internal/deliverect/channel/payment"),
+    };
+  }
+
+  private async saveProviderEventOnce(record: Omit<EventIngestionRecord, "id" | "createdAt">) {
+    const duplicate = record.externalEventId
+      ? await this.repository.findEventIngestion(record.provider, record.externalEventId)
+      : record.payloadHash
+        ? await this.repository.findEventIngestionByPayloadHash(record.provider, record.payloadHash, record.eventType)
+        : null;
+    return duplicate ?? this.repository.saveEventIngestion(record);
+  }
+
+  async ingestDeliverectChannelRegistration(payload: Record<string, unknown>, baseUrl: string) {
+    const payloadRecord = eventPayloadRecord(payload);
+    const eventHash = payloadHash(payloadRecord);
+    const channelLinkId = extractDeliverectChannelLinkId(payload);
+    if (!channelLinkId) {
+      throw new Error("Deliverect channel registration is missing channelLinkId.");
+    }
+    const externalEventId = readString(payload, "eventId", "event_id", "id", "_id");
+    const duplicateEvent = externalEventId
+      ? await this.repository.findEventIngestion("deliverect", externalEventId)
+      : await this.repository.findEventIngestionByPayloadHash("deliverect", eventHash, "channel_registration");
+    const status = readString(payload, "status");
+    const externalLocationId = readString(payload, "locationId", "location", "channelLocationId") ?? channelLinkId;
+    const channelLocationId = readString(payload, "channelLocationId");
+    const channelName = this.env?.deliverectScope || "mealops";
+    const accounts = await this.repository.listProviderAccounts("deliverect");
+    const externalAccountId = readString(payload, "accountId", "account") ?? this.env?.deliverectAccountId ?? accounts[0]?.externalAccountId;
+    const account =
+      accounts.find((entry) => entry.externalAccountId === externalAccountId) ??
+      await this.repository.upsertProviderAccount({
+        provider: "deliverect",
+        externalAccountId: externalAccountId ?? "unknown_deliverect_account",
+        displayName: readString(payload, "accountName") ?? "Deliverect Channel Account",
+        environment: this.env?.deliverectBaseUrl.includes("staging") ? "sandbox" : "production",
+        status: deliverectProviderStatusFromChannelStatus(status),
+        metadata: { scope: channelName },
+        lastSyncedAt: new Date().toISOString(),
+      });
+    const providerLocations = await this.repository.listProviderLocations(account.id);
+    const existing = providerLocations.find(
+      (location) =>
+        location.provider === "deliverect" &&
+        (location.channelLinkId === channelLinkId ||
+          location.externalLocationId === externalLocationId ||
+          (channelLocationId && location.externalLocationId === channelLocationId)),
+    );
+    const location = await this.repository.upsertProviderLocation({
+      id: existing?.id,
+      providerAccountId: account.id,
+      provider: "deliverect",
+      externalLocationId,
+      externalStoreId: existing?.externalStoreId,
+      channelLinkId,
+      channelName: existing?.channelName ?? channelName,
+      name: readString(payload, "channelLinkName", "name") ?? existing?.name ?? `Deliverect channel ${channelLinkId}`,
+      address: existing?.address,
+      timezone: existing?.timezone,
+      status: deliverectProviderStatusFromChannelStatus(status),
+      mappedRestaurantId: existing?.mappedRestaurantId,
+      rawProviderPayload: {
+        ...(existing?.rawProviderPayload ?? {}),
+        channelRegistration: payload,
+        channelLocationId,
+        lastChannelStatus: status,
+      },
+      lastSyncedAt: new Date().toISOString(),
+    });
+    const event = duplicateEvent ?? await this.saveProviderEventOnce({
+      provider: "deliverect",
+      eventType: "channel_registration",
+      payload: payloadRecord,
+      payloadHash: eventHash,
+      externalEventId,
+      status: "processed",
+      processedAt: new Date().toISOString(),
+    });
+    return {
+      ok: true,
+      provider: "deliverect" as const,
+      eventType: "channel_registration",
+      eventId: event.id,
+      duplicate: Boolean(duplicateEvent),
+      channelLinkId,
+      providerLocationId: location.id,
+      restaurantId: location.mappedRestaurantId,
+      webhooks: this.buildDeliverectChannelWebhookUrls(baseUrl),
+    };
+  }
+
+  async ingestDeliverectMenuUpdate(payload: unknown) {
+    const channelLinkId = extractDeliverectChannelLinkId(payload);
+    const payloadRecord = eventPayloadRecord(payload);
+    const eventHash = payloadHash(payloadRecord);
+    const externalEventId = extractDeliverectMenuEventId(payload);
+    const snapshot = await this.repository.saveProviderMenuSnapshot({
+      provider: "deliverect",
+      channelLinkId,
+      payloadHash: eventHash,
+      externalEventId,
+      status: "received",
+      rawPayload: payloadRecord,
+      receivedAt: new Date().toISOString(),
+    });
+    if (!channelLinkId) {
+      await this.repository.updateProviderMenuSnapshot(snapshot.id, {
+        status: "failed",
+        error: "Deliverect menu update is missing channelLinkId.",
+        processedAt: new Date().toISOString(),
+      });
+      throw new Error("Deliverect menu update is missing channelLinkId.");
+    }
+
+    const providerLocations = await this.repository.listProviderLocations();
+    const providerLocation = providerLocations.find(
+      (location) => location.provider === "deliverect" && location.channelLinkId === channelLinkId,
+    );
+    if (!providerLocation) {
+      await Promise.all([
+        this.repository.updateProviderMenuSnapshot(snapshot.id, {
+          status: "ignored",
+          channelLinkId,
+          error: `No Deliverect provider location is mapped for channelLinkId ${channelLinkId}.`,
+          processedAt: new Date().toISOString(),
+        }),
+        this.saveProviderEventOnce({
+          provider: "deliverect",
+          eventType: "menu_update",
+          payload: payloadRecord,
+          payloadHash: eventHash,
+          externalEventId,
+          status: "ignored",
+          processedAt: new Date().toISOString(),
+        }),
+      ]);
+      throw new Error(`No Deliverect provider location is mapped for channelLinkId ${channelLinkId}.`);
+    }
+    if (!providerLocation.mappedRestaurantId) {
+      await Promise.all([
+        this.repository.updateProviderMenuSnapshot(snapshot.id, {
+          status: "ignored",
+          providerLocationId: providerLocation.id,
+          channelLinkId,
+          error: `Deliverect provider location ${providerLocation.id} is not mapped to a Phantom restaurant.`,
+          processedAt: new Date().toISOString(),
+        }),
+        this.saveProviderEventOnce({
+          provider: "deliverect",
+          eventType: "menu_update",
+          payload: payloadRecord,
+          payloadHash: eventHash,
+          externalEventId,
+          status: "ignored",
+          processedAt: new Date().toISOString(),
+        }),
+      ]);
+      throw new Error(`Deliverect provider location ${providerLocation.id} is not mapped to a Phantom restaurant.`);
+    }
+
+    const restaurantId = providerLocation.mappedRestaurantId;
+    await this.repository.updateProviderMenuSnapshot(snapshot.id, {
+      providerLocationId: providerLocation.id,
+      restaurantId,
+      channelLinkId,
+    });
+
+    const duplicateSnapshot = await this.repository.findProviderMenuSnapshot("deliverect", {
+      externalEventId,
+      payloadHash: eventHash,
+      excludeId: snapshot.id,
+    });
+    if (duplicateSnapshot?.status === "processed") {
+      const event = await this.saveProviderEventOnce({
+        provider: "deliverect",
+        eventType: "menu_update",
+        payload: payloadRecord,
+        payloadHash: eventHash,
+        externalEventId,
+        status: "ignored",
+        processedAt: new Date().toISOString(),
+      });
+      await this.repository.updateProviderMenuSnapshot(snapshot.id, {
+        status: "ignored",
+        error: `Duplicate menu payload already processed as snapshot ${duplicateSnapshot.id}.`,
+        processedAt: new Date().toISOString(),
+      });
+      return {
+        ok: true,
+        provider: "deliverect" as const,
+        eventType: "menu_update",
+        eventId: event.id,
+        duplicate: true,
+        channelLinkId,
+        providerLocationId: providerLocation.id,
+        restaurantId,
+        snapshotId: snapshot.id,
+        previousSnapshotId: duplicateSnapshot.id,
+      };
+    }
+
+    const normalized = normalizeDeliverectMenu(restaurantId, payload);
+    if (normalized.items.length === 0) {
+      await Promise.all([
+        this.repository.updateProviderMenuSnapshot(snapshot.id, {
+          status: "failed",
+          error: "No importable menu items were found in the Deliverect menu update payload.",
+          processedAt: new Date().toISOString(),
+        }),
+        this.saveProviderEventOnce({
+          provider: "deliverect",
+          eventType: "menu_update",
+          payload: payloadRecord,
+          payloadHash: eventHash,
+          externalEventId,
+          status: "failed",
+          processedAt: new Date().toISOString(),
+        }),
+      ]);
+      throw new Error("No importable menu items were found in the Deliverect menu update payload.");
+    }
+
+    const menuVersion = await this.repository.createCanonicalMenuVersion({
+      restaurantId,
+      provider: "deliverect",
+      providerMenuSnapshotId: snapshot.id,
+      versionHash: payloadHash({ provider: "deliverect", channelLinkId, normalized }),
+      status: "draft",
+      itemCount: normalized.items.length,
+      categoryCount: new Set(normalized.items.map((item) => item.category)).size,
+      modifierGroupCount: normalized.modifierGroups.length,
+      metadata: {
+        channelLinkId,
+        providerLocationId: providerLocation.id,
+      },
+    });
+
+    try {
+      const importedAt = new Date().toISOString();
+      const versionedMenu: CanonicalMenuReplacement = {
+        items: normalized.items.map((item) => ({ ...item, menuVersionId: menuVersion.id })),
+        modifierGroups: normalized.modifierGroups.map((group) => ({ ...group, menuVersionId: menuVersion.id })),
+        modifiers: normalized.modifiers.map((modifier) => ({ ...modifier, menuVersionId: menuVersion.id })),
+        mappings: normalized.mappings,
+      };
+      const replacement = await this.replaceCanonicalMenu(
+        restaurantId,
+        versionedMenu,
+        `Imported ${normalized.items.length} Deliverect menu item(s) from menu webhook for channel link ${channelLinkId}.`,
+        menuVersion.id,
+      );
+      const publishedVersion = await this.repository.publishCanonicalMenuVersion(menuVersion.id);
+      const connection = await this.getPOSConnection(restaurantId);
+      await this.repository.updatePOSConnection(connection.id, {
+        lastSyncedAt: importedAt,
+      });
+      const [event] = await Promise.all([
+        this.saveProviderEventOnce({
+          provider: "deliverect",
+          eventType: "menu_update",
+          payload: payloadRecord,
+          payloadHash: eventHash,
+          externalEventId,
+          status: "processed",
+          processedAt: importedAt,
+        }),
+        this.repository.updateProviderMenuSnapshot(snapshot.id, {
+          status: "processed",
+          processedAt: importedAt,
+        }),
+      ]);
+
+      return {
+        ok: true,
+        provider: "deliverect" as const,
+        eventType: "menu_update",
+        eventId: event.id,
+        snapshotId: snapshot.id,
+        menuVersionId: publishedVersion.id,
+        channelLinkId,
+        providerLocationId: providerLocation.id,
+        restaurantId,
+        importedAt,
+        itemCount: replacement.items.length,
+        modifierGroupCount: replacement.modifierGroups.length,
+        modifierCount: replacement.modifiers.length,
+        mappingCount: replacement.mappings.length,
+        needsReview: replacement.items.filter((item) => item.mappingStatus === "needs_review").length,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await Promise.all([
+        this.repository.updateProviderMenuSnapshot(snapshot.id, {
+          status: "failed",
+          error: message,
+          processedAt: new Date().toISOString(),
+        }),
+        this.saveProviderEventOnce({
+          provider: "deliverect",
+          eventType: "menu_update",
+          payload: payloadRecord,
+          payloadHash: eventHash,
+          externalEventId,
+          status: "failed",
+          processedAt: new Date().toISOString(),
+        }),
+      ]);
+      throw error;
+    }
+  }
+
+  async ingestDeliverectChannelSnoozeUpdate(payload: Record<string, unknown>) {
+    const eventHash = payloadHash(payload);
+    const providerLocation = await this.requireDeliverectProviderLocationForPayload(payload, "snooze_update");
+    const changed = providerLocation.mappedRestaurantId
+      ? await this.applyDeliverectSnoozeUpdate(providerLocation.mappedRestaurantId, payload)
+      : 0;
+    const event = await this.saveProviderEventOnce({
+      provider: "deliverect",
+      eventType: "snooze_update",
+      payload,
+      payloadHash: eventHash,
+      externalEventId: this.deliverectChannelEventId("snooze_update", payload),
+      status: providerLocation.mappedRestaurantId ? "processed" : "ignored",
+      processedAt: new Date().toISOString(),
+    });
+    await this.rememberDeliverectChannelState(providerLocation, "snooze", payload, providerLocation.status);
+    return {
+      ok: true,
+      provider: "deliverect" as const,
+      eventType: "snooze_update",
+      eventId: event.id,
+      channelLinkId: providerLocation.channelLinkId,
+      providerLocationId: providerLocation.id,
+      restaurantId: providerLocation.mappedRestaurantId,
+      changedItemCount: changed,
+    };
+  }
+
+  async ingestDeliverectChannelBusyMode(payload: Record<string, unknown>) {
+    const eventHash = payloadHash(payload);
+    const providerLocation = await this.requireDeliverectProviderLocationForPayload(payload, "busy_mode");
+    const event = await this.saveProviderEventOnce({
+      provider: "deliverect",
+      eventType: "busy_mode",
+      payload,
+      payloadHash: eventHash,
+      externalEventId: this.deliverectChannelEventId("busy_mode", payload),
+      status: "processed",
+      processedAt: new Date().toISOString(),
+    });
+    const status = deliverectProviderStatusFromChannelStatus(readString(payload, "status"));
+    const updated = await this.rememberDeliverectChannelState(providerLocation, "busyMode", payload, status);
+    return {
+      ok: true,
+      provider: "deliverect" as const,
+      eventType: "busy_mode",
+      eventId: event.id,
+      channelLinkId: updated.channelLinkId,
+      providerLocationId: updated.id,
+      restaurantId: updated.mappedRestaurantId,
+      providerLocationStatus: updated.status,
+    };
+  }
+
+  async ingestDeliverectChannelEvent(eventType: string, payload: Record<string, unknown>) {
+    const result = await this.ingestProviderEvent("deliverect", eventType, payload);
+    return {
+      ok: true,
+      provider: "deliverect" as const,
+      eventType,
+      eventId: result.id,
+      status: result.status,
+      orderId: result.orderId,
+      externalEventId: result.externalEventId,
+    };
+  }
+
+  private async requireDeliverectProviderLocationForPayload(payload: Record<string, unknown>, eventType: string) {
+    const channelLinkId = extractDeliverectChannelLinkId(payload);
+    const locationId = readString(payload, "locationId", "location");
+    const providerLocations = await this.repository.listProviderLocations();
+    const providerLocation = providerLocations.find(
+      (location) =>
+        location.provider === "deliverect" &&
+        ((channelLinkId && location.channelLinkId === channelLinkId) ||
+          (locationId && location.externalLocationId === locationId)),
+    );
+    if (!providerLocation) {
+      await this.saveProviderEventOnce({
+        provider: "deliverect",
+        eventType,
+        payload,
+        payloadHash: payloadHash(payload),
+        externalEventId: this.deliverectChannelEventId(eventType, payload),
+        status: "ignored",
+        processedAt: new Date().toISOString(),
+      });
+      throw new Error(`No Deliverect provider location is mapped for channelLinkId ${channelLinkId ?? "(missing)"}.`);
+    }
+    return providerLocation;
+  }
+
+  private deliverectChannelEventId(eventType: string, payload: Record<string, unknown>) {
+    const explicitEventId = readString(payload, "eventId", "event_id", "id", "_id");
+    if (explicitEventId) return explicitEventId;
+    const orderReference = readString(payload, "orderId", "channelOrderId");
+    const timestamp = readString(payload, "timeStamp", "timestamp", "updatedAt");
+    if (!orderReference && !timestamp) return undefined;
+    return [
+      eventType,
+      extractDeliverectChannelLinkId(payload) ?? readString(payload, "locationId", "location"),
+      orderReference,
+      readString(payload, "status", "action"),
+      timestamp,
+    ].filter(Boolean).join(":") || undefined;
+  }
+
+  private async rememberDeliverectChannelState(
+    providerLocation: ProviderLocation,
+    key: string,
+    payload: Record<string, unknown>,
+    status: ProviderLocation["status"],
+  ) {
+    return this.repository.upsertProviderLocation({
+      id: providerLocation.id,
+      providerAccountId: providerLocation.providerAccountId,
+      provider: providerLocation.provider,
+      externalLocationId: providerLocation.externalLocationId,
+      externalStoreId: providerLocation.externalStoreId,
+      channelLinkId: providerLocation.channelLinkId,
+      channelName: providerLocation.channelName,
+      name: providerLocation.name,
+      address: providerLocation.address,
+      timezone: providerLocation.timezone,
+      status,
+      mappedRestaurantId: providerLocation.mappedRestaurantId,
+      rawProviderPayload: {
+        ...providerLocation.rawProviderPayload,
+        channelState: {
+          ...(isObject(providerLocation.rawProviderPayload.channelState)
+            ? providerLocation.rawProviderPayload.channelState
+            : {}),
+          [key]: {
+            payload,
+            receivedAt: new Date().toISOString(),
+          },
+        },
+      },
+      lastSyncedAt: providerLocation.lastSyncedAt,
+    });
+  }
+
+  private async applyDeliverectSnoozeUpdate(restaurantId: string, payload: Record<string, unknown>) {
+    const menu = await this.repository.getMenu(restaurantId);
+    const referenceByItemId = new Map(
+      menu.mappings
+        .filter((mapping) => mapping.provider === "deliverect" && mapping.canonicalType === "item")
+        .map((mapping) => [mapping.canonicalId, mapping.providerReference]),
+    );
+    const updates = new Map<string, "available" | "unavailable">();
+    let completeSnoozeSet: Set<string> | null = null;
+    const operations = Array.isArray(payload.operations) ? payload.operations : [];
+    for (const operation of operations) {
+      if (!isObject(operation)) continue;
+      const action = readString(operation, "action")?.toLowerCase();
+      const data = isObject(operation.data) ? operation.data : {};
+      const itemReferences = Array.isArray(data.items) ? data.items.map((item) => readString(item, "plu")).filter(Boolean) : [];
+      const allSnoozed = Array.isArray(data.allSnoozedItems)
+        ? data.allSnoozedItems.map((item) => readString(item, "plu")).filter(Boolean)
+        : null;
+      if (allSnoozed) {
+        completeSnoozeSet = new Set(allSnoozed);
+      }
+      for (const reference of itemReferences) {
+        updates.set(reference!, action === "unsnooze" ? "available" : "unavailable");
+      }
+    }
+    if (updates.size === 0 && !completeSnoozeSet) return 0;
+    let changed = 0;
+    const items = menu.items.map((item) => {
+      const providerReference = item.posRef.provider === "deliverect" ? item.posRef.externalId : referenceByItemId.get(item.id);
+      if (!providerReference) return item;
+      const availability = completeSnoozeSet
+        ? completeSnoozeSet.has(providerReference) ? "unavailable" : "available"
+        : updates.get(providerReference);
+      if (!availability || availability === item.availability) return item;
+      changed += 1;
+      return { ...item, availability };
+    });
+    if (changed === 0) return 0;
+    await this.replaceCanonicalMenu(
+      restaurantId,
+      { ...menu, items },
+      `Applied Deliverect snooze update to ${changed} canonical menu item(s).`,
+    );
+    return changed;
+  }
+
   async syncMenu(restaurantId: string) {
     const context = await this.getPOSContext(restaurantId);
     const adapter = this.adapters.getAdapter(context.connection);
@@ -927,6 +1702,212 @@ export class PlatformService {
       candidate = `${base}-${suffix}`;
     }
     return candidate;
+  }
+
+  async listProviderAccounts(_authenticated: AuthenticatedPlatformAdmin, provider?: POSProvider) {
+    return this.repository.listProviderAccounts(provider);
+  }
+
+  async listProviderLocations(_authenticated: AuthenticatedPlatformAdmin, providerAccountId?: string) {
+    return this.repository.listProviderLocations(providerAccountId);
+  }
+
+  async listProviderEvents(
+    _authenticated: AuthenticatedPlatformAdmin,
+    filter: {
+      provider?: Extract<POSProvider, "toast" | "deliverect">;
+      status?: EventIngestionRecord["status"];
+      limit?: number;
+    } = {},
+  ) {
+    return this.repository.listEventIngestions(filter);
+  }
+
+  async getProviderEvent(_authenticated: AuthenticatedPlatformAdmin, eventId: string) {
+    const event = await this.repository.getEventIngestion(eventId);
+    if (!event) {
+      throw new Error(`Provider event ${eventId} not found.`);
+    }
+    return event;
+  }
+
+  async listProviderMenuSnapshots(
+    _authenticated: AuthenticatedPlatformAdmin,
+    filter: {
+      provider?: POSProvider;
+      providerLocationId?: string;
+      restaurantId?: string;
+      status?: "received" | "processed" | "failed" | "ignored";
+      limit?: number;
+    } = {},
+  ) {
+    return this.repository.listProviderMenuSnapshots(filter);
+  }
+
+  async getProviderMenuSnapshot(_authenticated: AuthenticatedPlatformAdmin, snapshotId: string) {
+    const snapshot = await this.repository.getProviderMenuSnapshot(snapshotId);
+    if (!snapshot) {
+      throw new Error(`Provider menu snapshot ${snapshotId} not found.`);
+    }
+    return snapshot;
+  }
+
+  async listCanonicalMenuVersions(_authenticated: AuthenticatedPlatformAdmin, restaurantId?: string) {
+    return this.repository.listCanonicalMenuVersions(restaurantId);
+  }
+
+  async addProviderLocation(
+    authenticated: AuthenticatedPlatformAdmin,
+    input: {
+      provider: POSProvider;
+      externalAccountId: string;
+      accountDisplayName: string;
+      environment?: ProviderAccount["environment"];
+      externalLocationId: string;
+      externalStoreId?: string;
+      channelLinkId: string;
+      channelName?: string;
+      name: string;
+      address?: string;
+      timezone?: string;
+      status?: ProviderLocation["status"];
+      metadata?: Record<string, unknown>;
+    },
+  ): Promise<{ account: ProviderAccount; location: ProviderLocation }> {
+    const now = new Date().toISOString();
+    const account = await this.repository.upsertProviderAccount({
+      provider: input.provider,
+      externalAccountId: input.externalAccountId,
+      displayName: input.accountDisplayName,
+      environment: input.environment ?? "sandbox",
+      status: input.status ?? "sandbox",
+      metadata: {
+        baseUrl: input.provider === "deliverect" ? this.env?.deliverectBaseUrl : undefined,
+        scope: input.provider === "deliverect" ? this.env?.deliverectScope || "mealops" : undefined,
+        source: "manual",
+      },
+      lastSyncedAt: now,
+    });
+    const location = await this.repository.upsertProviderLocation({
+      providerAccountId: account.id,
+      provider: input.provider,
+      externalLocationId: input.externalLocationId,
+      externalStoreId: input.externalStoreId ?? input.externalLocationId,
+      channelLinkId: input.channelLinkId,
+      channelName: input.channelName,
+      name: input.name,
+      address: input.address,
+      timezone: input.timezone,
+      status: input.status ?? "sandbox",
+      rawProviderPayload: {
+        source: "manual",
+        ...(input.metadata ?? {}),
+      },
+      lastSyncedAt: now,
+    });
+    await this.applyProviderLocationSettings(location);
+
+    await this.appendPlatformAdminAudit(
+      authenticated,
+      "provider.location_added",
+      `Added ${input.provider} provider location ${input.name}.`,
+      location.id,
+    );
+
+    return { account, location };
+  }
+
+  async mapProviderLocationToRestaurant(
+    authenticated: AuthenticatedPlatformAdmin,
+    providerLocationId: string,
+    restaurantId: string,
+    mode: "mock" | "live" = "live",
+    status: "sandbox" | "connected" = "sandbox",
+  ) {
+    const [restaurant, providerLocations] = await Promise.all([
+      this.repository.getRestaurant(restaurantId),
+      this.repository.listProviderLocations(),
+    ]);
+    if (!restaurant) {
+      throw new Error(`Restaurant ${restaurantId} not found.`);
+    }
+    const providerLocation = providerLocations.find((entry) => entry.id === providerLocationId);
+    if (!providerLocation) {
+      throw new Error(`Provider location ${providerLocationId} not found.`);
+    }
+
+    const connection = await this.repository.mapProviderLocationToRestaurant({
+      providerLocationId,
+      restaurantId,
+      mode,
+      status,
+    });
+    await this.applyProviderLocationSettings({ ...providerLocation, mappedRestaurantId: restaurantId });
+    await this.appendPlatformAdminAudit(
+      authenticated,
+      "provider.location_mapped",
+      `Mapped ${providerLocation.provider} location ${providerLocation.name} to ${restaurant.name}.`,
+      connection.id,
+    );
+    return connection;
+  }
+
+  async provisionProviderLocation(
+    authenticated: AuthenticatedPlatformAdmin,
+    providerLocationId: string,
+    options?: { contactEmail?: string; contactPhone?: string },
+  ) {
+    const result = await this.repository.provisionRestaurantFromProviderLocation({
+      providerLocationId,
+      contactEmail: options?.contactEmail ?? "ops@mealops.ai",
+      contactPhone: options?.contactPhone ?? "(000) 000-0000",
+    });
+    await this.appendPlatformAdminAudit(
+      authenticated,
+      result.created ? "provider.location_provisioned" : "provider.location_provision_skipped",
+      result.created
+        ? `Provisioned ${result.providerLocation.provider} location ${result.providerLocation.name} as ${result.restaurant.name}.`
+        : `Provider location ${result.providerLocation.name} is already provisioned.`,
+      result.restaurant.id,
+    );
+    return result;
+  }
+
+  async provisionProviderLocations(
+    authenticated: AuthenticatedPlatformAdmin,
+    providerAccountId?: string,
+    options?: { contactEmail?: string; contactPhone?: string },
+  ) {
+    const locations = await this.repository.listProviderLocations(providerAccountId);
+    const results = [];
+    for (const location of locations) {
+      results.push(await this.provisionProviderLocation(authenticated, location.id, options));
+    }
+    return {
+      createdCount: results.filter((entry) => entry.created).length,
+      existingCount: results.filter((entry) => !entry.created).length,
+      results,
+    };
+  }
+
+  private async applyProviderLocationSettings(providerLocation: ProviderLocation) {
+    if (!providerLocation.mappedRestaurantId) return;
+    const fulfillmentTypes = readFulfillmentTypesFromProviderPayload(providerLocation);
+    if (fulfillmentTypes.length === 0) return;
+    const [restaurant, rules] = await Promise.all([
+      this.repository.getRestaurant(providerLocation.mappedRestaurantId),
+      this.repository.getRules(providerLocation.mappedRestaurantId),
+    ]);
+    if (!restaurant || !rules) return;
+    await Promise.all([
+      this.repository.updateRestaurant(providerLocation.mappedRestaurantId, {
+        fulfillmentTypesSupported: fulfillmentTypes,
+        updatedAt: new Date().toISOString(),
+      }),
+      this.repository.updateRules(providerLocation.mappedRestaurantId, {
+        allowedFulfillmentTypes: fulfillmentTypes,
+      }),
+    ]);
   }
 
   async getPlatformAdminPartners(_authenticated: AuthenticatedPlatformAdmin): Promise<PlatformAdminPartnerRecord[]> {
@@ -1433,18 +2414,36 @@ export class PlatformService {
     orderId: string,
     status: AgentOrderStatus,
     message: string,
-    options: { refreshReporting?: boolean } = {},
+    options: {
+      refreshReporting?: boolean;
+      source?: "manager" | "agent" | "system" | "provider";
+      provider?: POSProvider;
+      providerEventId?: string;
+      externalStatus?: string;
+      rawEventRef?: string;
+      actorType?: "manager" | "agent" | "system";
+      actorId?: string;
+    } = {},
   ) {
     const updated = await this.repository.updateOrder(orderId, {
       status,
       updatedAt: new Date().toISOString(),
     });
     await Promise.all([
-      this.repository.appendStatusEvent({ orderId, status, message }),
+      this.repository.appendStatusEvent({
+        orderId,
+        status,
+        message,
+        source: options.source,
+        provider: options.provider,
+        providerEventId: options.providerEventId,
+        externalStatus: options.externalStatus,
+        rawEventRef: options.rawEventRef,
+      }),
       this.repository.appendAuditLog({
         restaurantId,
-        actorType: "manager",
-        actorId: "demo_manager",
+        actorType: options.actorType ?? "manager",
+        actorId: options.actorId ?? "demo_manager",
         action: `order.${status}`,
         targetType: "agent_order",
         targetId: orderId,
@@ -1538,12 +2537,21 @@ export class PlatformService {
 
   async submitOrderToPOS(restaurantId: string, orderId: string) {
     const detail = await this.requireSingleOrderDetail(restaurantId, orderId);
+    const context = await this.getPOSContext(restaurantId);
+    const priorSubmission = detail.submissions.find(
+      (submission) =>
+        submission.provider === context.connection.provider &&
+        submission.status !== "failed" &&
+        Boolean(submission.externalOrderId),
+    );
+    if (priorSubmission) {
+      return priorSubmission;
+    }
     const quote = await this.ensureFreshQuote(detail.order);
     await this.assertReadyForPOSSubmission(detail.order, quote);
     await this.updateOrderStatus(restaurantId, orderId, "submitting_to_pos", "Submitting order to POS.", {
       refreshReporting: false,
     });
-    const context = await this.getPOSContext(restaurantId);
     const adapter = this.adapters.getAdapter(context.connection);
     const payloadSnapshot = this.buildPayloadSnapshot(detail.order, quote, context);
     const response = await this.withRetry(
@@ -1720,11 +2728,76 @@ export class PlatformService {
   }
 
   async ingestProviderEvent(provider: Extract<POSProvider, "toast" | "deliverect">, eventType: string, payload: Record<string, unknown>) {
-    return this.repository.saveEventIngestion({
+    const eventHash = payloadHash(payload);
+    if (provider === "deliverect") {
+      const normalized = normalizeDeliverectEvent(eventType, payload);
+      const existing = normalized.externalEventId
+        ? await this.repository.findEventIngestion(provider, normalized.externalEventId)
+        : await this.repository.findEventIngestionByPayloadHash(provider, eventHash, eventType);
+      if (existing) return existing;
+      const orderIdFromPayload = typeof payload.orderId === "string" ? payload.orderId : undefined;
+      const matchedOrderId =
+        (orderIdFromPayload && (await this.repository.getOrderById(orderIdFromPayload)) ? orderIdFromPayload : null) ??
+        (normalized.externalOrderReference ? await this.repository.findOrderIdByReference(normalized.externalOrderReference) : null);
+      if (matchedOrderId && normalized.status) {
+        const order = await this.repository.getOrderById(matchedOrderId);
+        if (!order) {
+          throw new Error(`Order ${matchedOrderId} not found.`);
+        }
+        if (!shouldApplyProviderStatus(order.status, normalized.status)) {
+          return this.saveProviderEventOnce({
+            provider,
+            eventType,
+            payload,
+            payloadHash: eventHash,
+            externalEventId: normalized.externalEventId,
+            orderId: matchedOrderId,
+            status: "ignored",
+            processedAt: new Date().toISOString(),
+          });
+        }
+        await this.updateOrderStatus(order.restaurantId, matchedOrderId, normalized.status, normalized.message, {
+          source: "provider",
+          provider,
+          providerEventId: normalized.externalEventId,
+          externalStatus: normalized.externalStatus,
+          rawEventRef: normalized.rawEventRef,
+          actorType: "system",
+          actorId: "deliverect_webhook",
+        });
+        return this.saveProviderEventOnce({
+          provider,
+          eventType,
+          payload,
+          payloadHash: eventHash,
+          externalEventId: normalized.externalEventId,
+          orderId: matchedOrderId,
+          status: "processed",
+          processedAt: new Date().toISOString(),
+        });
+      }
+      return this.saveProviderEventOnce({
+        provider,
+        eventType,
+        payload,
+        payloadHash: eventHash,
+        externalEventId: normalized.externalEventId,
+        orderId: matchedOrderId ?? orderIdFromPayload,
+        status: matchedOrderId ? "received" : "ignored",
+        processedAt: matchedOrderId ? undefined : new Date().toISOString(),
+      });
+    }
+    const externalEventId = typeof payload.id === "string" ? payload.id : undefined;
+    const existing = externalEventId
+      ? await this.repository.findEventIngestion(provider, externalEventId)
+      : await this.repository.findEventIngestionByPayloadHash(provider, eventHash, eventType);
+    if (existing) return existing;
+    return this.saveProviderEventOnce({
       provider,
       eventType,
       payload,
-      externalEventId: typeof payload.id === "string" ? payload.id : undefined,
+      payloadHash: eventHash,
+      externalEventId,
       orderId: typeof payload.orderId === "string" ? payload.orderId : undefined,
       status: "received",
       processedAt: undefined,
@@ -1957,9 +3030,11 @@ export class PlatformService {
       restaurant,
       location,
       connection,
+      menuVersion: menu.version,
       menuItems: menu.items,
       modifierGroups: menu.modifierGroups,
       modifiers: menu.modifiers,
+      menuMappings: menu.mappings,
     };
   }
 
@@ -2006,6 +3081,19 @@ export class PlatformService {
       });
     }
 
+    const requestedMenuVersionId =
+      normalizeText(order.metadata?.menu_version_id) ??
+      normalizeText(order.metadata?.menuVersionId) ??
+      normalizeText(order.metadata?.canonical_menu_version_id);
+    if (context.menuVersion && requestedMenuVersionId && requestedMenuVersionId !== context.menuVersion.id) {
+      issues.push({
+        code: "menu_version_stale",
+        message: "The cart was built against an older menu version. Refresh the restaurant menu and validate again.",
+        field: "metadata.menu_version_id",
+        severity: "error",
+      });
+    }
+
     const menuItemMap = new Map(context.menuItems.map((item) => [item.id, item]));
     const modifierGroupMap = new Map(context.modifierGroups.map((group) => [group.id, group]));
     const modifierMap = new Map(context.modifiers.map((modifier) => [modifier.id, modifier]));
@@ -2026,6 +3114,14 @@ export class PlatformService {
         return;
       }
       aggregateTotalCents += menuItem.priceCents * item.quantity;
+      if (menuItem.availability !== "available") {
+        issues.push({
+          code: "item_unavailable",
+          message: `${menuItem.name} is currently unavailable.`,
+          field: `items.${index}.item_id`,
+          severity: "error",
+        });
+      }
       if (menuItem.mappingStatus === "needs_review") {
         issues.push({
           code: "mapping_needs_review",
@@ -2034,9 +3130,14 @@ export class PlatformService {
           severity: "warning",
         });
       }
+      const modifierSelectionsByGroup = new Map<string, number>();
       item.modifiers.forEach((modifier, modifierIndex) => {
         const group = modifierGroupMap.get(modifier.modifier_group_id);
         const modifierRecord = modifierMap.get(modifier.modifier_id);
+        modifierSelectionsByGroup.set(
+          modifier.modifier_group_id,
+          (modifierSelectionsByGroup.get(modifier.modifier_group_id) ?? 0) + modifier.quantity,
+        );
         if (!group || !menuItem.modifierGroupIds.includes(group.id)) {
           issues.push({
             code: "modifier_group_invalid",
@@ -2053,9 +3154,42 @@ export class PlatformService {
             severity: "error",
           });
         } else {
+          if (!modifierRecord.isAvailable) {
+            issues.push({
+              code: "modifier_unavailable",
+              message: `${modifierRecord.name} is currently unavailable.`,
+              field: `items.${index}.modifiers.${modifierIndex}.modifier_id`,
+              severity: "error",
+            });
+          }
           aggregateTotalCents += modifierRecord.priceCents * modifier.quantity;
         }
       });
+
+      if (context.menuVersion) {
+        menuItem.modifierGroupIds.forEach((groupId) => {
+          const group = modifierGroupMap.get(groupId);
+          if (!group) return;
+          const selectionCount = modifierSelectionsByGroup.get(groupId) ?? 0;
+          const minimum = Math.max(group.required ? 1 : 0, group.minSelections);
+          if (selectionCount < minimum) {
+            issues.push({
+              code: "required_modifier_missing",
+              message: `${group.name} requires at least ${minimum} selection${minimum === 1 ? "" : "s"}.`,
+              field: `items.${index}.modifiers`,
+              severity: "error",
+            });
+          }
+          if (group.maxSelections != null && selectionCount > group.maxSelections) {
+            issues.push({
+              code: "too_many_modifiers",
+              message: `${group.name} allows at most ${group.maxSelections} selection${group.maxSelections === 1 ? "" : "s"}.`,
+              field: `items.${index}.modifiers`,
+              severity: "error",
+            });
+          }
+        });
+      }
     });
 
     if (aggregateItemQuantity > rules.maxItemQuantity) {
@@ -2156,6 +3290,8 @@ export class PlatformService {
       canonicalOrder: order.orderIntent,
       quote: this.quoteToQuoteResult(quote),
       posProvider: context.connection.provider,
+      menuVersionId: context.menuVersion?.id,
+      orderIdempotencyKey: this.buildIdempotencyKey("submit", order.orderIntent),
       restaurantGuid: context.connection.restaurantGuid,
       locationId: context.connection.locationId,
       mappedItemIds: order.orderIntent.items.map((item) => item.item_id),

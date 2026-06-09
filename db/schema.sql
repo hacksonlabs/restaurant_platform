@@ -55,6 +55,8 @@ create table if not exists pos_connections (
   id text primary key,
   restaurant_id text not null references restaurants(id) on delete cascade,
   provider text not null references pos_providers(id),
+  provider_account_id text,
+  provider_location_id text,
   status text not null check (status in ('not_connected', 'sandbox', 'connected', 'error', 'disabled')),
   mode text not null check (mode in ('mock', 'live')),
   restaurant_guid text,
@@ -64,6 +66,88 @@ create table if not exists pos_connections (
   last_synced_at timestamptz
 );
 
+alter table pos_connections add column if not exists provider_account_id text;
+alter table pos_connections add column if not exists provider_location_id text;
+
+create table if not exists provider_accounts (
+  id text primary key,
+  provider text not null references pos_providers(id),
+  external_account_id text not null,
+  display_name text not null,
+  environment text not null check (environment in ('sandbox', 'production')),
+  status text not null check (status in ('not_connected', 'sandbox', 'connected', 'error', 'disabled')),
+  metadata jsonb not null default '{}'::jsonb,
+  last_synced_at timestamptz,
+  created_at timestamptz not null,
+  updated_at timestamptz not null,
+  unique (provider, external_account_id, environment)
+);
+
+create table if not exists provider_locations (
+  id text primary key,
+  provider_account_id text not null references provider_accounts(id) on delete cascade,
+  provider text not null references pos_providers(id),
+  external_location_id text not null,
+  external_store_id text,
+  channel_link_id text,
+  channel_name text,
+  name text not null,
+  address text,
+  timezone text,
+  status text not null check (status in ('not_connected', 'sandbox', 'connected', 'error', 'disabled')),
+  mapped_restaurant_id text references restaurants(id) on delete set null,
+  raw_provider_payload jsonb not null default '{}'::jsonb,
+  last_synced_at timestamptz,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+);
+
+create unique index if not exists provider_locations_unique_channel_idx
+  on provider_locations (provider_account_id, external_location_id, (coalesce(channel_link_id, '')));
+
+create table if not exists provider_menu_snapshots (
+  id text primary key,
+  provider text not null references pos_providers(id),
+  provider_location_id text references provider_locations(id) on delete set null,
+  restaurant_id text references restaurants(id) on delete set null,
+  channel_link_id text,
+  payload_hash text not null,
+  external_event_id text,
+  status text not null check (status in ('received', 'processed', 'failed', 'ignored')),
+  raw_payload jsonb not null,
+  error text,
+  received_at timestamptz not null default now(),
+  processed_at timestamptz
+);
+
+create index if not exists provider_menu_snapshots_lookup_idx
+  on provider_menu_snapshots (provider, channel_link_id, received_at desc);
+
+create index if not exists provider_menu_snapshots_event_idx
+  on provider_menu_snapshots (provider, external_event_id)
+  where external_event_id is not null;
+
+create index if not exists provider_menu_snapshots_hash_idx
+  on provider_menu_snapshots (provider, payload_hash);
+
+create table if not exists canonical_menu_versions (
+  id text primary key,
+  restaurant_id text not null references restaurants(id) on delete cascade,
+  provider text not null references pos_providers(id),
+  provider_menu_snapshot_id text references provider_menu_snapshots(id) on delete set null,
+  version_hash text not null,
+  status text not null check (status in ('draft', 'published', 'failed', 'retired')),
+  item_count integer not null default 0,
+  category_count integer not null default 0,
+  modifier_group_count integer not null default 0,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  published_at timestamptz
+);
+
+create index if not exists canonical_menu_versions_restaurant_status_idx
+  on canonical_menu_versions (restaurant_id, status, published_at desc);
+
 create table if not exists canonical_modifier_groups (
   id text primary key,
   restaurant_id text not null references restaurants(id) on delete cascade,
@@ -71,16 +155,28 @@ create table if not exists canonical_modifier_groups (
   selection_type text not null check (selection_type in ('single', 'multi')),
   required boolean not null default false,
   min_selections integer not null default 0,
-  max_selections integer
+  max_selections integer,
+  menu_version_id text references canonical_menu_versions(id) on delete set null,
+  sort_order integer
 );
+
+alter table canonical_modifier_groups add column if not exists menu_version_id text references canonical_menu_versions(id) on delete set null;
+alter table canonical_modifier_groups add column if not exists sort_order integer;
 
 create table if not exists canonical_modifiers (
   id text primary key,
   modifier_group_id text not null references canonical_modifier_groups(id) on delete cascade,
   name text not null,
   price_cents integer not null default 0,
-  is_available boolean not null default true
+  is_available boolean not null default true,
+  menu_version_id text references canonical_menu_versions(id) on delete set null,
+  sort_order integer,
+  tax_metadata jsonb not null default '{}'::jsonb
 );
+
+alter table canonical_modifiers add column if not exists menu_version_id text references canonical_menu_versions(id) on delete set null;
+alter table canonical_modifiers add column if not exists sort_order integer;
+alter table canonical_modifiers add column if not exists tax_metadata jsonb not null default '{}'::jsonb;
 
 create table if not exists canonical_menu_items (
   id text primary key,
@@ -93,10 +189,16 @@ create table if not exists canonical_menu_items (
   availability text not null check (availability in ('available', 'unavailable')),
   mapping_status text not null check (mapping_status in ('mapped', 'needs_review')),
   modifier_group_ids text[] not null default '{}'::text[],
+  menu_version_id text references canonical_menu_versions(id) on delete set null,
+  sort_order integer,
+  tax_metadata jsonb not null default '{}'::jsonb,
   pos_ref jsonb not null default '{}'::jsonb
 );
 
 alter table canonical_menu_items add column if not exists image_url text;
+alter table canonical_menu_items add column if not exists menu_version_id text references canonical_menu_versions(id) on delete set null;
+alter table canonical_menu_items add column if not exists sort_order integer;
+alter table canonical_menu_items add column if not exists tax_metadata jsonb not null default '{}'::jsonb;
 
 create table if not exists pos_menu_mappings (
   id text primary key,
@@ -273,8 +375,11 @@ create table if not exists order_validation_results (
   order_id text not null references agent_orders(id) on delete cascade,
   valid boolean not null,
   issues jsonb not null default '[]'::jsonb,
-  checked_at timestamptz not null default now()
+  checked_at timestamptz not null default now(),
+  idempotency_key text
 );
+
+alter table order_validation_results add column if not exists idempotency_key text;
 
 create table if not exists order_quotes (
   id text primary key,
@@ -309,8 +414,19 @@ create table if not exists order_status_events (
   order_id text not null references agent_orders(id) on delete cascade,
   status text not null,
   message text not null,
+  source text not null default 'system' check (source in ('manager', 'agent', 'system', 'provider')),
+  provider text references pos_providers(id),
+  provider_event_id text,
+  external_status text,
+  raw_event_ref text,
   created_at timestamptz not null default now()
 );
+
+alter table order_status_events add column if not exists source text not null default 'system';
+alter table order_status_events add column if not exists provider text references pos_providers(id);
+alter table order_status_events add column if not exists provider_event_id text;
+alter table order_status_events add column if not exists external_status text;
+alter table order_status_events add column if not exists raw_event_ref text;
 
 create table if not exists reporting_daily_metrics (
   id text primary key,
@@ -371,9 +487,20 @@ create table if not exists event_ingestion_records (
   provider text not null references pos_providers(id),
   event_type text not null,
   external_event_id text,
+  payload_hash text,
   order_id text references agent_orders(id) on delete set null,
   status text not null check (status in ('received', 'processed', 'failed', 'ignored')),
   payload jsonb not null,
   created_at timestamptz not null default now(),
   processed_at timestamptz
 );
+
+alter table event_ingestion_records add column if not exists payload_hash text;
+
+create unique index if not exists event_ingestion_provider_external_event_idx
+  on event_ingestion_records (provider, external_event_id)
+  where external_event_id is not null;
+
+create index if not exists event_ingestion_provider_payload_hash_idx
+  on event_ingestion_records (provider, payload_hash)
+  where payload_hash is not null;

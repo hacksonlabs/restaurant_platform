@@ -31,7 +31,11 @@ async function main() {
     response.setHeader("Cache-Control", "public, max-age=3600");
     response.send(svg);
   });
-  app.use(express.json());
+  app.use(express.json({
+    verify: (request: any, _response, buffer) => {
+      request.rawBody = buffer.toString("utf8");
+    },
+  }));
   app.use(attachRequestContext);
   app.use("/api", createApiRouter(service));
 

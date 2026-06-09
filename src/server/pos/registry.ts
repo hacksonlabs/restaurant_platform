@@ -17,6 +17,10 @@ export class POSAdapterRegistry {
   }
 
   getAdapter(connection: POSConnection): POSAdapter {
+    if (connection.provider === "mock") {
+      return this.toastMock;
+    }
+
     if (connection.provider === "deliverect") {
       const mode = this.modeOverride ?? connection.mode;
       return mode === "live" ? this.deliverectLive : this.deliverectMock;

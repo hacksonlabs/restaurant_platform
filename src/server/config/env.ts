@@ -48,6 +48,9 @@ export interface AppEnv {
   toastAccessToken: string;
   toastWebhookSecret: string;
   deliverectBaseUrl: string;
+  deliverectAudience: string;
+  deliverectGrantType: string;
+  deliverectScope: string;
   deliverectClientId: string;
   deliverectClientSecret: string;
   deliverectAccessToken: string;
@@ -91,6 +94,12 @@ export function getEnv(): AppEnv {
     toastAccessToken: text(process.env.TOAST_ACCESS_TOKEN),
     toastWebhookSecret: text(process.env.TOAST_WEBHOOK_SECRET),
     deliverectBaseUrl: text(process.env.DELIVERECT_BASE_URL, "https://api.staging.deliverect.com"),
+    deliverectAudience: text(
+      process.env.DELIVERECT_AUDIENCE,
+      text(process.env.DELIVERECT_BASE_URL, "https://api.staging.deliverect.com"),
+    ),
+    deliverectGrantType: text(process.env.DELIVERECT_GRANT_TYPE, "token"),
+    deliverectScope: text(process.env.DELIVERECT_SCOPE),
     deliverectClientId: text(process.env.DELIVERECT_CLIENT_ID),
     deliverectClientSecret: text(process.env.DELIVERECT_CLIENT_SECRET),
     deliverectAccessToken: text(process.env.DELIVERECT_ACCESS_TOKEN),

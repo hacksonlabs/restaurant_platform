@@ -1,118 +1,78 @@
-# Deliverect + MealOps Integration Contract
+# Deliverect Channel Integration Contract
 
-This document defines the practical contract Phantom now exposes between:
+Phantom treats Deliverect as a push-based Channel provider.
 
-- restaurant-side integrations such as Deliverect
-- customer-side agents such as `mealops_platform` / CoachImHungry
+## Core Flow
 
-## Goal
+```text
+Deliverect Channel registration/menu webhooks
+  -> Phantom provider account/location + raw menu snapshot
+  -> Phantom canonical menu version
+  -> CoachImHungry cart
+  -> Phantom validation/quote/order
+  -> Deliverect Channel order submission
+  -> Deliverect status/availability webhooks
+```
 
-Keep Phantom as the single restaurant-ordering gateway while letting:
+Phantom owns restaurant, menu, cart, validation, order, and status abstractions. Agents never call Deliverect and never receive raw Deliverect account/location objects.
 
-- Deliverect provide restaurant/store/menu/checkout connectivity
-- CoachImHungry discover restaurants, retrieve full menus, and place orders on behalf of customers
+## Deliverect Webhook Endpoints
 
-## External contract for CoachImHungry
+Configure Deliverect to call:
+
+```text
+POST /api/internal/deliverect/channel/register
+POST /api/internal/deliverect/channel/menu
+POST /api/internal/deliverect/channel/order-status
+POST /api/internal/deliverect/channel/snooze
+POST /api/internal/deliverect/channel/busy-mode
+POST /api/internal/deliverect/channel/prep-time
+POST /api/internal/deliverect/channel/courier
+POST /api/internal/deliverect/channel/payment
+```
+
+`GET /api/internal/deliverect/channel/webhooks` returns the URL map Phantom sends back during Channel registration.
+
+## Persistence
+
+- `provider_accounts`: Deliverect account-level identity.
+- `provider_locations`: Deliverect Channel location/link identity, including `channel_link_id`.
+- `provider_menu_snapshots`: every incoming raw menu payload, hash, event ID, status, and processing error.
+- `canonical_menu_versions`: published Phantom menu versions derived from snapshots.
+- `canonical_menu_items`, `canonical_modifier_groups`, `canonical_modifiers`, `pos_menu_mappings`: Phantom canonical menu and Deliverect PLU/ref mappings.
+- `event_ingestion_records`: idempotent webhook audit trail.
+- `order_status_events`: canonical status history with provider event metadata.
+
+## Agent API
 
 All agent calls use `x-agent-api-key`.
 
-### Discover restaurants
+- `GET /api/agent/restaurants`
+- `GET /api/agent/restaurants/:restaurantId`
+- `GET /api/agent/restaurants/:restaurantId/menu`
+- `POST /api/agent/restaurants/:restaurantId/orders/validate`
+- `POST /api/agent/restaurants/:restaurantId/orders/quote`
+- `POST /api/agent/restaurants/:restaurantId/orders/submit`
+- `GET /api/agent/orders/:orderId/status`
 
-`GET /api/agent/restaurants`
+The detail and menu endpoints return Phantom canonical data and menu version metadata.
 
-Returns only restaurants where:
+## Admin Debug API
 
-- agent ordering is enabled
-- the agent has an `allowed` permission
+- `GET /api/admin/provider-accounts`
+- `GET /api/admin/provider-locations`
+- `POST /api/admin/provider-locations/:providerLocationId/map`
+- `GET /api/admin/provider-events`
+- `GET /api/admin/provider-events/:eventId`
+- `GET /api/admin/provider-menu-snapshots`
+- `GET /api/admin/provider-menu-snapshots/:snapshotId`
+- `GET /api/admin/canonical-menu-versions`
+- `GET /api/restaurants/:restaurantId/operations/diagnostics`
+- `GET /api/restaurants/:restaurantId/orders/:orderId`
 
-Each result includes enough metadata to support discovery and routing:
+## Notes
 
-- `id`
-- `name`
-- `location`
-- `timezone`
-- `posProvider`
-- `fulfillmentTypesSupported`
-- `defaultApprovalMode`
-- `posConnectionStatus`
-
-### Get full menu
-
-`GET /api/agent/restaurants/:restaurantId/menu`
-
-Returns the restaurant's canonical menu:
-
-- items
-- modifier groups
-- modifiers
-- provider mappings
-
-### Validate order
-
-`POST /api/agent/restaurants/:restaurantId/orders/validate`
-
-Runs Phantom's restaurant rules and returns structured issues before quoting or submission.
-
-### Quote order
-
-`POST /api/agent/restaurants/:restaurantId/orders/quote`
-
-Returns subtotal, tax, fees, and total using the configured provider adapter.
-
-### Submit order
-
-`POST /api/agent/restaurants/:restaurantId/orders/submit`
-
-Creates the order inside Phantom, persists validation and quote state, and enters the restaurant approval / POS submission lifecycle.
-
-### Poll order status
-
-`GET /api/agent/orders/:orderId/status`
-
-Returns Phantom's last known order state and latest provider order ID if available.
-
-## Deliverect integration seam
-
-Phantom now includes Deliverect adapters in `src/server/pos`:
-
-- `DeliverectAdapterMock`
-- `DeliverectAdapterLive`
-
-The live adapter is shaped around Deliverect's current Commerce API flow:
-
-1. Get stores
-2. Get store menus
-3. Create basket
-4. Checkout basket
-5. Receive asynchronous checkout updates
-
-## Deliverect provider metadata
-
-For a Deliverect-backed restaurant, `POSConnection.metadata` should carry:
-
-- `deliverectAccountId`
-- `deliverectStoreId`
-- `deliverectChannelLinkId`
-
-Environment fallbacks are also supported:
-
-- `DELIVERECT_ACCOUNT_ID`
-- `DELIVERECT_STORE_ID`
-- `DELIVERECT_CHANNEL_LINK_ID`
-
-## Inbound events
-
-Phantom accepts provider event ingestion at:
-
-- `POST /api/internal/events/toast`
-- `POST /api/internal/events/deliverect`
-
-That keeps webhook/event intake provider-specific without changing the core order service.
-
-## Recommended next step
-
-The remaining production step is to finish Deliverect payload normalization for:
-
-- published menu ingestion into Phantom's canonical menu tables
-- basket payload mapping from canonical items/modifiers to Deliverect PLUs
-- checkout status webhook processing back into Phantom order timeline/status events
+- Deliverect location/menu discovery is intentionally not part of the MVP core flow.
+- Deliverect order submission uses Channel order creation with `channelName` and `channelLinkId` from the mapped provider location.
+- Webhook idempotency uses provider event ID when present, otherwise a stable payload hash.
+- Cart validation is always performed against the latest published Phantom canonical menu version and restaurant rules.

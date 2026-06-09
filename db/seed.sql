@@ -1,4 +1,5 @@
 insert into pos_providers (id, name) values
+  ('mock', 'Mock'),
   ('toast', 'Toast'),
   ('square', 'Square'),
   ('deliverect', 'Deliverect'),
@@ -918,3 +919,39 @@ on conflict (id) do update set
   status = excluded.status,
   message = excluded.message,
   created_at = excluded.created_at;
+
+update restaurants
+set pos_provider = 'mock'
+where id in (
+  'rest_green_leaf_salads',
+  'rest_lb_steakhouse',
+  'rest_sunrise_taqueria',
+  'rest_sakura_sushi_house',
+  'rest_midnight_noodle_bar',
+  'rest_harbor_sandwich_co',
+  'rest_pizza_palace',
+  'rest_jlc3hzu8',
+  'rest_ppz0f1ib',
+  'rest_i9mlgfu2',
+  'rest_j4q7sqa6',
+  'rest_xhzkpqk3',
+  'rest_3lkd85zu'
+);
+
+update pos_connections
+set provider = 'mock', mode = 'mock', status = 'sandbox'
+where restaurant_id in (
+  'rest_green_leaf_salads',
+  'rest_lb_steakhouse',
+  'rest_sunrise_taqueria',
+  'rest_sakura_sushi_house',
+  'rest_midnight_noodle_bar',
+  'rest_harbor_sandwich_co',
+  'rest_pizza_palace',
+  'rest_jlc3hzu8',
+  'rest_ppz0f1ib',
+  'rest_i9mlgfu2',
+  'rest_j4q7sqa6',
+  'rest_xhzkpqk3',
+  'rest_3lkd85zu'
+);
