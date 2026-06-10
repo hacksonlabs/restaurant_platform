@@ -213,6 +213,51 @@ export function createApiRouter(service: PlatformService) {
   );
 
   router.get(
+    "/admin/debug/deliverect/webhooks",
+    asyncHandler(async (request, response) => {
+      response.json(
+        await service.listDeliverectWebhookDebug(request.platformAdminSession!, {
+          status: parseOptionalProviderEventStatus(request.query.status),
+          limit: parseOptionalNumber(request.query.limit),
+        }),
+      );
+    }),
+  );
+
+  router.get(
+    "/admin/debug/deliverect/menus",
+    asyncHandler(async (request, response) => {
+      const providerLocationId = typeof request.query.providerLocationId === "string" ? request.query.providerLocationId : undefined;
+      const restaurantId = typeof request.query.restaurantId === "string" ? request.query.restaurantId : undefined;
+      const channelLinkId = typeof request.query.channelLinkId === "string" ? request.query.channelLinkId : undefined;
+      response.json(
+        await service.listDeliverectMenuDebug(request.platformAdminSession!, {
+          providerLocationId,
+          restaurantId,
+          channelLinkId,
+          status: parseOptionalProviderEventStatus(request.query.status),
+          limit: parseOptionalNumber(request.query.limit),
+        }),
+      );
+    }),
+  );
+
+  router.get(
+    "/admin/debug/deliverect/orders",
+    asyncHandler(async (request, response) => {
+      const restaurantId = typeof request.query.restaurantId === "string" ? request.query.restaurantId : undefined;
+      const channelLinkId = typeof request.query.channelLinkId === "string" ? request.query.channelLinkId : undefined;
+      response.json(
+        await service.listDeliverectOrderSubmissionDebug(request.platformAdminSession!, {
+          restaurantId,
+          channelLinkId,
+          limit: parseOptionalNumber(request.query.limit),
+        }),
+      );
+    }),
+  );
+
+  router.get(
     "/admin/provider-menu-snapshots",
     asyncHandler(async (request, response) => {
       const providerLocationId = typeof request.query.providerLocationId === "string" ? request.query.providerLocationId : undefined;

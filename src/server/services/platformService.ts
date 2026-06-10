@@ -130,6 +130,38 @@ function payloadHash(payload: unknown) {
   return sha256(stableJson(payload));
 }
 
+const REDACTED_VALUE = "[redacted]";
+const SENSITIVE_PAYLOAD_KEY = /(authorization|bearer|token|secret|password|api[-_ ]?key|service[-_ ]?role|client[-_ ]?secret|payment|card|cvv|cvc|iban|routing)/i;
+
+function redactSensitivePayload(value: unknown, depth = 0): unknown {
+  if (depth > 8) return "[redacted-depth-limit]";
+  if (Array.isArray(value)) return value.map((entry) => redactSensitivePayload(entry, depth + 1));
+  if (!isObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key,
+      SENSITIVE_PAYLOAD_KEY.test(key) ? REDACTED_VALUE : redactSensitivePayload(entry, depth + 1),
+    ]),
+  );
+}
+
+function truncateText(value: unknown, maxLength = 300) {
+  const text = normalizeText(value);
+  if (!text) return undefined;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function readEventErrorSummary(payload: Record<string, unknown>) {
+  return truncateText(
+    readString(payload, "error", "message", "reason", "errorMessage") ??
+      (isObject(payload.error) ? readString(payload.error, "message", "detail", "reason") : undefined),
+  );
+}
+
+function readExternalStatus(payload: Record<string, unknown>) {
+  return readString(payload, "status", "externalStatus", "orderStatus", "state", "action");
+}
+
 function appendPath(baseUrl: string, path: string) {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
@@ -1084,7 +1116,18 @@ export class PlatformService {
       : record.payloadHash
         ? await this.repository.findEventIngestionByPayloadHash(record.provider, record.payloadHash, record.eventType)
         : null;
-    return duplicate ?? this.repository.saveEventIngestion(record);
+    if (duplicate) {
+      log("info", "provider_event_deduped", {
+        provider: record.provider,
+        eventType: record.eventType,
+        externalEventId: record.externalEventId ?? null,
+        payloadHash: record.payloadHash ?? null,
+        existingEventId: duplicate.id,
+        orderId: record.orderId ?? null,
+      });
+      return duplicate;
+    }
+    return this.repository.saveEventIngestion(record);
   }
 
   async ingestDeliverectChannelRegistration(payload: Record<string, unknown>, baseUrl: string) {
@@ -1095,9 +1138,23 @@ export class PlatformService {
       throw new Error("Deliverect channel registration is missing channelLinkId.");
     }
     const externalEventId = readString(payload, "eventId", "event_id", "id", "_id");
+    log("info", "deliverect_webhook_received", {
+      eventType: "channel_registration",
+      externalEventId: externalEventId ?? null,
+      channelLinkId,
+      payloadHash: eventHash,
+    });
     const duplicateEvent = externalEventId
       ? await this.repository.findEventIngestion("deliverect", externalEventId)
       : await this.repository.findEventIngestionByPayloadHash("deliverect", eventHash, "channel_registration");
+    if (duplicateEvent) {
+      log("info", "deliverect_webhook_deduped", {
+        eventType: "channel_registration",
+        externalEventId: externalEventId ?? null,
+        channelLinkId,
+        existingEventId: duplicateEvent.id,
+      });
+    }
     const status = readString(payload, "status");
     const externalLocationId = readString(payload, "locationId", "location", "channelLocationId") ?? channelLinkId;
     const channelLocationId = readString(payload, "channelLocationId");
@@ -1153,6 +1210,13 @@ export class PlatformService {
       status: "processed",
       processedAt: new Date().toISOString(),
     });
+    log("info", "deliverect_provider_location_resolved", {
+      eventType: "channel_registration",
+      channelLinkId,
+      providerLocationId: location.id,
+      restaurantId: location.mappedRestaurantId ?? null,
+      externalLocationId,
+    });
     return {
       ok: true,
       provider: "deliverect" as const,
@@ -1171,6 +1235,12 @@ export class PlatformService {
     const payloadRecord = eventPayloadRecord(payload);
     const eventHash = payloadHash(payloadRecord);
     const externalEventId = extractDeliverectMenuEventId(payload);
+    log("info", "deliverect_webhook_received", {
+      eventType: "menu_update",
+      externalEventId: externalEventId ?? null,
+      channelLinkId: channelLinkId ?? null,
+      payloadHash: eventHash,
+    });
     const snapshot = await this.repository.saveProviderMenuSnapshot({
       provider: "deliverect",
       channelLinkId,
@@ -1180,11 +1250,22 @@ export class PlatformService {
       rawPayload: payloadRecord,
       receivedAt: new Date().toISOString(),
     });
+    log("info", "deliverect_raw_menu_snapshot_saved", {
+      snapshotId: snapshot.id,
+      externalEventId: externalEventId ?? null,
+      channelLinkId: channelLinkId ?? null,
+      payloadHash: eventHash,
+    });
     if (!channelLinkId) {
       await this.repository.updateProviderMenuSnapshot(snapshot.id, {
         status: "failed",
         error: "Deliverect menu update is missing channelLinkId.",
         processedAt: new Date().toISOString(),
+      });
+      log("error", "deliverect_menu_normalization_failed", {
+        snapshotId: snapshot.id,
+        externalEventId: externalEventId ?? null,
+        error: "Deliverect menu update is missing channelLinkId.",
       });
       throw new Error("Deliverect menu update is missing channelLinkId.");
     }
@@ -1194,6 +1275,11 @@ export class PlatformService {
       (location) => location.provider === "deliverect" && location.channelLinkId === channelLinkId,
     );
     if (!providerLocation) {
+      log("warn", "deliverect_provider_location_unresolved", {
+        eventType: "menu_update",
+        snapshotId: snapshot.id,
+        channelLinkId,
+      });
       await Promise.all([
         this.repository.updateProviderMenuSnapshot(snapshot.id, {
           status: "ignored",
@@ -1214,6 +1300,13 @@ export class PlatformService {
       throw new Error(`No Deliverect provider location is mapped for channelLinkId ${channelLinkId}.`);
     }
     if (!providerLocation.mappedRestaurantId) {
+      log("warn", "deliverect_provider_location_unresolved", {
+        eventType: "menu_update",
+        snapshotId: snapshot.id,
+        channelLinkId,
+        providerLocationId: providerLocation.id,
+        reason: "unmapped_restaurant",
+      });
       await Promise.all([
         this.repository.updateProviderMenuSnapshot(snapshot.id, {
           status: "ignored",
@@ -1236,6 +1329,13 @@ export class PlatformService {
     }
 
     const restaurantId = providerLocation.mappedRestaurantId;
+    log("info", "deliverect_provider_location_resolved", {
+      eventType: "menu_update",
+      snapshotId: snapshot.id,
+      channelLinkId,
+      providerLocationId: providerLocation.id,
+      restaurantId,
+    });
     await this.repository.updateProviderMenuSnapshot(snapshot.id, {
       providerLocationId: providerLocation.id,
       restaurantId,
@@ -1248,6 +1348,13 @@ export class PlatformService {
       excludeId: snapshot.id,
     });
     if (duplicateSnapshot?.status === "processed") {
+      log("info", "deliverect_webhook_deduped", {
+        eventType: "menu_update",
+        snapshotId: snapshot.id,
+        previousSnapshotId: duplicateSnapshot.id,
+        externalEventId: externalEventId ?? null,
+        channelLinkId,
+      });
       const event = await this.saveProviderEventOnce({
         provider: "deliverect",
         eventType: "menu_update",
@@ -1278,6 +1385,12 @@ export class PlatformService {
 
     const normalized = normalizeDeliverectMenu(restaurantId, payload);
     if (normalized.items.length === 0) {
+      log("error", "deliverect_menu_normalization_failed", {
+        snapshotId: snapshot.id,
+        restaurantId,
+        channelLinkId,
+        error: "No importable menu items were found in the Deliverect menu update payload.",
+      });
       await Promise.all([
         this.repository.updateProviderMenuSnapshot(snapshot.id, {
           status: "failed",
@@ -1326,7 +1439,22 @@ export class PlatformService {
         `Imported ${normalized.items.length} Deliverect menu item(s) from menu webhook for channel link ${channelLinkId}.`,
         menuVersion.id,
       );
+      log("info", "deliverect_menu_normalization_succeeded", {
+        snapshotId: snapshot.id,
+        restaurantId,
+        channelLinkId,
+        menuVersionId: menuVersion.id,
+        itemCount: normalized.items.length,
+        modifierGroupCount: normalized.modifierGroups.length,
+      });
       const publishedVersion = await this.repository.publishCanonicalMenuVersion(menuVersion.id);
+      log("info", "canonical_menu_version_published", {
+        provider: "deliverect",
+        snapshotId: snapshot.id,
+        restaurantId,
+        channelLinkId,
+        menuVersionId: publishedVersion.id,
+      });
       const connection = await this.getPOSConnection(restaurantId);
       await this.repository.updatePOSConnection(connection.id, {
         lastSyncedAt: importedAt,
@@ -1366,6 +1494,12 @@ export class PlatformService {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      log("error", "deliverect_menu_normalization_failed", {
+        snapshotId: snapshot.id,
+        restaurantId,
+        channelLinkId,
+        error: message,
+      });
       await Promise.all([
         this.repository.updateProviderMenuSnapshot(snapshot.id, {
           status: "failed",
@@ -1388,6 +1522,12 @@ export class PlatformService {
 
   async ingestDeliverectChannelSnoozeUpdate(payload: Record<string, unknown>) {
     const eventHash = payloadHash(payload);
+    log("info", "deliverect_webhook_received", {
+      eventType: "snooze_update",
+      externalEventId: this.deliverectChannelEventId("snooze_update", payload) ?? null,
+      channelLinkId: extractDeliverectChannelLinkId(payload) ?? null,
+      payloadHash: eventHash,
+    });
     const providerLocation = await this.requireDeliverectProviderLocationForPayload(payload, "snooze_update");
     const changed = providerLocation.mappedRestaurantId
       ? await this.applyDeliverectSnoozeUpdate(providerLocation.mappedRestaurantId, payload)
@@ -1402,6 +1542,13 @@ export class PlatformService {
       processedAt: new Date().toISOString(),
     });
     await this.rememberDeliverectChannelState(providerLocation, "snooze", payload, providerLocation.status);
+    log("info", "deliverect_provider_location_resolved", {
+      eventType: "snooze_update",
+      channelLinkId: providerLocation.channelLinkId ?? null,
+      providerLocationId: providerLocation.id,
+      restaurantId: providerLocation.mappedRestaurantId ?? null,
+      changedItemCount: changed,
+    });
     return {
       ok: true,
       provider: "deliverect" as const,
@@ -1416,6 +1563,12 @@ export class PlatformService {
 
   async ingestDeliverectChannelBusyMode(payload: Record<string, unknown>) {
     const eventHash = payloadHash(payload);
+    log("info", "deliverect_webhook_received", {
+      eventType: "busy_mode",
+      externalEventId: this.deliverectChannelEventId("busy_mode", payload) ?? null,
+      channelLinkId: extractDeliverectChannelLinkId(payload) ?? null,
+      payloadHash: eventHash,
+    });
     const providerLocation = await this.requireDeliverectProviderLocationForPayload(payload, "busy_mode");
     const event = await this.saveProviderEventOnce({
       provider: "deliverect",
@@ -1428,6 +1581,13 @@ export class PlatformService {
     });
     const status = deliverectProviderStatusFromChannelStatus(readString(payload, "status"));
     const updated = await this.rememberDeliverectChannelState(providerLocation, "busyMode", payload, status);
+    log("info", "deliverect_provider_location_resolved", {
+      eventType: "busy_mode",
+      channelLinkId: updated.channelLinkId ?? null,
+      providerLocationId: updated.id,
+      restaurantId: updated.mappedRestaurantId ?? null,
+      providerLocationStatus: updated.status,
+    });
     return {
       ok: true,
       provider: "deliverect" as const,
@@ -1464,6 +1624,11 @@ export class PlatformService {
           (locationId && location.externalLocationId === locationId)),
     );
     if (!providerLocation) {
+      log("warn", "deliverect_provider_location_unresolved", {
+        eventType,
+        channelLinkId: channelLinkId ?? null,
+        locationId: locationId ?? null,
+      });
       await this.saveProviderEventOnce({
         provider: "deliverect",
         eventType,
@@ -1732,7 +1897,10 @@ export class PlatformService {
     if (!event) {
       throw new Error(`Provider event ${eventId} not found.`);
     }
-    return event;
+    return {
+      ...event,
+      payload: redactSensitivePayload(event.payload) as Record<string, unknown>,
+    };
   }
 
   async listProviderMenuSnapshots(
@@ -1753,11 +1921,241 @@ export class PlatformService {
     if (!snapshot) {
       throw new Error(`Provider menu snapshot ${snapshotId} not found.`);
     }
-    return snapshot;
+    return {
+      ...snapshot,
+      rawPayload: redactSensitivePayload(snapshot.rawPayload) as Record<string, unknown>,
+    };
   }
 
   async listCanonicalMenuVersions(_authenticated: AuthenticatedPlatformAdmin, restaurantId?: string) {
     return this.repository.listCanonicalMenuVersions(restaurantId);
+  }
+
+  async listDeliverectWebhookDebug(
+    _authenticated: AuthenticatedPlatformAdmin,
+    filter: {
+      status?: EventIngestionRecord["status"];
+      limit?: number;
+    } = {},
+  ) {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+    const [events, providerLocations] = await Promise.all([
+      this.repository.listEventIngestions({ provider: "deliverect", status: filter.status, limit }),
+      this.repository.listProviderLocations(),
+    ]);
+    const deliverectLocations = providerLocations.filter((location) => location.provider === "deliverect");
+
+    const items = await Promise.all(events.map(async (event) => {
+      const channelLinkId = extractDeliverectChannelLinkId(event.payload);
+      let order: AgentOrderRecord | null = null;
+      if (event.orderId) {
+        order = await this.repository.getOrderById(event.orderId);
+      }
+      const providerLocation =
+        deliverectLocations.find((location) => channelLinkId && location.channelLinkId === channelLinkId) ??
+        deliverectLocations.find((location) => order && location.mappedRestaurantId === order.restaurantId) ??
+        null;
+
+      return {
+        id: event.id,
+        provider: event.provider,
+        eventType: event.eventType,
+        providerEventId: event.externalEventId ?? null,
+        payloadHash: event.payloadHash ?? null,
+        processingStatus: event.status,
+        receivedAt: event.createdAt,
+        processedAt: event.processedAt ?? null,
+        orderId: event.orderId ?? null,
+        restaurantId: providerLocation?.mappedRestaurantId ?? order?.restaurantId ?? null,
+        providerLocationId: providerLocation?.id ?? null,
+        channelLinkId: channelLinkId ?? providerLocation?.channelLinkId ?? null,
+        externalStatus: readExternalStatus(event.payload) ?? null,
+        errorSummary: event.status === "failed" ? readEventErrorSummary(event.payload) ?? "Provider event failed." : null,
+      };
+    }));
+
+    return { items };
+  }
+
+  async listDeliverectMenuDebug(
+    _authenticated: AuthenticatedPlatformAdmin,
+    filter: {
+      providerLocationId?: string;
+      restaurantId?: string;
+      channelLinkId?: string;
+      status?: "received" | "processed" | "failed" | "ignored";
+      limit?: number;
+    } = {},
+  ) {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+    const snapshots = (await this.repository.listProviderMenuSnapshots({
+      provider: "deliverect",
+      providerLocationId: filter.providerLocationId,
+      restaurantId: filter.restaurantId,
+      status: filter.status,
+      limit: filter.channelLinkId ? 200 : limit,
+    }))
+      .filter((snapshot) => !filter.channelLinkId || snapshot.channelLinkId === filter.channelLinkId)
+      .slice(0, limit);
+
+    const versionCache = new Map<string, Awaited<ReturnType<PlatformRepository["getLatestPublishedMenuVersion"]>>>();
+    const menuCache = new Map<string, Awaited<ReturnType<PlatformRepository["getMenu"]>>>();
+    const items = await Promise.all(snapshots.map(async (snapshot) => {
+      let latestVersion = null;
+      let menu = null;
+      if (snapshot.restaurantId) {
+        if (!versionCache.has(snapshot.restaurantId)) {
+          versionCache.set(snapshot.restaurantId, await this.repository.getLatestPublishedMenuVersion(snapshot.restaurantId));
+        }
+        if (!menuCache.has(snapshot.restaurantId)) {
+          menuCache.set(snapshot.restaurantId, await this.repository.getMenu(snapshot.restaurantId));
+        }
+        latestVersion = versionCache.get(snapshot.restaurantId) ?? null;
+        menu = menuCache.get(snapshot.restaurantId) ?? null;
+      }
+      const availableItems = menu?.items.filter((item) => item.availability === "available").length ?? 0;
+      const unavailableItems = menu?.items.filter((item) => item.availability === "unavailable").length ?? 0;
+      const availableModifiers = menu?.modifiers.filter((modifier) => modifier.isAvailable).length ?? 0;
+      const unavailableModifiers = menu?.modifiers.filter((modifier) => !modifier.isAvailable).length ?? 0;
+
+      return {
+        snapshotId: snapshot.id,
+        provider: snapshot.provider,
+        providerLocationId: snapshot.providerLocationId ?? null,
+        restaurantId: snapshot.restaurantId ?? null,
+        channelLinkId: snapshot.channelLinkId ?? null,
+        providerEventId: snapshot.externalEventId ?? null,
+        payloadHash: snapshot.payloadHash,
+        normalizationStatus: snapshot.status,
+        receivedAt: snapshot.receivedAt,
+        processedAt: snapshot.processedAt ?? null,
+        latestPublishedCanonicalMenuVersion: latestVersion
+          ? {
+              id: latestVersion.id,
+              status: latestVersion.status,
+              itemCount: latestVersion.itemCount,
+              modifierGroupCount: latestVersion.modifierGroupCount,
+              categoryCount: latestVersion.categoryCount,
+              publishedAt: latestVersion.publishedAt ?? null,
+            }
+          : null,
+        itemCount: latestVersion?.itemCount ?? menu?.items.length ?? 0,
+        modifierGroupCount: latestVersion?.modifierGroupCount ?? menu?.modifierGroups.length ?? 0,
+        availabilitySummary: {
+          items: {
+            total: menu?.items.length ?? 0,
+            available: availableItems,
+            unavailable: unavailableItems,
+          },
+          modifiers: {
+            total: menu?.modifiers.length ?? 0,
+            available: availableModifiers,
+            unavailable: unavailableModifiers,
+          },
+        },
+        errorSummary: snapshot.error ? truncateText(snapshot.error) ?? null : null,
+      };
+    }));
+
+    return { items };
+  }
+
+  async listDeliverectOrderSubmissionDebug(
+    _authenticated: AuthenticatedPlatformAdmin,
+    filter: {
+      restaurantId?: string;
+      channelLinkId?: string;
+      limit?: number;
+    } = {},
+  ) {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+    const [restaurants, providerLocations] = await Promise.all([
+      filter.restaurantId ? Promise.resolve([await this.getRestaurant(filter.restaurantId)]) : this.repository.listRestaurants(),
+      this.repository.listProviderLocations(),
+    ]);
+    const deliverectLocations = providerLocations.filter((location) => location.provider === "deliverect");
+    const summaries: Array<Record<string, unknown>> = [];
+
+    for (const restaurant of restaurants) {
+      const [connection, activeOrders, diagnostics] = await Promise.all([
+        this.repository.getPOSConnection(restaurant.id),
+        this.repository.listOrders(restaurant.id),
+        this.repository.getOperationalDiagnostics(restaurant.id),
+      ]);
+      const providerLocation =
+        deliverectLocations.find((location) => connection?.providerLocationId && location.id === connection.providerLocationId) ??
+        deliverectLocations.find((location) => location.mappedRestaurantId === restaurant.id) ??
+        null;
+      const channelLinkId =
+        providerLocation?.channelLinkId ??
+        normalizeText(connection?.metadata.channelLinkId) ??
+        normalizeText(connection?.metadata.channel_link_id) ??
+        normalizeText(connection?.metadata.deliverectChannelLinkId);
+      if (filter.channelLinkId && channelLinkId !== filter.channelLinkId) {
+        continue;
+      }
+      const orderIds = Array.from(new Set([
+        ...activeOrders.map((order) => order.id),
+        ...diagnostics.failedOrders.map((order) => order.orderId),
+        ...diagnostics.stuckOrders.map((order) => order.orderId),
+        ...diagnostics.posFailures.map((failure) => failure.orderId).filter((orderId): orderId is string => Boolean(orderId)),
+      ]));
+
+      for (const orderId of orderIds) {
+        const detail = await this.getSingleOrderDetail(restaurant.id, orderId);
+        if (!detail) continue;
+        const submissions = detail.submissions.filter((submission) => submission.provider === "deliverect");
+        const retries = (detail.retries ?? []).filter((retry) => retry.stage === "pos_submit");
+        if (connection?.provider !== "deliverect" && submissions.length === 0 && retries.length === 0) {
+          continue;
+        }
+        const latestSubmission = submissions[0] ?? null;
+        const latestProviderStatus = detail.statusEvents.find((event) => event.provider === "deliverect") ?? null;
+        const latestFailedRetry = retries.find((retry) => retry.status === "failed") ?? null;
+        const latestFailedSubmission = submissions.find((submission) => submission.status === "failed") ?? null;
+        const reusableSubmission = submissions.find((submission) => submission.status !== "failed" && Boolean(submission.externalOrderId)) ?? null;
+        const submissionAttempts = Math.max(
+          retries.length,
+          submissions.reduce((total, submission) => total + (submission.attemptCount ?? 1), 0),
+        );
+
+        summaries.push({
+          phantomOrderId: detail.order.id,
+          restaurantId: detail.order.restaurantId,
+          provider: "deliverect",
+          channelLinkId: channelLinkId ?? null,
+          canonicalStatus: detail.order.status,
+          latestProviderStatus: latestProviderStatus
+            ? {
+                status: latestProviderStatus.status,
+                externalStatus: latestProviderStatus.externalStatus ?? null,
+                providerEventId: latestProviderStatus.providerEventId ?? null,
+                rawEventRef: latestProviderStatus.rawEventRef ?? null,
+                receivedAt: latestProviderStatus.createdAt,
+              }
+            : null,
+          submissionAttempts,
+          latestSubmissionId: latestSubmission?.id ?? null,
+          latestExternalOrderId: latestSubmission?.externalOrderId ?? null,
+          latestSubmissionStatus: latestSubmission?.status ?? null,
+          lastError: latestFailedRetry?.errorMessage ?? readEventErrorSummary(latestFailedSubmission?.response ?? {}) ?? null,
+          idempotencyKey: this.buildIdempotencyKey("submit", detail.order.orderIntent),
+          duplicateReuseAvailable: Boolean(reusableSubmission),
+          reusedSubmissionId: reusableSubmission?.id ?? null,
+          submittedAt: latestSubmission?.submittedAt ?? null,
+          updatedAt: detail.order.updatedAt,
+          safeToRetry: !reusableSubmission && ["approved", "submitted_to_pos", "failed"].includes(detail.order.status),
+        });
+      }
+    }
+
+    summaries.sort((left, right) => {
+      const leftTime = new Date(String(left.submittedAt ?? left.updatedAt ?? 0)).getTime();
+      const rightTime = new Date(String(right.submittedAt ?? right.updatedAt ?? 0)).getTime();
+      return rightTime - leftTime;
+    });
+
+    return { items: summaries.slice(0, limit) };
   }
 
   async addProviderLocation(
@@ -2549,6 +2947,15 @@ export class PlatformService {
         Boolean(submission.externalOrderId),
     );
     if (priorSubmission) {
+      if (context.connection.provider === "deliverect") {
+        log("info", "deliverect_create_order_duplicate_reuse", {
+          restaurantId,
+          orderId,
+          correlationId: detail.order.externalOrderReference,
+          submissionId: priorSubmission.id,
+          externalOrderId: priorSubmission.externalOrderId,
+        });
+      }
       return priorSubmission;
     }
     const quote = await this.ensureFreshQuote(detail.order);
@@ -2558,6 +2965,19 @@ export class PlatformService {
     });
     const adapter = this.adapters.getAdapter(context.connection);
     const payloadSnapshot = this.buildPayloadSnapshot(detail.order, quote, context);
+    if (context.connection.provider === "deliverect") {
+      const channelLinkId =
+        normalizeText(context.connection.metadata.channelLinkId) ??
+        normalizeText(context.connection.metadata.channel_link_id) ??
+        normalizeText(context.connection.metadata.deliverectChannelLinkId);
+      log("info", "deliverect_create_order_submitted", {
+        restaurantId,
+        orderId,
+        correlationId: detail.order.externalOrderReference,
+        channelLinkId: channelLinkId ?? null,
+        idempotencyKey: payloadSnapshot.orderIdempotencyKey,
+      });
+    }
     const response = await this.withRetry(
       "pos_submit",
       orderId,
@@ -2585,6 +3005,14 @@ export class PlatformService {
       status: response.status,
       externalOrderId: response.externalOrderId ?? undefined,
     });
+    if (context.connection.provider === "deliverect" && !response.ok) {
+      log("error", "deliverect_create_order_failed", {
+        restaurantId,
+        orderId,
+        correlationId: detail.order.externalOrderReference,
+        status: response.status,
+      });
+    }
     await this.updateOrderStatus(
       restaurantId,
       orderId,
@@ -2735,10 +3163,25 @@ export class PlatformService {
     const eventHash = payloadHash(payload);
     if (provider === "deliverect") {
       const normalized = normalizeDeliverectEvent(eventType, payload);
+      log("info", "deliverect_webhook_received", {
+        eventType,
+        externalEventId: normalized.externalEventId ?? null,
+        externalOrderReference: normalized.externalOrderReference ?? null,
+        channelLinkId: extractDeliverectChannelLinkId(payload) ?? null,
+        payloadHash: eventHash,
+      });
       const existing = normalized.externalEventId
         ? await this.repository.findEventIngestion(provider, normalized.externalEventId)
         : await this.repository.findEventIngestionByPayloadHash(provider, eventHash, eventType);
-      if (existing) return existing;
+      if (existing) {
+        log("info", "deliverect_webhook_deduped", {
+          eventType,
+          externalEventId: normalized.externalEventId ?? null,
+          existingEventId: existing.id,
+          orderId: existing.orderId ?? null,
+        });
+        return existing;
+      }
       const orderIdFromPayload = typeof payload.orderId === "string" ? payload.orderId : undefined;
       const matchedOrderId =
         (orderIdFromPayload && (await this.repository.getOrderById(orderIdFromPayload)) ? orderIdFromPayload : null) ??
@@ -2749,6 +3192,15 @@ export class PlatformService {
           throw new Error(`Order ${matchedOrderId} not found.`);
         }
         if (!shouldApplyProviderStatus(order.status, normalized.status)) {
+          log("warn", "deliverect_order_status_unmapped", {
+            eventType,
+            externalEventId: normalized.externalEventId ?? null,
+            orderId: matchedOrderId,
+            externalStatus: normalized.externalStatus ?? readExternalStatus(payload) ?? null,
+            mappedStatus: normalized.status,
+            currentStatus: order.status,
+            reason: "out_of_order_or_terminal",
+          });
           return this.saveProviderEventOnce({
             provider,
             eventType,
@@ -2769,6 +3221,14 @@ export class PlatformService {
           actorType: "system",
           actorId: "deliverect_webhook",
         });
+        log("info", "deliverect_order_status_mapped", {
+          eventType,
+          externalEventId: normalized.externalEventId ?? null,
+          orderId: matchedOrderId,
+          restaurantId: order.restaurantId,
+          externalStatus: normalized.externalStatus ?? readExternalStatus(payload) ?? null,
+          mappedStatus: normalized.status,
+        });
         return this.saveProviderEventOnce({
           provider,
           eventType,
@@ -2780,6 +3240,14 @@ export class PlatformService {
           processedAt: new Date().toISOString(),
         });
       }
+      log("warn", "deliverect_order_status_unmapped", {
+        eventType,
+        externalEventId: normalized.externalEventId ?? null,
+        externalOrderReference: normalized.externalOrderReference ?? null,
+        orderId: matchedOrderId ?? orderIdFromPayload ?? null,
+        externalStatus: normalized.externalStatus ?? readExternalStatus(payload) ?? null,
+        reason: matchedOrderId ? "unmapped_status" : "order_not_found",
+      });
       return this.saveProviderEventOnce({
         provider,
         eventType,
@@ -3404,16 +3872,31 @@ export class PlatformService {
           payloadSnapshot,
           responseSnapshot: result && typeof result === "object" ? (result as Record<string, unknown>) : { result },
         });
+        if (attempt > 1 || stage === "pos_submit") {
+          log("info", "operation_retry_succeeded", {
+            stage,
+            orderId: orderId ?? null,
+            attemptNumber: attempt,
+          });
+        }
         return result;
       } catch (error) {
         lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
         await this.repository.saveRetryAttempt({
           orderId,
           stage,
           attemptNumber: attempt,
           status: "failed",
-          errorMessage: error instanceof Error ? error.message : String(error),
+          errorMessage: message,
           payloadSnapshot,
+        });
+        log(attempt >= maxAttempts || !shouldRetry(error) ? "error" : "warn", "operation_retry_failed", {
+          stage,
+          orderId: orderId ?? null,
+          attemptNumber: attempt,
+          willRetry: attempt < maxAttempts && shouldRetry(error),
+          error: message,
         });
         if (attempt >= maxAttempts || !shouldRetry(error)) {
           throw error;

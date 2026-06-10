@@ -2045,6 +2045,10 @@ describe("PlatformService", () => {
       id: "evt_deliverect_admin_api",
       type: "checkout.completed",
       status: "completed",
+      authorization: "Bearer should-not-leak",
+      payment: {
+        cardNumber: "4242424242424242",
+      },
       metadata: {
         phantomOrderReference: "missing-order-reference",
       },
@@ -2071,7 +2075,82 @@ describe("PlatformService", () => {
       expect.objectContaining({ id: event.id, provider: "deliverect", status: "ignored" }),
     ]);
     expect(detail.status).toBe(200);
-    expect(await detail.json()).toEqual(expect.objectContaining({ id: event.id, payload: expect.any(Object) }));
+    expect(await detail.json()).toEqual(
+      expect.objectContaining({
+        id: event.id,
+        payload: expect.objectContaining({
+          authorization: "[redacted]",
+          payment: "[redacted]",
+        }),
+      }),
+    );
+  });
+
+  it("exposes safe Deliverect webhook and menu debug summaries for platform admins", async () => {
+    const service = createService();
+    const setup = await createDeliverectProviderLocation(service, "debug_admin");
+    const provisioned = await service.provisionProviderLocation(authenticatedPlatformAdmin(), setup.providerLocation.id);
+    await service.ingestDeliverectMenuUpdate({
+      ...deliverectMenuPayload("debug_admin"),
+      clientSecret: "menu-secret-should-not-leak",
+    });
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+
+    const unauthorized = await fetch(`${baseUrl}/api/admin/debug/deliverect/webhooks?limit=5`);
+    const adminLogin = await fetch(`${baseUrl}/api/admin/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "akayla@mealops.ai", password: "password" }),
+    });
+    const adminCookie = adminLogin.headers.get("set-cookie") ?? "";
+    const webhookResponse = await fetch(`${baseUrl}/api/admin/debug/deliverect/webhooks?limit=5`, {
+      headers: { cookie: adminCookie },
+    });
+    const menuResponse = await fetch(`${baseUrl}/api/admin/debug/deliverect/menus?channelLinkId=channel_link_debug_admin&limit=5`, {
+      headers: { cookie: adminCookie },
+    });
+    const snapshotList = await service.listProviderMenuSnapshots(authenticatedPlatformAdmin(), {
+      provider: "deliverect",
+      restaurantId: provisioned.restaurant.id,
+      limit: 1,
+    });
+    const snapshotDetail = await fetch(`${baseUrl}/api/admin/provider-menu-snapshots/${snapshotList[0].id}`, {
+      headers: { cookie: adminCookie },
+    });
+
+    const webhookSummary = await webhookResponse.json();
+    const menuSummary = await menuResponse.json();
+    const snapshotDetailPayload = await snapshotDetail.json();
+
+    expect(unauthorized.status).toBe(401);
+    expect(webhookResponse.status).toBe(200);
+    expect(JSON.stringify(webhookSummary)).not.toContain("menu-secret-should-not-leak");
+    expect(webhookSummary.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: "menu_update",
+          processingStatus: "processed",
+          restaurantId: provisioned.restaurant.id,
+          channelLinkId: "channel_link_debug_admin",
+        }),
+      ]),
+    );
+    expect(menuResponse.status).toBe(200);
+    expect(menuSummary.items).toEqual([
+      expect.objectContaining({
+        provider: "deliverect",
+        channelLinkId: "channel_link_debug_admin",
+        normalizationStatus: "processed",
+        itemCount: 1,
+        modifierGroupCount: 1,
+        latestPublishedCanonicalMenuVersion: expect.objectContaining({ status: "published" }),
+        availabilitySummary: expect.objectContaining({
+          items: expect.objectContaining({ available: 1, unavailable: 0 }),
+        }),
+      }),
+    ]);
+    expect(snapshotDetailPayload.rawPayload.clientSecret).toBe("[redacted]");
   });
 
   it("processes Deliverect checkout events into Phantom order status updates", async () => {
@@ -2317,6 +2396,58 @@ describe("PlatformService", () => {
         }),
       ]),
     );
+  });
+
+  it("exposes recent Deliverect order submission debug summaries for platform admins", async () => {
+    const service = createServiceWithEnv({
+      deliverectBaseUrl: "https://deliverect.staging.test",
+      deliverectAccessToken: "staging-token",
+      deliverectScope: "mealops",
+      posRetryBaseDelayMs: 1,
+    });
+    const setup = await provisionDeliverectMenuRestaurant(service, "order_debug");
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ message: "invalid channel order" }), { status: 400 })));
+    const order = await service.submitAgentOrder(
+      deliverectOrderIntent(
+        setup.provisioned.restaurant.id,
+        "deliverect-order-debug",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+    );
+    await service.submitOrderToPOS(setup.provisioned.restaurant.id, order.id);
+    vi.unstubAllGlobals();
+    const { server, baseUrl } = await startServer(service);
+    openServers.push(server);
+    const adminLogin = await fetch(`${baseUrl}/api/admin/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "akayla@mealops.ai", password: "password" }),
+    });
+    const adminCookie = adminLogin.headers.get("set-cookie") ?? "";
+    const response = await fetch(`${baseUrl}/api/admin/debug/deliverect/orders?channelLinkId=channel_link_order_debug&limit=5`, {
+      headers: { cookie: adminCookie },
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.items).toEqual([
+      expect.objectContaining({
+        phantomOrderId: order.id,
+        provider: "deliverect",
+        channelLinkId: "channel_link_order_debug",
+        canonicalStatus: "failed",
+        submissionAttempts: 1,
+        lastError: "invalid channel order",
+        idempotencyKey: "submit:deliverect-order-debug",
+        duplicateReuseAvailable: false,
+        safeToRetry: true,
+      }),
+    ]);
   });
 
   it("discovers Olo onboarding locations through the backend API", async () => {
