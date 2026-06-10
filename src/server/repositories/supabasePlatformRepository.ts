@@ -1434,8 +1434,9 @@ export class SupabasePlatformRepository implements PlatformRepository {
            default_approval_mode = $7,
            contact_email = $8,
            contact_phone = $9,
-           fulfillment_types_supported = $10,
-           updated_at = $11
+           image_url = $10,
+           fulfillment_types_supported = $11,
+           updated_at = $12
        where id = $1
        returning *`,
       [
@@ -1448,6 +1449,7 @@ export class SupabasePlatformRepository implements PlatformRepository {
         updated.defaultApprovalMode,
         updated.contactEmail,
         updated.contactPhone,
+        updated.imageUrl ?? null,
         updated.fulfillmentTypesSupported,
         updated.updatedAt,
       ],

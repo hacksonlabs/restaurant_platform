@@ -1002,6 +1002,7 @@ describe("PlatformService", () => {
         {
           menuId: "menu_lunch",
           menu: "Lunch",
+          menuImageURL: "https://cdn.example.test/deliverect-menu-hero.jpg",
           categories: [
             {
               name: "Bowls",
@@ -1026,6 +1027,7 @@ describe("PlatformService", () => {
       ],
     });
     const menu = await service.getMenu(provisioned.restaurant.id);
+    const restaurant = await service.getRestaurant(provisioned.restaurant.id);
     const events = await service.listProviderEvents(admin, { provider: "deliverect", limit: 5 });
     const snapshots = await service.listProviderMenuSnapshots(admin, {
       provider: "deliverect",
@@ -1062,6 +1064,7 @@ describe("PlatformService", () => {
         }),
       ]),
     );
+    expect(restaurant.imageUrl).toBe("https://cdn.example.test/deliverect-menu-hero.jpg");
     expect(snapshots[0]).toEqual(
       expect.objectContaining({
         id: result.snapshotId,
@@ -1095,6 +1098,7 @@ describe("PlatformService", () => {
         {
           menuId: "menu_lunch",
           menu: "Lunch",
+          menuImageURL: "https://cdn.example.test/deliverect-menu-hero.jpg",
           categories: [
             {
               name: "Bowls",
@@ -1146,6 +1150,7 @@ describe("PlatformService", () => {
       channelLinkId: "channel_link_failed_menu",
       eventId: "menu_event_failed_menu_bad",
       name: "Sample Menu - Copy",
+      menuImageURL: "https://cdn.example.test/empty-deliverect-menu-hero.jpg",
       products: {},
       modifiers: {},
       categories: [],
@@ -1155,6 +1160,7 @@ describe("PlatformService", () => {
     await expect(service.ingestDeliverectMenuUpdate(emptyMenuPayload)).rejects.toThrow(emptyMenuError);
 
     const after = await service.getMenu(setup.provisioned.restaurant.id);
+    const restaurant = await service.getRestaurant(setup.provisioned.restaurant.id);
     const snapshots = await service.listProviderMenuSnapshots(admin, {
       provider: "deliverect",
       restaurantId: setup.provisioned.restaurant.id,
@@ -1165,6 +1171,7 @@ describe("PlatformService", () => {
 
     expect(after.version?.id).toBe(before.version?.id);
     expect(after.items.map((item) => item.id)).toEqual(before.items.map((item) => item.id));
+    expect(restaurant.imageUrl).toBe("https://cdn.example.test/empty-deliverect-menu-hero.jpg");
     expect(snapshots[0]).toEqual(
       expect.objectContaining({
         status: "failed",

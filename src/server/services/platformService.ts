@@ -47,7 +47,7 @@ import { POSAdapterRegistry } from "../pos/registry";
 import type { AppEnv } from "../config/env";
 import { normalizeDeliverectEvent } from "../providers/deliverectEventNormalizer";
 import { extractDeliverectLocationAddress } from "../providers/deliverectLocation";
-import { normalizeDeliverectMenu } from "../providers/deliverectMenuNormalizer";
+import { extractDeliverectMenuImageUrl, normalizeDeliverectMenu } from "../providers/deliverectMenuNormalizer";
 import type { CanonicalMenuReplacement, OrderDetailRecord, PlatformRepository } from "../repositories/platformRepository";
 import type { OperatorIdentity } from "../auth/supabaseAuth";
 import { randomToken, sha256 } from "../utils/crypto";
@@ -88,6 +88,21 @@ function resolveProviderLocationAddress(providerLocation: ProviderLocation) {
       longitude: parsedAddress?.longitude ?? null,
     },
   };
+}
+
+async function syncRestaurantImageFromDeliverectMenu(
+  repository: PlatformRepository,
+  restaurantId: string,
+  payload: unknown,
+) {
+  const imageUrl = extractDeliverectMenuImageUrl(payload);
+  if (!imageUrl) return;
+  const restaurant = await repository.getRestaurant(restaurantId);
+  if (!restaurant || restaurant.imageUrl === imageUrl) return;
+  await repository.updateRestaurant(restaurantId, {
+    imageUrl,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 function normalizeText(value: unknown): string | null {
@@ -1531,6 +1546,7 @@ export class PlatformService {
       restaurantId,
       channelLinkId,
     });
+    await syncRestaurantImageFromDeliverectMenu(this.repository, restaurantId, payload);
 
     const duplicateSnapshot = await this.repository.findProviderMenuSnapshot("deliverect", {
       externalEventId,

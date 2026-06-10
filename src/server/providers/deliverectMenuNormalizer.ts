@@ -127,6 +127,22 @@ function normalizeMenuPayload(payload: unknown) {
   return menus.length > 0 ? menus : [payload];
 }
 
+export function extractDeliverectMenuImageUrl(payload: unknown) {
+  for (const menu of normalizeMenuPayload(payload)) {
+    const imageUrl = readString(
+      menu,
+      "menuImageURL",
+      "menuImageUrl",
+      "menuImage",
+      "imageUrl",
+      "image_url",
+      "image",
+    );
+    if (imageUrl) return imageUrl;
+  }
+  return undefined;
+}
+
 export function normalizeDeliverectMenu(
   restaurantId: string,
   payload: unknown,
