@@ -46,6 +46,7 @@ import type {
 import { POSAdapterRegistry } from "../pos/registry";
 import type { AppEnv } from "../config/env";
 import { normalizeDeliverectEvent } from "../providers/deliverectEventNormalizer";
+import { extractDeliverectLocationAddress } from "../providers/deliverectLocation";
 import { normalizeDeliverectMenu } from "../providers/deliverectMenuNormalizer";
 import type { CanonicalMenuReplacement, OrderDetailRecord, PlatformRepository } from "../repositories/platformRepository";
 import type { OperatorIdentity } from "../auth/supabaseAuth";
@@ -66,6 +67,27 @@ function formatRestaurantAddress(location: RestaurantLocation | null, fallback: 
   ].filter(Boolean);
 
   return parts.length > 0 ? parts.join(", ") : fallback;
+}
+
+function resolveProviderLocationAddress(providerLocation: ProviderLocation) {
+  const parsedAddress = extractDeliverectLocationAddress(providerLocation.rawProviderPayload);
+  const fallbackAddress =
+    providerLocation.address && providerLocation.address !== providerLocation.name
+      ? providerLocation.address
+      : undefined;
+  const formattedAddress = parsedAddress?.formattedAddress ?? fallbackAddress;
+  if (!formattedAddress) return null;
+  return {
+    formattedAddress,
+    locationPatch: {
+      address1: parsedAddress?.address1 ?? fallbackAddress ?? formattedAddress,
+      city: parsedAddress?.city ?? "",
+      state: parsedAddress?.state ?? "",
+      postalCode: parsedAddress?.postalCode ?? "",
+      latitude: parsedAddress?.latitude ?? null,
+      longitude: parsedAddress?.longitude ?? null,
+    },
+  };
 }
 
 function normalizeText(value: unknown): string | null {
@@ -1338,6 +1360,12 @@ export class PlatformService {
           location.externalLocationId === externalLocationId ||
           (channelLocationId && location.externalLocationId === channelLocationId)),
     );
+    const parsedLocationAddress = extractDeliverectLocationAddress(payload);
+    const deliverectLocationDetails = isObject(payload.deliverectLocationDetails)
+      ? payload.deliverectLocationDetails
+      : isObject(payload.deliverect_location_details)
+        ? payload.deliverect_location_details
+        : undefined;
     const location = await this.repository.upsertProviderLocation({
       id: existing?.id,
       providerAccountId: account.id,
@@ -1346,8 +1374,12 @@ export class PlatformService {
       externalStoreId: existing?.externalStoreId,
       channelLinkId,
       channelName: existing?.channelName ?? channelName,
-      name: readString(payload, "channelLinkName", "name") ?? existing?.name ?? `Deliverect channel ${channelLinkId}`,
-      address: existing?.address,
+      name:
+        readString(deliverectLocationDetails, "name") ??
+        readString(payload, "locationName", "location_name", "channelLinkName", "name") ??
+        existing?.name ??
+        `Deliverect channel ${channelLinkId}`,
+      address: parsedLocationAddress?.formattedAddress ?? existing?.address,
       timezone: existing?.timezone,
       status: deliverectProviderStatusFromChannelStatus(status),
       mappedRestaurantId: existing?.mappedRestaurantId,
@@ -2362,7 +2394,7 @@ export class PlatformService {
       channelLinkId: input.channelLinkId,
       channelName: input.channelName,
       name: input.name,
-      address: input.address,
+      address: input.address ?? extractDeliverectLocationAddress(input.metadata)?.formattedAddress,
       timezone: input.timezone,
       status: input.status ?? "sandbox",
       rawProviderPayload: {
@@ -2459,21 +2491,35 @@ export class PlatformService {
   private async applyProviderLocationSettings(providerLocation: ProviderLocation) {
     if (!providerLocation.mappedRestaurantId) return;
     const fulfillmentTypes = resolveFulfillmentTypesFromProviderLocation(providerLocation);
-    if (fulfillmentTypes.length === 0) return;
+    const providerAddress = resolveProviderLocationAddress(providerLocation);
+    if (fulfillmentTypes.length === 0 && !providerAddress) return;
     const [restaurant, rules] = await Promise.all([
       this.repository.getRestaurant(providerLocation.mappedRestaurantId),
       this.repository.getRules(providerLocation.mappedRestaurantId),
     ]);
     if (!restaurant || !rules) return;
-    await Promise.all([
-      this.repository.updateRestaurant(providerLocation.mappedRestaurantId, {
-        fulfillmentTypesSupported: fulfillmentTypes,
-        updatedAt: new Date().toISOString(),
-      }),
-      this.repository.updateRules(providerLocation.mappedRestaurantId, {
+    const restaurantPatch: Partial<Restaurant> = {
+      updatedAt: new Date().toISOString(),
+    };
+    if (fulfillmentTypes.length > 0) {
+      restaurantPatch.fulfillmentTypesSupported = fulfillmentTypes;
+    }
+    if (providerAddress) {
+      restaurantPatch.location = providerAddress.formattedAddress;
+    }
+
+    const updates: Array<Promise<unknown>> = [
+      this.repository.updateRestaurant(providerLocation.mappedRestaurantId, restaurantPatch),
+    ];
+    if (fulfillmentTypes.length > 0) {
+      updates.push(this.repository.updateRules(providerLocation.mappedRestaurantId, {
         allowedFulfillmentTypes: fulfillmentTypes,
-      }),
-    ]);
+      }));
+    }
+    if (providerAddress) {
+      updates.push(this.repository.updateLocation(providerLocation.mappedRestaurantId, providerAddress.locationPatch));
+    }
+    await Promise.all(updates);
   }
 
   async getPlatformAdminPartners(_authenticated: AuthenticatedPlatformAdmin): Promise<PlatformAdminPartnerRecord[]> {

@@ -1,6 +1,7 @@
 import { createDemoSeed, type DemoSeedState } from "./demoData";
 import { createId } from "../utils/ids";
 import { sha256 } from "../utils/crypto";
+import { extractDeliverectLocationAddress } from "../providers/deliverectLocation";
 import type { OperatorIdentity } from "../auth/supabaseAuth";
 import type {
   Agent,
@@ -262,6 +263,7 @@ export interface PlatformRepository {
   listRestaurants(): Promise<Restaurant[]>;
   getRestaurant(restaurantId: string): Promise<Restaurant | null>;
   updateRestaurant(restaurantId: string, patch: Partial<Restaurant>): Promise<Restaurant>;
+  updateLocation(restaurantId: string, patch: Partial<RestaurantLocation>): Promise<RestaurantLocation | null>;
   getPOSConnection(restaurantId: string): Promise<POSConnection | null>;
   updatePOSConnection(connectionId: string, patch: Partial<POSConnection>): Promise<POSConnection>;
   listProviderAccounts(provider?: POSConnection["provider"]): Promise<ProviderAccount[]>;
@@ -1240,6 +1242,14 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     return updated;
   }
 
+  async updateLocation(restaurantId: string, patch: Partial<RestaurantLocation>) {
+    const location = await this.getLocation(restaurantId);
+    if (!location) return null;
+    const updated = { ...location, ...patch };
+    this.state.locations = this.state.locations.map((entry) => (entry.id === location.id ? updated : entry));
+    return updated;
+  }
+
   async getPOSConnection(restaurantId: string) {
     const connection = this.state.posConnections.find((entry) => entry.restaurantId === restaurantId) ?? null;
     if (!connection) {
@@ -1445,6 +1455,8 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const permissionId = createId("perm");
     const coachAgent = this.state.agents.find((entry) => entry.slug === "coachimhungry");
     const fulfillmentTypes = readProviderFulfillmentTypes(providerLocation);
+    const providerAddress = extractDeliverectLocationAddress(providerLocation.rawProviderPayload);
+    const formattedAddress = providerAddress?.formattedAddress ?? providerLocation.address ?? providerLocation.name;
     const metadata = {
       source: "provider_provisioning",
       providerAccountRecordId: providerAccount.id,
@@ -1459,7 +1471,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const restaurant: Restaurant = {
       id: restaurantId,
       name: providerLocation.name,
-      location: providerLocation.address ?? providerLocation.name,
+      location: formattedAddress,
       timezone: providerLocation.timezone ?? "America/Los_Angeles",
       posProvider: providerLocation.provider,
       agentOrderingEnabled: true,
@@ -1487,12 +1499,12 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       id: locationId,
       restaurantId,
       name: providerLocation.name,
-      address1: providerLocation.address ?? providerLocation.name,
-      city: "",
-      state: "",
-      postalCode: "",
-      latitude: null,
-      longitude: null,
+      address1: providerAddress?.address1 ?? providerLocation.address ?? providerLocation.name,
+      city: providerAddress?.city ?? "",
+      state: providerAddress?.state ?? "",
+      postalCode: providerAddress?.postalCode ?? "",
+      latitude: providerAddress?.latitude ?? null,
+      longitude: providerAddress?.longitude ?? null,
     });
     this.state.posConnections.unshift(connection);
     this.state.orderingRules.unshift({

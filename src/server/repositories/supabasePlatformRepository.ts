@@ -47,6 +47,7 @@ import type {
   FulfillmentType,
 } from "../../shared/types";
 import type { OperatorIdentity } from "../auth/supabaseAuth";
+import { extractDeliverectLocationAddress } from "../providers/deliverectLocation";
 import type {
   AgentListEntry,
   CanonicalMenuReplacement,
@@ -1454,6 +1455,38 @@ export class SupabasePlatformRepository implements PlatformRepository {
     return mapRestaurant(result.rows[0]);
   }
 
+  async updateLocation(restaurantId: string, patch: Partial<RestaurantLocation>) {
+    const current = await this.getLocation(restaurantId);
+    if (!current) return null;
+    const updated = {
+      ...current,
+      ...patch,
+    };
+    const result = await this.pool.query(
+      `update restaurant_locations
+       set name = $2,
+           address1 = $3,
+           city = $4,
+           state = $5,
+           postal_code = $6,
+           latitude = $7,
+           longitude = $8
+       where id = $1
+       returning *`,
+      [
+        current.id,
+        updated.name,
+        updated.address1,
+        updated.city,
+        updated.state,
+        updated.postalCode,
+        updated.latitude ?? null,
+        updated.longitude ?? null,
+      ],
+    );
+    return result.rows[0] ? mapLocation(result.rows[0]) : null;
+  }
+
   async getPOSConnection(restaurantId: string) {
     const result = await this.pool.query("select * from pos_connections where restaurant_id = $1 limit 1", [restaurantId]);
     const connection = result.rows[0] ? mapPOSConnection(result.rows[0]) : null;
@@ -1752,6 +1785,8 @@ export class SupabasePlatformRepository implements PlatformRepository {
       const coachAgent = await client.query("select id from agents where slug = 'coachimhungry' limit 1");
       const coachAgentId = coachAgent.rows[0]?.id as string | undefined;
       const fulfillmentTypes = readProviderFulfillmentTypes(providerLocation);
+      const providerAddress = extractDeliverectLocationAddress(providerLocation.rawProviderPayload);
+      const formattedAddress = providerAddress?.formattedAddress ?? providerLocation.address ?? providerLocation.name;
       const metadata = {
         source: "provider_provisioning",
         providerAccountRecordId: providerAccount.id,
@@ -1772,7 +1807,7 @@ export class SupabasePlatformRepository implements PlatformRepository {
         [
           restaurantId,
           providerLocation.name,
-          providerLocation.address ?? providerLocation.name,
+          formattedAddress,
           providerLocation.timezone ?? "America/Los_Angeles",
           providerLocation.provider,
           input.contactEmail,
@@ -1784,9 +1819,19 @@ export class SupabasePlatformRepository implements PlatformRepository {
 
       await client.query(
         `insert into restaurant_locations
-         (id, restaurant_id, name, address1, city, state, postal_code)
-         values ($1, $2, $3, $4, '', '', '')`,
-        [locationId, restaurantId, providerLocation.name, providerLocation.address ?? providerLocation.name],
+         (id, restaurant_id, name, address1, city, state, postal_code, latitude, longitude)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          locationId,
+          restaurantId,
+          providerLocation.name,
+          providerAddress?.address1 ?? providerLocation.address ?? providerLocation.name,
+          providerAddress?.city ?? "",
+          providerAddress?.state ?? "",
+          providerAddress?.postalCode ?? "",
+          providerAddress?.latitude ?? null,
+          providerAddress?.longitude ?? null,
+        ],
       );
 
       const connectionResult = await client.query(

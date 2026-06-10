@@ -914,20 +914,46 @@ describe("PlatformService", () => {
       channelLinkId: "channel_link_provision_mealops",
       channelName: "mealops",
       name: "MealOps - Test Location Provision",
-      address: "10 Provider Way",
       timezone: "America/Los_Angeles",
       status: "sandbox",
-      rawProviderPayload: { fulfillmentTypes: ["pickup"] },
+      rawProviderPayload: {
+        fulfillmentTypes: ["pickup"],
+        deliverectLocationDetails: {
+          address: {
+            city: "Sunnyvale",
+            street: "Ashcroft way",
+            houseNumber: "1529",
+            postalCode: "94087",
+            stateOrProvince: "CA",
+            coordinates: {
+              type: "Point",
+              coordinates: [-122.0645141, 37.3437834],
+            },
+          },
+        },
+      },
       lastSyncedAt: new Date().toISOString(),
     });
 
     const result = await service.provisionProviderLocation(admin, providerLocation.id);
+    const location = await repository.getLocation(result.restaurant.id);
     const rules = await service.getRules(result.restaurant.id);
     const agents = await service.listAgents(result.restaurant.id);
     const coach = agents.find((entry) => entry.agent.slug === "coachimhungry");
 
     expect(result.created).toBe(true);
     expect(result.restaurant.posProvider).toBe("deliverect");
+    expect(result.restaurant.location).toBe("1529 Ashcroft way, Sunnyvale CA 94087");
+    expect(location).toEqual(
+      expect.objectContaining({
+        address1: "1529 Ashcroft way",
+        city: "Sunnyvale",
+        state: "CA",
+        postalCode: "94087",
+        latitude: 37.3437834,
+        longitude: -122.0645141,
+      }),
+    );
     expect(result.connection.provider).toBe("deliverect");
     expect(result.connection.providerLocationId).toBe(providerLocation.id);
     expect(rules.autoAcceptEnabled).toBe(true);
@@ -2041,6 +2067,16 @@ describe("PlatformService", () => {
         channelLinkId: "channel_link_registered",
         locationId: "deliverect_loc_123",
         channelLinkName: "MealOps",
+        deliverectLocationDetails: {
+          name: "MealOps - Registered Test Location",
+          address: {
+            city: "Sunnyvale",
+            street: "Ashcroft way",
+            houseNumber: "1513",
+            postalCode: "94087",
+            stateOrProvince: "CA",
+          },
+        },
       }),
     });
     const payload = await response.json();
@@ -2074,6 +2110,8 @@ describe("PlatformService", () => {
           externalLocationId: "deliverect_loc_123",
           channelLinkId: "channel_link_registered",
           channelName: "mealops",
+          name: "MealOps - Registered Test Location",
+          address: "1513 Ashcroft way, Sunnyvale CA 94087",
           status: "connected",
         }),
       ]),
