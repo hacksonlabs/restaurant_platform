@@ -79,9 +79,26 @@ describe("Phantom remote MCP server", () => {
         restaurants: Array<{ id: string }>;
       };
       expect(payload.restaurants.map((restaurant) => restaurant.id)).toContain("rest_lb_steakhouse");
+
+      const menuResult = await client.callTool({
+        name: "get_menu",
+        arguments: {
+          restaurant_id: "rest_lb_steakhouse",
+        },
+      });
+      const menuPayload = menuResult.structuredContent as {
+        version?: { id: string } | null;
+        items: Array<{ id: string }>;
+        modifierGroups: Array<{ id: string }>;
+        modifiers: Array<{ id: string }>;
+        mappings: Array<{ id: string }>;
+      };
+      expect(menuPayload.items.length).toBeGreaterThan(0);
+      expect(menuPayload.mappings.length).toBeGreaterThan(0);
       expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining("\"message\":\"mcp_tool_call\""));
       expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining("\"transport\":\"remote_http\""));
       expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining("\"toolName\":\"search_restaurants\""));
+      expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining("\"toolName\":\"get_menu\""));
     } finally {
       consoleLog.mockRestore();
       await client.close();
