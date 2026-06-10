@@ -1,11 +1,16 @@
 import { z } from "zod";
-import type { AgentApiKey, CanonicalOrderIntent, FulfillmentType } from "../../shared/types";
+import type { AgentApiKey, CanonicalOrderIntent, FulfillmentType, POSProvider } from "../../shared/types";
 import { canonicalOrderIntentSchema } from "../../shared/schemas";
 import type { PlatformService } from "../services/platformService";
+
+const posProviderSchema = z.enum(["mock", "toast", "square", "deliverect", "olo"]);
+const posProviderFilterSchema = z.union([posProviderSchema, z.array(posProviderSchema)]);
 
 const searchRestaurantsInputSchema = z.object({
   query: z.string().trim().min(1).optional(),
   fulfillment_type: z.enum(["pickup", "delivery", "catering"]).optional(),
+  pos_provider: posProviderFilterSchema.optional(),
+  exclude_pos_provider: posProviderFilterSchema.optional(),
   address: z.string().trim().min(1).optional(),
   latitude: z.number().finite().optional(),
   longitude: z.number().finite().optional(),
@@ -160,6 +165,10 @@ function buildSearchOrigin(input: SearchRestaurantsInput) {
   return null;
 }
 
+function providerFilterSet(value: POSProvider | POSProvider[] | undefined) {
+  return new Set(Array.isArray(value) ? value : value ? [value] : []);
+}
+
 function filterRestaurants(
   restaurants: Awaited<ReturnType<PlatformService["listAgentRestaurants"]>>,
   input: SearchRestaurantsInput,
@@ -167,6 +176,8 @@ function filterRestaurants(
   const limit = input.limit ?? 20;
   const query = normalizeText(input.query);
   const fulfillmentType = input.fulfillment_type;
+  const includedProviders = providerFilterSet(input.pos_provider);
+  const excludedProviders = providerFilterSet(input.exclude_pos_provider);
   const searchAddress = normalizeText(input.address);
   const origin = buildSearchOrigin(input);
   const radiusMiles = input.radius_miles ?? null;
@@ -178,6 +189,15 @@ function filterRestaurants(
   }
 
   return restaurants
+    .filter((restaurant) => {
+      if (includedProviders.size > 0 && !includedProviders.has(restaurant.posProvider)) {
+        return false;
+      }
+      if (excludedProviders.has(restaurant.posProvider)) {
+        return false;
+      }
+      return true;
+    })
     .map((restaurant) => {
       const address = buildRestaurantAddress(restaurant);
       const coordinates = resolveSeededRestaurantCoordinates(restaurant);
@@ -204,7 +224,9 @@ function filterRestaurants(
         return false;
       }
       if (origin) {
-        if (!restaurant.coordinates) return false;
+        if (!restaurant.coordinates) {
+          return excludedProviders.has("mock") && restaurant.posProvider !== "mock";
+        }
         if (radiusMiles != null && (restaurant.distanceMiles == null || restaurant.distanceMiles > radiusMiles)) {
           return false;
         }

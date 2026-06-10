@@ -98,6 +98,62 @@ describe("Phantom MCP tools", () => {
     );
   });
 
+  it("filters out mock providers while keeping non-mock restaurants that lack coordinates", async () => {
+    const result = await searchRestaurantsTool(
+      {
+        agentKey: {
+          id: "key_test",
+          agentId: "agent_coachimhungry",
+          label: "test",
+          keyPrefix: "test",
+          keyHash: "hash",
+          scopes: ["restaurants:read"],
+          createdAt: new Date().toISOString(),
+        },
+        service: {
+          assertAgentScope: () => undefined,
+          listAgentRestaurants: async () => [
+            {
+              id: "rest_lb_steakhouse",
+              name: "LB Steakhouse",
+              location: "1533 Ashcroft Way, Sunnyvale, CA 94087",
+              latitude: 37.3509,
+              longitude: -122.0378,
+              posProvider: "mock",
+              fulfillmentTypesSupported: ["pickup"],
+            },
+            {
+              id: "rest_gdczn7pb",
+              name: "MealOps - Test Location 1",
+              location: "MealOps - Test Location 1",
+              latitude: null,
+              longitude: null,
+              posProvider: "deliverect",
+              fulfillmentTypesSupported: ["pickup"],
+            },
+          ],
+        } as any,
+      },
+      {
+        fulfillment_type: "pickup",
+        exclude_pos_provider: "mock",
+        address: "1533 Ashcroft Way, Sunnyvale, CA 94087",
+        latitude: 37.3509,
+        longitude: -122.0378,
+        radius_miles: 6,
+        limit: 10,
+      },
+    );
+
+    expect(result.restaurants.map((restaurant) => restaurant.id)).toEqual(["rest_gdczn7pb"]);
+    expect(result.restaurants[0]).toEqual(
+      expect.objectContaining({
+        posProvider: "deliverect",
+        distanceMiles: null,
+      }),
+    );
+  });
+
   it("does not give onboarding restaurants seeded coordinates just because they share a demo address", async () => {
     const result = await searchRestaurantsTool(
       {
