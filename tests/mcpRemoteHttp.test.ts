@@ -87,7 +87,6 @@ describe("Phantom remote MCP server", () => {
         },
       });
       const menuPayload = menuResult.structuredContent as {
-        version?: { id: string } | null;
         items: Array<{ id: string }>;
         modifierGroups: Array<{ id: string }>;
         modifiers: Array<{ id: string }>;

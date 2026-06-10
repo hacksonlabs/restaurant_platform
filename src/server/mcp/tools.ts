@@ -249,7 +249,8 @@ export async function searchRestaurantsTool(context: PhantomMcpContext, input: S
 export async function getMenuTool(context: PhantomMcpContext, input: GetMenuInput) {
   context.service.assertAgentScope(context.agentKey, "menus:read");
   await context.service.validateAgentAccess(input.restaurant_id, context.agentKey.agentId);
-  return await context.service.getMenu(input.restaurant_id);
+  const { items, modifierGroups, modifiers, mappings } = await context.service.getMenu(input.restaurant_id);
+  return { items, modifierGroups, modifiers, mappings };
 }
 
 export async function validateOrderTool(context: PhantomMcpContext, input: OrderToolInput) {

@@ -153,7 +153,6 @@ export function createPhantomMcpServer(
       description: "Return the full canonical menu for a restaurant.",
       inputSchema: phantomMcpSchemas.getMenuInputSchema.shape,
       outputSchema: {
-        version: z.any().nullable().optional(),
         items: z.array(z.any()),
         modifierGroups: z.array(z.any()),
         modifiers: z.array(z.any()),
