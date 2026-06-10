@@ -61,7 +61,7 @@ export class DeliverectAdapterLive implements POSAdapter {
   }
 
   async syncMenu(connection: POSConnection, context: POSContext): Promise<MenuSyncResult> {
-    this.assertConfigured(connection);
+    this.assertConfigured(connection, context);
     return {
       status: "success",
       syncedAt: new Date().toISOString(),
@@ -73,7 +73,7 @@ export class DeliverectAdapterLive implements POSAdapter {
   }
 
   async validateOrder(order: CanonicalOrderIntent, context: POSContext): Promise<OrderValidationResult> {
-    this.assertConfigured(context.connection);
+    this.assertConfigured(context.connection, context);
     const issues = this.localReadinessIssues(order, context);
     return {
       id: `deliverect_live_validation_${Date.now()}`,
@@ -85,7 +85,7 @@ export class DeliverectAdapterLive implements POSAdapter {
   }
 
   async quoteOrder(order: CanonicalOrderIntent, context: POSContext): Promise<OrderQuoteResult> {
-    this.assertConfigured(context.connection);
+    this.assertConfigured(context.connection, context);
     const totals = this.calculateChannelTotals(order, context);
     return {
       ok: true,
@@ -104,7 +104,7 @@ export class DeliverectAdapterLive implements POSAdapter {
     paymentSession: { successUrl: string; cancelUrl: string },
     context: POSContext,
   ): Promise<POSPaymentSessionResult> {
-    this.assertConfigured(context.connection);
+    this.assertConfigured(context.connection, context);
     return {
       ok: false,
       status: "failed",
@@ -122,9 +122,11 @@ export class DeliverectAdapterLive implements POSAdapter {
   }
 
   async submitOrder(order: CanonicalOrderIntent, quote: OrderQuoteResult, context: POSContext): Promise<POSSubmissionResult> {
-    this.assertConfigured(context.connection);
+    this.assertConfigured(context.connection, context);
+    const channelName = this.channelName(context.connection);
+    const channelLinkId = this.channelLinkId(context.connection, context);
     const payload = this.buildChannelOrderPayload(order, quote, context);
-    const response = await this.deliverectFetch(`/${this.channelName(context.connection)}/order/${this.channelLinkId(context.connection)}`, {
+    const response = await this.deliverectFetch(`/${channelName}/order/${channelLinkId}`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -158,7 +160,7 @@ export class DeliverectAdapterLive implements POSAdapter {
   }
 
   async getOrderStatus(posOrderId: string, context: POSContext): Promise<POSOrderStatusResult> {
-    this.assertConfigured(context.connection);
+    this.assertConfigured(context.connection, context);
     return {
       ok: true,
       externalOrderId: posOrderId,
@@ -169,7 +171,7 @@ export class DeliverectAdapterLive implements POSAdapter {
 
   async diagnose(connection: POSConnection, context: POSContext): Promise<POSDiagnosticsResult> {
     const checks: POSDiagnosticsResult["checks"] = [];
-    const configured = this.hasMinimumConfiguration(connection);
+    const configured = this.hasMinimumConfiguration(connection, context);
     checks.push({ key: "config", ok: configured.ok, message: configured.message });
     checks.push({
       key: "account_id",
@@ -187,8 +189,8 @@ export class DeliverectAdapterLive implements POSAdapter {
     });
     checks.push({
       key: "channel_link_id",
-      ok: Boolean(this.channelLinkId(connection)),
-      message: this.channelLinkId(connection)
+      ok: Boolean(this.channelLinkId(connection, context)),
+      message: this.channelLinkId(connection, context)
         ? "Deliverect channel link ID is configured."
         : "Missing Deliverect channel link ID for Channel API order requests.",
     });
@@ -242,14 +244,14 @@ export class DeliverectAdapterLive implements POSAdapter {
     return buildChecks(checks);
   }
 
-  private assertConfigured(connection: POSConnection) {
-    const ok = this.hasMinimumConfiguration(connection);
+  private assertConfigured(connection: POSConnection, context?: POSContext) {
+    const ok = this.hasMinimumConfiguration(connection, context);
     if (!ok.ok) {
       throw deliverectError(ok.message);
     }
   }
 
-  private hasMinimumConfiguration(connection?: POSConnection) {
+  private hasMinimumConfiguration(connection?: POSConnection, context?: POSContext) {
     const env = this.env;
     if (!env) {
       return { ok: false, message: "Deliverect live adapter is missing application environment configuration." };
@@ -263,7 +265,7 @@ export class DeliverectAdapterLive implements POSAdapter {
         message: "Provide DELIVERECT_ACCESS_TOKEN or DELIVERECT_CLIENT_ID and DELIVERECT_CLIENT_SECRET before enabling live Deliverect mode.",
       };
     }
-    if (!this.channelLinkId(connection)) {
+    if (!this.channelLinkId(connection, context)) {
       return { ok: false, message: "Deliverect channel link ID is required for live Deliverect mode." };
     }
     return { ok: true, message: "Live Deliverect config is present." };
@@ -277,8 +279,15 @@ export class DeliverectAdapterLive implements POSAdapter {
     return this.readMetadataString(connection, "deliverectStoreId") || this.env?.deliverectStoreId || "";
   }
 
-  private channelLinkId(connection?: POSConnection) {
-    return this.readMetadataString(connection, "deliverectChannelLinkId") || this.env?.deliverectChannelLinkId || "";
+  private channelLinkId(connection?: POSConnection, context?: POSContext) {
+    return (
+      this.readMetadataString(context?.menuVersion, "channelLinkId") ||
+      this.readMetadataString(connection, "channelLinkId") ||
+      this.readMetadataString(connection, "channel_link_id") ||
+      this.readMetadataString(connection, "deliverectChannelLinkId") ||
+      this.env?.deliverectChannelLinkId ||
+      ""
+    );
   }
 
   private channelName(connection?: POSConnection) {
@@ -463,7 +472,7 @@ export class DeliverectAdapterLive implements POSAdapter {
       _id: order.external_order_reference,
       channelOrderId: order.external_order_reference,
       channelOrderDisplayId: this.displayOrderId(order.external_order_reference),
-      channelLinkId: this.channelLinkId(context.connection),
+      channelLinkId: this.channelLinkId(context.connection, context),
       orderType,
       deliveryIsAsap,
       ...(orderType === 2 ? { deliveryTime: requestedTime } : {}),
@@ -596,8 +605,8 @@ export class DeliverectAdapterLive implements POSAdapter {
     );
   }
 
-  private readMetadataString(connection: POSConnection | undefined, key: string) {
-    const value = connection?.metadata?.[key];
+  private readMetadataString(source: { metadata: Record<string, unknown> } | undefined, key: string) {
+    const value = source?.metadata?.[key];
     return typeof value === "string" ? value : "";
   }
 

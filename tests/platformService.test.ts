@@ -142,7 +142,11 @@ function authenticatedPlatformAdmin(): AuthenticatedPlatformAdmin {
   };
 }
 
-async function createDeliverectProviderLocation(service: PlatformService, suffix: string) {
+async function createDeliverectProviderLocation(
+  service: PlatformService,
+  suffix: string,
+  rawProviderPayload: Record<string, unknown> = { fulfillmentTypes: ["pickup", "delivery"] },
+) {
   const repository = (service as any).repository as InMemoryPlatformRepository;
   const account = await repository.upsertProviderAccount({
     provider: "deliverect",
@@ -164,19 +168,24 @@ async function createDeliverectProviderLocation(service: PlatformService, suffix
     address: "20 Provider Way",
     timezone: "America/Los_Angeles",
     status: "sandbox",
-    rawProviderPayload: { fulfillmentTypes: ["pickup", "delivery"] },
+    rawProviderPayload,
     lastSyncedAt: new Date().toISOString(),
   });
   return { repository, account, providerLocation };
 }
 
-function deliverectMenuPayload(suffix: string, eventId = `menu_event_${suffix}`) {
+function deliverectMenuPayload(
+  suffix: string,
+  eventId = `menu_event_${suffix}`,
+  menuPatch: Record<string, unknown> = {},
+) {
   return {
     channelLinkId: `channel_link_${suffix}`,
     eventId,
     items: [
       {
         menu: "Lunch",
+        ...menuPatch,
         categories: [
           {
             name: "Entrees",
@@ -207,10 +216,15 @@ function deliverectMenuPayload(suffix: string, eventId = `menu_event_${suffix}`)
   };
 }
 
-async function provisionDeliverectMenuRestaurant(service: PlatformService, suffix: string) {
-  const setup = await createDeliverectProviderLocation(service, suffix);
+async function provisionDeliverectMenuRestaurant(
+  service: PlatformService,
+  suffix: string,
+  rawProviderPayload?: Record<string, unknown>,
+  menuPatch?: Record<string, unknown>,
+) {
+  const setup = await createDeliverectProviderLocation(service, suffix, rawProviderPayload);
   const provisioned = await service.provisionProviderLocation(authenticatedPlatformAdmin(), setup.providerLocation.id);
-  const menuResult = await service.ingestDeliverectMenuUpdate(deliverectMenuPayload(suffix));
+  const menuResult = await service.ingestDeliverectMenuUpdate(deliverectMenuPayload(suffix, `menu_event_${suffix}`, menuPatch));
   const menu = await service.getMenu(provisioned.restaurant.id);
   return { ...setup, provisioned, menuResult, menu };
 }
@@ -1100,14 +1114,19 @@ describe("PlatformService", () => {
     const admin = authenticatedPlatformAdmin();
     const setup = await provisionDeliverectMenuRestaurant(service, "failed_menu");
     const before = await service.getMenu(setup.provisioned.restaurant.id);
+    const emptyMenuError =
+      "Deliverect menu payload contained no products/categories. Add products to the Deliverect sandbox menu and trigger menu sync/publish again.";
+    const emptyMenuPayload = {
+      channelLinkId: "channel_link_failed_menu",
+      eventId: "menu_event_failed_menu_bad",
+      name: "Sample Menu - Copy",
+      products: {},
+      modifiers: {},
+      categories: [],
+      modifierGroups: {},
+    };
 
-    await expect(
-      service.ingestDeliverectMenuUpdate({
-        channelLinkId: "channel_link_failed_menu",
-        eventId: "menu_event_failed_menu_bad",
-        items: [{ menu: "Empty", categories: [] }],
-      }),
-    ).rejects.toThrow("No importable menu items");
+    await expect(service.ingestDeliverectMenuUpdate(emptyMenuPayload)).rejects.toThrow(emptyMenuError);
 
     const after = await service.getMenu(setup.provisioned.restaurant.id);
     const snapshots = await service.listProviderMenuSnapshots(admin, {
@@ -1115,6 +1134,7 @@ describe("PlatformService", () => {
       restaurantId: setup.provisioned.restaurant.id,
       status: "failed",
     });
+    const snapshot = await service.getProviderMenuSnapshot(admin, snapshots[0].id);
     const versions = await service.listCanonicalMenuVersions(admin, setup.provisioned.restaurant.id);
 
     expect(after.version?.id).toBe(before.version?.id);
@@ -1123,9 +1143,11 @@ describe("PlatformService", () => {
       expect.objectContaining({
         status: "failed",
         externalEventId: "menu_event_failed_menu_bad",
-        error: expect.stringContaining("No importable menu items"),
+        error: emptyMenuError,
       }),
     );
+    expect(snapshot.rawPayload).toEqual(expect.objectContaining(emptyMenuPayload));
+    expect(versions).toHaveLength(1);
     expect(versions.filter((version) => version.status === "published")).toHaveLength(1);
   });
 
@@ -1158,6 +1180,202 @@ describe("PlatformService", () => {
         expect.objectContaining({ code: "menu_version_stale" }),
       ]),
     );
+  });
+
+  it("defaults Deliverect Channel locations without fulfillment config to pickup only", async () => {
+    const service = createService();
+    const setup = await provisionDeliverectMenuRestaurant(service, "pickup_default", {});
+    const restaurantId = setup.provisioned.restaurant.id;
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const pickupOrder = deliverectOrderIntent(
+      restaurantId,
+      "deliverect-pickup-default",
+      item.id,
+      [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+      { menu_version_id: setup.menu.version!.id },
+    );
+    const rules = await service.getRules(restaurantId);
+
+    expect(setup.provisioned.restaurant.fulfillmentTypesSupported).toEqual(["pickup"]);
+    expect(rules.allowedFulfillmentTypes).toEqual(["pickup"]);
+
+    await service.updateRestaurant(restaurantId, { fulfillmentTypesSupported: [] });
+    await service.updateRules(restaurantId, { allowedFulfillmentTypes: [] });
+
+    const detail = await service.getAgentRestaurantDetail(restaurantId, "agent_coachimhungry");
+    const pickupValidation = await service.validateOrder(pickupOrder);
+    const deliveryValidation = await service.validateOrder({
+      ...pickupOrder,
+      external_order_reference: "deliverect-delivery-still-disabled",
+      fulfillment_type: "delivery",
+    });
+    const cateringValidation = await service.validateOrder({
+      ...pickupOrder,
+      external_order_reference: "deliverect-catering-still-disabled",
+      fulfillment_type: "catering",
+    });
+
+    expect(detail.restaurant.fulfillmentTypesSupported).toEqual(["pickup"]);
+    expect(detail.rules.allowedFulfillmentTypes).toEqual(["pickup"]);
+    expect(pickupValidation.valid).toBe(true);
+    expect(deliveryValidation.valid).toBe(false);
+    expect(cateringValidation.valid).toBe(false);
+    expect(deliveryValidation.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "fulfillment_type_not_allowed", field: "fulfillment_type" }),
+      ]),
+    );
+  });
+
+  it("uses Deliverect menuType pickup as pickup when no explicit fulfillment config exists", async () => {
+    const service = createService();
+    const setup = await provisionDeliverectMenuRestaurant(service, "menu_type_pickup", {}, { menuType: 2 });
+    const restaurantId = setup.provisioned.restaurant.id;
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+
+    await service.updateRestaurant(restaurantId, { fulfillmentTypesSupported: [] });
+    await service.updateRules(restaurantId, { allowedFulfillmentTypes: [] });
+
+    const menu = await service.getMenu(restaurantId);
+    const detail = await service.getAgentRestaurantDetail(restaurantId, "agent_coachimhungry");
+    const validation = await service.validateOrder(
+      deliverectOrderIntent(
+        restaurantId,
+        "deliverect-menu-type-pickup",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+    );
+
+    expect(menu.version?.metadata).toEqual(
+      expect.objectContaining({
+        deliverectMenuTypes: [2],
+        deliverectMenuTypeLabels: ["pickup"],
+        deliverectMenuTypeSignal: true,
+        phantomFulfillmentTypesFromMenuType: ["pickup"],
+      }),
+    );
+    expect(detail.restaurant.fulfillmentTypesSupported).toEqual(["pickup"]);
+    expect(detail.rules.allowedFulfillmentTypes).toEqual(["pickup"]);
+    expect(validation.valid).toBe(true);
+  });
+
+  it("does not enable delivery from a delivery-only Deliverect menuType without explicit delivery support", async () => {
+    const service = createService();
+    const setup = await provisionDeliverectMenuRestaurant(service, "menu_type_delivery", {}, { menuType: 1 });
+    const restaurantId = setup.provisioned.restaurant.id;
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const baseOrder = deliverectOrderIntent(
+      restaurantId,
+      "deliverect-menu-type-delivery",
+      item.id,
+      [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+      { menu_version_id: setup.menu.version!.id },
+    );
+
+    await service.updateRestaurant(restaurantId, { fulfillmentTypesSupported: [] });
+    await service.updateRules(restaurantId, { allowedFulfillmentTypes: [] });
+
+    const detail = await service.getAgentRestaurantDetail(restaurantId, "agent_coachimhungry");
+    const pickupValidation = await service.validateOrder(baseOrder);
+    const deliveryValidation = await service.validateOrder({
+      ...baseOrder,
+      external_order_reference: "deliverect-menu-type-delivery-disabled",
+      fulfillment_type: "delivery",
+    });
+
+    expect(setup.menu.version?.metadata).toEqual(
+      expect.objectContaining({
+        deliverectMenuTypes: [1],
+        deliverectMenuTypeLabels: ["delivery"],
+        deliverectMenuTypeSignal: true,
+        phantomFulfillmentTypesFromMenuType: [],
+      }),
+    );
+    expect(detail.restaurant.fulfillmentTypesSupported).toEqual([]);
+    expect(detail.rules.allowedFulfillmentTypes).toEqual([]);
+    expect(pickupValidation.valid).toBe(false);
+    expect(deliveryValidation.valid).toBe(false);
+    expect(deliveryValidation.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "fulfillment_type_not_allowed", field: "fulfillment_type" }),
+      ]),
+    );
+  });
+
+  it("keeps the pickup fallback when Deliverect menuType is absent or unknown", async () => {
+    const service = createService();
+    const setup = await provisionDeliverectMenuRestaurant(service, "menu_type_unknown", {}, { menuType: 999 });
+    const restaurantId = setup.provisioned.restaurant.id;
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+
+    await service.updateRestaurant(restaurantId, { fulfillmentTypesSupported: [] });
+    await service.updateRules(restaurantId, { allowedFulfillmentTypes: [] });
+
+    const detail = await service.getAgentRestaurantDetail(restaurantId, "agent_coachimhungry");
+    const validation = await service.validateOrder(
+      deliverectOrderIntent(
+        restaurantId,
+        "deliverect-menu-type-unknown-fallback",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+    );
+
+    expect(setup.menu.version?.metadata).toEqual(
+      expect.objectContaining({
+        deliverectMenuTypes: [999],
+        deliverectKnownMenuTypes: [],
+        deliverectMenuTypeSignal: false,
+        phantomFulfillmentTypesFromMenuType: [],
+      }),
+    );
+    expect(detail.restaurant.fulfillmentTypesSupported).toEqual(["pickup"]);
+    expect(detail.rules.allowedFulfillmentTypes).toEqual(["pickup"]);
+    expect(validation.valid).toBe(true);
+  });
+
+  it("maps explicit numeric Deliverect order types into fulfillment rules", async () => {
+    const service = createService();
+    const setup = await provisionDeliverectMenuRestaurant(service, "numeric_order_types", { orderTypes: [1, 2] }, { menuType: 2 });
+    const restaurantId = setup.provisioned.restaurant.id;
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const rules = await service.getRules(restaurantId);
+    const detail = await service.getAgentRestaurantDetail(restaurantId, "agent_coachimhungry");
+    const deliveryValidation = await service.validateOrder({
+      ...deliverectOrderIntent(
+        restaurantId,
+        "deliverect-explicit-delivery-enabled",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+      fulfillment_type: "delivery",
+    });
+
+    expect(setup.provisioned.restaurant.fulfillmentTypesSupported).toEqual(["pickup", "delivery"]);
+    expect(rules.allowedFulfillmentTypes).toEqual(["pickup", "delivery"]);
+    expect(setup.menu.version?.metadata).toEqual(
+      expect.objectContaining({
+        deliverectMenuTypes: [2],
+        phantomFulfillmentTypesFromMenuType: ["pickup"],
+      }),
+    );
+    expect(detail.restaurant.fulfillmentTypesSupported).toEqual(["pickup", "delivery"]);
+    expect(detail.rules.allowedFulfillmentTypes).toEqual(["pickup", "delivery"]);
+    expect(deliveryValidation.valid).toBe(true);
   });
 
   it("enforces unavailable item validation from Deliverect canonical menus", async () => {

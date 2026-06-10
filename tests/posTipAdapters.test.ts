@@ -107,8 +107,8 @@ const deliverectLiveConnection: POSConnection = {
   },
 };
 
-function buildContext(connection: POSConnection): POSContext {
-  return {
+function buildContext(connection: POSConnection, menuVersionMetadata?: Record<string, unknown>): POSContext {
+  const context: POSContext = {
     restaurant,
     location,
     connection,
@@ -136,6 +136,22 @@ function buildContext(connection: POSConnection): POSContext {
       },
     ],
   };
+  if (menuVersionMetadata) {
+    context.menuVersion = {
+      id: "menuver_test",
+      restaurantId: restaurant.id,
+      provider: connection.provider,
+      versionHash: "menuver_test_hash",
+      status: "published",
+      itemCount: menuItems.length,
+      categoryCount: 1,
+      modifierGroupCount: modifierGroups.length,
+      metadata: menuVersionMetadata,
+      createdAt: new Date().toISOString(),
+      publishedAt: new Date().toISOString(),
+    };
+  }
+  return context;
 }
 
 function buildOrder(tipCents: number): CanonicalOrderIntent {
@@ -333,5 +349,44 @@ describe("POS mock adapters tip support", () => {
         },
       ],
     });
+    expect(channelOrderBody.pickupTime).toBe(order.requested_fulfillment_time);
+    expect(channelOrderBody.deliveryTime).toBeUndefined();
+    expect(channelOrderBody.deliveryAddress).toBeUndefined();
+    expect(channelOrderBody.provider).toBeUndefined();
+  });
+
+  it("uses the current menu channel link when Deliverect connection metadata is stale", async () => {
+    let submittedUrl = "";
+    let channelOrderBody: any;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        submittedUrl = String(url);
+        channelOrderBody = JSON.parse(String(init?.body ?? "{}"));
+        return new Response(JSON.stringify({ orderId: "deliverect_channel_order_current_menu" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+
+    const adapter = new DeliverectAdapterLive({
+      deliverectBaseUrl: "https://api.staging.deliverect.com",
+      deliverectAccessToken: "deliverect-token",
+      deliverectScope: "mealops",
+    } as AppEnv);
+    const staleConnection = {
+      ...deliverectLiveConnection,
+      metadata: { ...deliverectLiveConnection.metadata, deliverectChannelLinkId: "stale_channel_link" },
+    };
+
+    await adapter.submitOrder(
+      buildOrder(0),
+      { ok: true, subtotalCents: 1400, taxCents: 126, feesCents: 0, tipCents: 0, totalCents: 1526 },
+      buildContext(staleConnection, { channelLinkId: "current_menu_channel_link" }),
+    );
+
+    expect(submittedUrl).toBe("https://api.staging.deliverect.com/mealops/order/current_menu_channel_link");
+    expect(channelOrderBody.channelLinkId).toBe("current_menu_channel_link");
   });
 });

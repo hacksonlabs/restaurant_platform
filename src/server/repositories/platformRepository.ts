@@ -50,6 +50,7 @@ import type {
   CreateTeamMemberInput,
   TeamMemberRecord,
   UpdateTeamMemberInput,
+  FulfillmentType,
 } from "../../shared/types";
 
 export interface AgentListEntry {
@@ -126,6 +127,15 @@ function templateRestaurantIdFromMetadata(metadata: Record<string, unknown> | un
 }
 
 const FULFILLMENT_TYPE_VALUES = new Set(["pickup", "delivery", "catering"]);
+const DELIVERECT_CHANNEL_DEFAULT_FULFILLMENT_TYPES: FulfillmentType[] = ["pickup"];
+
+function normalizeProviderFulfillmentType(value: unknown): FulfillmentType | null {
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "1") return "pickup";
+  if (normalized === "2") return "delivery";
+  if (normalized === "takeaway" || normalized === "takeout" || normalized === "collection") return "pickup";
+  return FULFILLMENT_TYPE_VALUES.has(normalized) ? (normalized as FulfillmentType) : null;
+}
 
 function readProviderFulfillmentTypes(providerLocation: ProviderLocation) {
   const raw = providerLocation.rawProviderPayload;
@@ -149,14 +159,18 @@ function readProviderFulfillmentTypes(providerLocation: ProviderLocation) {
     return [];
   });
 
-  return Array.from(
+  const fulfillmentTypes = Array.from(
     new Set(
       values
-        .map((value) => String(value).trim().toLowerCase())
-        .map((value) => value === "takeaway" || value === "takeout" || value === "collection" ? "pickup" : value)
-        .filter((value): value is "pickup" | "delivery" | "catering" => FULFILLMENT_TYPE_VALUES.has(value)),
+        .map(normalizeProviderFulfillmentType)
+        .filter((value): value is FulfillmentType => value !== null),
     ),
   );
+  if (fulfillmentTypes.length > 0) return fulfillmentTypes;
+  if (providerLocation.provider === "deliverect" && providerLocation.channelLinkId) {
+    return [...DELIVERECT_CHANNEL_DEFAULT_FULFILLMENT_TYPES];
+  }
+  return [];
 }
 
 function findExistingOnboardingRestaurantMatch(

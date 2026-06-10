@@ -27,11 +27,14 @@ import type {
   PartnerCredentialEnvironment,
   PartnerCredentialSummary,
   PlatformAdminPartnerRecord,
+  POSConnection,
   Restaurant,
+  OrderingRule,
   ReportingDateRange,
   RestaurantReportingSnapshot,
   RestaurantSignupInput,
   ValidationIssue,
+  FulfillmentType,
   OperatorRole,
   POSProvider,
   ProviderAccount,
@@ -50,6 +53,9 @@ import { randomToken, sha256 } from "../utils/crypto";
 import { createId } from "../utils/ids";
 import { log } from "../utils/logger";
 import type { RestaurantLocation } from "../../shared/types";
+
+const EMPTY_DELIVERECT_MENU_ERROR =
+  "Deliverect menu payload contained no products/categories. Add products to the Deliverect sandbox menu and trigger menu sync/publish again.";
 
 function formatRestaurantAddress(location: RestaurantLocation | null, fallback: string) {
   if (!location) return fallback;
@@ -200,9 +206,29 @@ function timingSafeStringEqual(left: string, right: string) {
 }
 
 const PROVIDER_FULFILLMENT_TYPE_VALUES = new Set(["pickup", "delivery", "catering"]);
+const DELIVERECT_CHANNEL_DEFAULT_FULFILLMENT_TYPES: FulfillmentType[] = ["pickup"];
+const DELIVERECT_MENU_TYPE_LABELS: Record<number, string> = {
+  0: "delivery_and_pickup",
+  1: "delivery",
+  2: "pickup",
+  3: "eat_in",
+  4: "curbside",
+};
 
-function readFulfillmentTypesFromProviderPayload(providerLocation: ProviderLocation) {
-  const raw = providerLocation.rawProviderPayload;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeProviderFulfillmentType(value: unknown): FulfillmentType | null {
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "1") return "pickup";
+  if (normalized === "2") return "delivery";
+  if (normalized === "takeaway" || normalized === "takeout" || normalized === "collection") return "pickup";
+  return PROVIDER_FULFILLMENT_TYPE_VALUES.has(normalized) ? (normalized as FulfillmentType) : null;
+}
+
+function readFulfillmentTypesFromRecord(raw: Record<string, unknown> | null | undefined) {
+  if (!raw) return [];
   const candidates = [
     raw.fulfillmentTypes,
     raw.fulfillment_types,
@@ -212,7 +238,9 @@ function readFulfillmentTypesFromProviderPayload(providerLocation: ProviderLocat
     raw.order_types,
     raw.services,
     raw.channelLink && typeof raw.channelLink === "object" ? (raw.channelLink as Record<string, unknown>).fulfillmentTypes : undefined,
+    raw.channelLink && typeof raw.channelLink === "object" ? (raw.channelLink as Record<string, unknown>).orderTypes : undefined,
     raw.store && typeof raw.store === "object" ? (raw.store as Record<string, unknown>).fulfillmentTypes : undefined,
+    raw.store && typeof raw.store === "object" ? (raw.store as Record<string, unknown>).orderTypes : undefined,
   ];
   return Array.from(
     new Set(
@@ -222,11 +250,137 @@ function readFulfillmentTypesFromProviderPayload(providerLocation: ProviderLocat
           if (typeof candidate === "string") return candidate.split(",");
           return [];
         })
-        .map((value) => String(value).trim().toLowerCase())
-        .map((value) => value === "takeaway" || value === "takeout" || value === "collection" ? "pickup" : value)
-        .filter((value): value is "pickup" | "delivery" | "catering" => PROVIDER_FULFILLMENT_TYPE_VALUES.has(value)),
+        .map(normalizeProviderFulfillmentType)
+        .filter((value): value is FulfillmentType => value !== null),
     ),
   );
+}
+
+function readFulfillmentTypesFromProviderPayload(providerLocation: ProviderLocation) {
+  return readFulfillmentTypesFromRecord(providerLocation.rawProviderPayload);
+}
+
+function readFulfillmentTypesFromConnection(connection: POSConnection | null | undefined) {
+  if (!connection) return [];
+  const rawProviderLocation = isRecord(connection.metadata.rawProviderLocation)
+    ? connection.metadata.rawProviderLocation
+    : undefined;
+  return Array.from(
+    new Set([
+      ...readFulfillmentTypesFromRecord(connection.metadata),
+      ...readFulfillmentTypesFromRecord(rawProviderLocation),
+    ]),
+  );
+}
+
+function deliverectMenuEntries(payload: unknown): Record<string, unknown>[] {
+  if (Array.isArray(payload)) return payload.filter(isRecord);
+  if (!isRecord(payload)) return [];
+  if (Array.isArray(payload.menus)) return payload.menus.filter(isRecord);
+  if (Array.isArray(payload.items)) return payload.items.filter(isRecord);
+  if (isRecord(payload.payload)) return deliverectMenuEntries(payload.payload);
+  if (Array.isArray(payload.payload)) return deliverectMenuEntries(payload.payload);
+  return [payload];
+}
+
+function normalizeDeliverectMenuType(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "string" && value.trim() && Number.isInteger(Number(value))) return Number(value);
+  return null;
+}
+
+function mapDeliverectMenuTypeToFulfillmentTypes(menuType: number): FulfillmentType[] {
+  if (menuType === 0 || menuType === 2) return ["pickup"];
+  return [];
+}
+
+function resolveDeliverectMenuTypeFulfillment(payload: unknown) {
+  const rawMenuTypes = deliverectMenuEntries(payload)
+    .map((menu) => normalizeDeliverectMenuType(menu.menuType ?? menu.menu_type))
+    .filter((value): value is number => value !== null);
+  const knownMenuTypes = rawMenuTypes.filter((value) => Object.prototype.hasOwnProperty.call(DELIVERECT_MENU_TYPE_LABELS, value));
+  const fulfillmentTypes = Array.from(
+    new Set(knownMenuTypes.flatMap((menuType) => mapDeliverectMenuTypeToFulfillmentTypes(menuType))),
+  );
+  return {
+    signalPresent: knownMenuTypes.length > 0,
+    rawMenuTypes,
+    knownMenuTypes,
+    labels: knownMenuTypes.map((value) => DELIVERECT_MENU_TYPE_LABELS[value]),
+    fulfillmentTypes,
+  };
+}
+
+function readFulfillmentTypesFromMenuVersion(menuVersion: { metadata: Record<string, unknown> } | null | undefined) {
+  return Array.from(
+    new Set(
+      (Array.isArray(menuVersion?.metadata?.phantomFulfillmentTypesFromMenuType)
+        ? menuVersion.metadata.phantomFulfillmentTypesFromMenuType
+        : [])
+        .map(normalizeProviderFulfillmentType)
+        .filter((value): value is FulfillmentType => value !== null),
+    ),
+  );
+}
+
+function hasDeliverectMenuTypeSignal(menuVersion: { metadata: Record<string, unknown> } | null | undefined) {
+  return menuVersion?.metadata?.deliverectMenuTypeSignal === true;
+}
+
+function defaultFulfillmentTypesForProviderLocation(providerLocation: ProviderLocation): FulfillmentType[] {
+  if (providerLocation.provider === "deliverect" && normalizeText(providerLocation.channelLinkId)) {
+    return [...DELIVERECT_CHANNEL_DEFAULT_FULFILLMENT_TYPES];
+  }
+  return [];
+}
+
+function resolveFulfillmentTypesFromProviderLocation(providerLocation: ProviderLocation): FulfillmentType[] {
+  const explicitTypes = readFulfillmentTypesFromProviderPayload(providerLocation);
+  return explicitTypes.length > 0 ? explicitTypes : defaultFulfillmentTypesForProviderLocation(providerLocation);
+}
+
+function isDeliverectChannelConnection(connection: POSConnection | null | undefined) {
+  if (!connection || connection.provider !== "deliverect") return false;
+  const channelLinkId =
+    normalizeText(connection.metadata.deliverectChannelLinkId) ??
+    normalizeText(connection.metadata.channelLinkId) ??
+    normalizeText(connection.metadata.channelLink);
+  return Boolean(channelLinkId || connection.providerLocationId);
+}
+
+function defaultFulfillmentTypesForConnection(connection: POSConnection | null | undefined): FulfillmentType[] {
+  return isDeliverectChannelConnection(connection) ? [...DELIVERECT_CHANNEL_DEFAULT_FULFILLMENT_TYPES] : [];
+}
+
+function resolveEffectiveFulfillmentTypes(
+  restaurant: Restaurant,
+  rules: OrderingRule | null,
+  connection: POSConnection | null | undefined,
+  menuVersion?: { metadata: Record<string, unknown> } | null,
+) {
+  const defaultTypes = defaultFulfillmentTypesForConnection(connection);
+  const providerTypes = readFulfillmentTypesFromConnection(connection);
+  const menuTypeTypes = readFulfillmentTypesFromMenuVersion(menuVersion);
+  const menuTypeSignalPresent = hasDeliverectMenuTypeSignal(menuVersion);
+  const restaurantTypes = restaurant.fulfillmentTypesSupported.length > 0
+    ? restaurant.fulfillmentTypesSupported
+    : rules?.allowedFulfillmentTypes.length
+      ? rules.allowedFulfillmentTypes
+      : providerTypes.length
+        ? providerTypes
+        : menuTypeSignalPresent
+          ? menuTypeTypes
+          : defaultTypes;
+  const ruleTypes = rules?.allowedFulfillmentTypes.length
+    ? rules.allowedFulfillmentTypes
+    : restaurantTypes.length
+      ? restaurantTypes
+      : providerTypes.length
+        ? providerTypes
+        : menuTypeSignalPresent
+          ? menuTypeTypes
+          : defaultTypes;
+  return { restaurantTypes, ruleTypes };
 }
 
 const EVENT_STATUS_RANK: Partial<Record<AgentOrderStatus, number>> = {
@@ -432,15 +586,17 @@ export class PlatformService {
     const [restaurants, agent] = await Promise.all([this.repository.listRestaurants(), this.getAgent(agentId)]);
     const allowedEntries = await Promise.all(
       restaurants.map(async (restaurant) => {
-        const [permission, connection, location, rules] = await Promise.all([
+        const [permission, connection, location, rules, menu] = await Promise.all([
           this.repository.getPermission(restaurant.id, agentId),
           this.repository.getPOSConnection(restaurant.id),
           this.repository.getLocation(restaurant.id),
           this.repository.getRules(restaurant.id),
+          this.repository.getMenu(restaurant.id),
         ]);
         if (!permission || permission.status !== "allowed" || !restaurant.agentOrderingEnabled) {
           return null;
         }
+        const fulfillmentTypes = resolveEffectiveFulfillmentTypes(restaurant, rules, connection, menu.version);
         return {
           id: restaurant.id,
           name: restaurant.name,
@@ -468,7 +624,7 @@ export class PlatformService {
           longitude: location?.longitude ?? null,
           timezone: restaurant.timezone,
           posProvider: restaurant.posProvider,
-          fulfillmentTypesSupported: restaurant.fulfillmentTypesSupported,
+          fulfillmentTypesSupported: fulfillmentTypes.restaurantTypes,
           defaultApprovalMode: restaurant.defaultApprovalMode,
           agentOrderingEnabled: restaurant.agentOrderingEnabled,
           posConnectionStatus: connection?.status ?? "not_connected",
@@ -495,12 +651,14 @@ export class PlatformService {
 
   async getAgentRestaurantDetail(restaurantId: string, agentId: string) {
     await this.validateAgentAccess(restaurantId, agentId);
-    const [restaurant, location, rules, menu] = await Promise.all([
+    const [restaurant, location, rules, menu, connection] = await Promise.all([
       this.getRestaurant(restaurantId),
       this.repository.getLocation(restaurantId),
       this.getRules(restaurantId),
       this.repository.getMenu(restaurantId),
+      this.repository.getPOSConnection(restaurantId),
     ]);
+    const fulfillmentTypes = resolveEffectiveFulfillmentTypes(restaurant, rules, connection, menu.version);
     const categories = Array.from(new Set(menu.items.map((item) => item.category))).map((name) => ({
       name,
       itemCount: menu.items.filter((item) => item.category === name).length,
@@ -518,7 +676,7 @@ export class PlatformService {
         deliveryFee: restaurant.deliveryFee ?? null,
         minimumOrder: restaurant.minimumOrder ?? null,
         supportsCatering: restaurant.supportsCatering ?? false,
-        fulfillmentTypesSupported: restaurant.fulfillmentTypesSupported,
+        fulfillmentTypesSupported: fulfillmentTypes.restaurantTypes,
         defaultApprovalMode: restaurant.defaultApprovalMode,
         agentOrderingEnabled: restaurant.agentOrderingEnabled,
       },
@@ -539,7 +697,7 @@ export class PlatformService {
         maxOrderDollarAmount: rules.maxOrderDollarAmount,
         maxItemQuantity: rules.maxItemQuantity,
         maxHeadcount: rules.maxHeadcount,
-        allowedFulfillmentTypes: rules.allowedFulfillmentTypes,
+        allowedFulfillmentTypes: fulfillmentTypes.ruleTypes,
         substitutionPolicy: rules.substitutionPolicy,
         paymentPolicy: rules.paymentPolicy,
       },
@@ -1389,12 +1547,12 @@ export class PlatformService {
         snapshotId: snapshot.id,
         restaurantId,
         channelLinkId,
-        error: "No importable menu items were found in the Deliverect menu update payload.",
+        error: EMPTY_DELIVERECT_MENU_ERROR,
       });
       await Promise.all([
         this.repository.updateProviderMenuSnapshot(snapshot.id, {
           status: "failed",
-          error: "No importable menu items were found in the Deliverect menu update payload.",
+          error: EMPTY_DELIVERECT_MENU_ERROR,
           processedAt: new Date().toISOString(),
         }),
         this.saveProviderEventOnce({
@@ -1407,9 +1565,10 @@ export class PlatformService {
           processedAt: new Date().toISOString(),
         }),
       ]);
-      throw new Error("No importable menu items were found in the Deliverect menu update payload.");
+      throw new Error(EMPTY_DELIVERECT_MENU_ERROR);
     }
 
+    const menuTypeFulfillment = resolveDeliverectMenuTypeFulfillment(payload);
     const menuVersion = await this.repository.createCanonicalMenuVersion({
       restaurantId,
       provider: "deliverect",
@@ -1422,6 +1581,11 @@ export class PlatformService {
       metadata: {
         channelLinkId,
         providerLocationId: providerLocation.id,
+        deliverectMenuTypes: menuTypeFulfillment.rawMenuTypes,
+        deliverectKnownMenuTypes: menuTypeFulfillment.knownMenuTypes,
+        deliverectMenuTypeLabels: menuTypeFulfillment.labels,
+        deliverectMenuTypeSignal: menuTypeFulfillment.signalPresent,
+        phantomFulfillmentTypesFromMenuType: menuTypeFulfillment.fulfillmentTypes,
       },
     });
 
@@ -2294,7 +2458,7 @@ export class PlatformService {
 
   private async applyProviderLocationSettings(providerLocation: ProviderLocation) {
     if (!providerLocation.mappedRestaurantId) return;
-    const fulfillmentTypes = readFulfillmentTypesFromProviderPayload(providerLocation);
+    const fulfillmentTypes = resolveFulfillmentTypesFromProviderLocation(providerLocation);
     if (fulfillmentTypes.length === 0) return;
     const [restaurant, rules] = await Promise.all([
       this.repository.getRestaurant(providerLocation.mappedRestaurantId),
@@ -3544,7 +3708,8 @@ export class PlatformService {
       });
     }
 
-    if (!rules.allowedFulfillmentTypes.includes(order.fulfillment_type)) {
+    const fulfillmentTypes = resolveEffectiveFulfillmentTypes(restaurant, rules, context.connection, context.menuVersion);
+    if (!fulfillmentTypes.ruleTypes.includes(order.fulfillment_type)) {
       issues.push({
         code: "fulfillment_type_not_allowed",
         message: `Fulfillment type ${order.fulfillment_type} is not enabled for this restaurant.`,
