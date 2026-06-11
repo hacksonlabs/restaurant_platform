@@ -114,6 +114,15 @@ function productModifierGroups(product: unknown) {
   ].filter(isObject);
 }
 
+function groupMaxSelections(group: unknown) {
+  const max = readNumber(group, "maxSelections", "max_selections", "max");
+  const multiMax = readNumber(group, "multiMax", "multi_max");
+  if (max === 0 && multiMax != null && multiMax > 0) return Math.max(0, Math.round(multiMax));
+  if (max != null) return Math.max(0, Math.round(max));
+  if (multiMax != null) return Math.max(0, Math.round(multiMax));
+  return null;
+}
+
 function groupReference(group: unknown) {
   return readString(group, "id", "_id", "modifierGroupId", "plu", "name") ?? createId("mgref");
 }
@@ -221,14 +230,15 @@ export function normalizeDeliverectMenu(
         const groupId = stableId("mg", restaurantId, groupRef);
         modifierGroupIds.push(groupId);
         if (!modifierGroupsById.has(groupId)) {
+          const maxSelections = groupMaxSelections(group);
           modifierGroupsById.set(groupId, {
             id: groupId,
             restaurantId,
             name: readString(group, "name", "modifierGroupName") ?? "Options",
-            selectionType: (readNumber(group, "max", "maxSelections") ?? 1) === 1 ? "single" : "multi",
+            selectionType: (maxSelections ?? 1) === 1 ? "single" : "multi",
             required: Boolean(isObject(group) && (group.required || Number(group.minSelections ?? group.min ?? 0) > 0)),
             minSelections: Math.max(0, Math.round(readNumber(group, "minSelections", "min") ?? 0)),
-            maxSelections: readNumber(group, "maxSelections", "max") ?? null,
+            maxSelections,
             sortOrder: readNumber(group, "sortOrder", "sort_order", "position") ?? groupIndex,
           });
           mappings.push({

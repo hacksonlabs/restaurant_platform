@@ -192,4 +192,67 @@ describe("normalizeDeliverectMenu", () => {
       ]),
     );
   });
+
+  it("uses Deliverect Channel multiMax when max is zero for multi-select groups", () => {
+    const result = normalizeDeliverectMenu("rest_deliverect_test", [
+      {
+        channelLinkId: "channel_link_123",
+        menuId: "menu_dinner",
+        menu: "Dinner",
+        categories: [
+          {
+            _id: "cat_sides",
+            name: "Sides",
+            subProducts: ["prod_sate"],
+          },
+        ],
+        products: {
+          prod_sate: {
+            _id: "prod_sate",
+            plu: "P-SATE",
+            name: "Chicken Sate",
+            price: 1350,
+            productType: 1,
+            subProducts: ["group_rice"],
+          },
+        },
+        modifierGroups: {
+          group_rice: {
+            _id: "group_rice",
+            plu: "MG-RICE",
+            name: "Rice Selection",
+            min: 0,
+            max: 0,
+            multiMax: 99,
+            productType: 3,
+            subProducts: ["mod_yellow_rice"],
+          },
+        },
+        modifiers: {
+          mod_yellow_rice: {
+            _id: "mod_yellow_rice",
+            plu: "RICE-02",
+            name: "Yellow Rice",
+            price: 450,
+            productType: 2,
+          },
+        },
+      },
+    ]);
+
+    expect(result.modifierGroups).toEqual([
+      expect.objectContaining({
+        name: "Rice Selection",
+        selectionType: "multi",
+        minSelections: 0,
+        maxSelections: 99,
+      }),
+    ]);
+    expect(result.modifiers).toEqual([
+      expect.objectContaining({
+        name: "Yellow Rice",
+        priceCents: 450,
+      }),
+    ]);
+  });
 });
