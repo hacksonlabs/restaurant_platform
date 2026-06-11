@@ -232,7 +232,7 @@ export function createPhantomMcpServer(
         customerName: z.string(),
         customerEmail: z.string().optional(),
         teamName: z.string().optional(),
-        fulfillmentType: z.enum(["pickup", "delivery", "catering"]),
+        fulfillmentType: z.enum(["pickup", "delivery", "catering", "eat_in", "curbside"]),
         requestedFulfillmentTime: z.string(),
         headcount: z.number(),
         status: z.string(),

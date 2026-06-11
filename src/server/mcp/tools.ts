@@ -8,7 +8,7 @@ const posProviderFilterSchema = z.union([posProviderSchema, z.array(posProviderS
 
 const searchRestaurantsInputSchema = z.object({
   query: z.string().trim().min(1).optional(),
-  fulfillment_type: z.enum(["pickup", "delivery", "catering"]).optional(),
+  fulfillment_type: z.enum(["pickup", "delivery", "catering", "eat_in", "curbside"]).optional(),
   pos_provider: posProviderFilterSchema.optional(),
   exclude_pos_provider: posProviderFilterSchema.optional(),
   address: z.string().trim().min(1).optional(),

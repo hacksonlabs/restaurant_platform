@@ -1298,7 +1298,7 @@ describe("PlatformService", () => {
     expect(validation.valid).toBe(true);
   });
 
-  it("does not enable delivery from a delivery-only Deliverect menuType without explicit delivery support", async () => {
+  it("enables delivery from a delivery-only Deliverect menuType", async () => {
     const service = createService();
     const setup = await provisionDeliverectMenuRestaurant(service, "menu_type_delivery", {}, { menuType: 1 });
     const restaurantId = setup.provisioned.restaurant.id;
@@ -1313,15 +1313,18 @@ describe("PlatformService", () => {
       { menu_version_id: setup.menu.version!.id },
     );
 
-    await service.updateRestaurant(restaurantId, { fulfillmentTypesSupported: [] });
-    await service.updateRules(restaurantId, { allowedFulfillmentTypes: [] });
-
     const detail = await service.getAgentRestaurantDetail(restaurantId, "agent_coachimhungry");
     const pickupValidation = await service.validateOrder(baseOrder);
     const deliveryValidation = await service.validateOrder({
       ...baseOrder,
-      external_order_reference: "deliverect-menu-type-delivery-disabled",
+      external_order_reference: "deliverect-menu-type-delivery-enabled",
       fulfillment_type: "delivery",
+      fulfillment_address: {
+        address1: "1 Main St",
+        city: "Sunnyvale",
+        state: "CA",
+        postal_code: "94085",
+      },
     });
 
     expect(setup.menu.version?.metadata).toEqual(
@@ -1329,18 +1332,153 @@ describe("PlatformService", () => {
         deliverectMenuTypes: [1],
         deliverectMenuTypeLabels: ["delivery"],
         deliverectMenuTypeSignal: true,
-        phantomFulfillmentTypesFromMenuType: [],
+        phantomFulfillmentTypesFromMenuType: ["delivery"],
       }),
     );
-    expect(detail.restaurant.fulfillmentTypesSupported).toEqual([]);
-    expect(detail.rules.allowedFulfillmentTypes).toEqual([]);
+    expect(detail.restaurant.fulfillmentTypesSupported).toEqual(["delivery"]);
+    expect(detail.rules.allowedFulfillmentTypes).toEqual(["delivery"]);
     expect(pickupValidation.valid).toBe(false);
-    expect(deliveryValidation.valid).toBe(false);
-    expect(deliveryValidation.issues).toEqual(
+    expect(pickupValidation.issues).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ code: "fulfillment_type_not_allowed", field: "fulfillment_type" }),
       ]),
     );
+    expect(deliveryValidation.valid).toBe(true);
+  });
+
+  it("enables pickup and delivery from Deliverect menuType 0 even when provisioned pickup-only", async () => {
+    const service = createService();
+    const setup = await provisionDeliverectMenuRestaurant(service, "menu_type_both", {}, { menuType: 0 });
+    const restaurantId = setup.provisioned.restaurant.id;
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const baseOrder = deliverectOrderIntent(
+      restaurantId,
+      "deliverect-menu-type-both",
+      item.id,
+      [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+      { menu_version_id: setup.menu.version!.id },
+    );
+
+    const detail = await service.getAgentRestaurantDetail(restaurantId, "agent_coachimhungry");
+    const pickupValidation = await service.validateOrder(baseOrder);
+    const deliveryValidation = await service.validateOrder({
+      ...baseOrder,
+      external_order_reference: "deliverect-menu-type-both-delivery",
+      fulfillment_type: "delivery",
+      fulfillment_address: {
+        address1: "1 Main St",
+        city: "Sunnyvale",
+        state: "CA",
+        postal_code: "94085",
+      },
+    });
+
+    expect(setup.menu.version?.metadata).toEqual(
+      expect.objectContaining({
+        deliverectMenuTypes: [0],
+        deliverectMenuTypeLabels: ["delivery_and_pickup"],
+        deliverectMenuTypeSignal: true,
+        phantomFulfillmentTypesFromMenuType: ["pickup", "delivery"],
+      }),
+    );
+    expect(detail.restaurant.fulfillmentTypesSupported).toEqual(["pickup", "delivery"]);
+    expect(detail.rules.allowedFulfillmentTypes).toEqual(["pickup", "delivery"]);
+    expect(pickupValidation.valid).toBe(true);
+    expect(deliveryValidation.valid).toBe(true);
+  });
+
+  it("enables eat-in from Deliverect menuType 3 and submits Channel orderType 3", async () => {
+    const service = createServiceWithEnv({
+      deliverectBaseUrl: "https://deliverect.staging.test",
+      deliverectAccessToken: "staging-token",
+      deliverectScope: "mealops",
+      posRetryBaseDelayMs: 1,
+    });
+    const setup = await provisionDeliverectMenuRestaurant(service, "menu_type_eat_in", {}, { menuType: 3 });
+    const restaurantId = setup.provisioned.restaurant.id;
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ channelOrderId: "deliverect_eat_in_order_1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const detail = await service.getAgentRestaurantDetail(restaurantId, "agent_coachimhungry");
+    const pickupValidation = await service.validateOrder(
+      deliverectOrderIntent(
+        restaurantId,
+        "deliverect-menu-type-eat-in-pickup",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+    );
+    const order = await service.submitAgentOrder({
+      ...deliverectOrderIntent(
+        restaurantId,
+        "deliverect-menu-type-eat-in",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+      fulfillment_type: "eat_in",
+    });
+    const submittedPayload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+
+    expect(setup.menu.version?.metadata).toEqual(
+      expect.objectContaining({
+        deliverectMenuTypes: [3],
+        deliverectMenuTypeLabels: ["eat_in"],
+        phantomFulfillmentTypesFromMenuType: ["eat_in"],
+      }),
+    );
+    expect(detail.restaurant.fulfillmentTypesSupported).toEqual(["eat_in"]);
+    expect(detail.rules.allowedFulfillmentTypes).toEqual(["eat_in"]);
+    expect(pickupValidation.valid).toBe(false);
+    expect(order.status).toBe("submitted_to_pos");
+    expect(submittedPayload.orderType).toBe(3);
+  });
+
+  it("enables curbside from Deliverect menuType 4 and submits Channel orderType 4", async () => {
+    const service = createServiceWithEnv({
+      deliverectBaseUrl: "https://deliverect.staging.test",
+      deliverectAccessToken: "staging-token",
+      deliverectScope: "mealops",
+      posRetryBaseDelayMs: 1,
+    });
+    const setup = await provisionDeliverectMenuRestaurant(service, "menu_type_curbside", {}, { menuType: 4 });
+    const restaurantId = setup.provisioned.restaurant.id;
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ channelOrderId: "deliverect_curbside_order_1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const detail = await service.getAgentRestaurantDetail(restaurantId, "agent_coachimhungry");
+    const order = await service.submitAgentOrder({
+      ...deliverectOrderIntent(
+        restaurantId,
+        "deliverect-menu-type-curbside",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+      fulfillment_type: "curbside",
+    });
+    const submittedPayload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+
+    expect(setup.menu.version?.metadata).toEqual(
+      expect.objectContaining({
+        deliverectMenuTypes: [4],
+        deliverectMenuTypeLabels: ["curbside"],
+        phantomFulfillmentTypesFromMenuType: ["curbside"],
+      }),
+    );
+    expect(detail.restaurant.fulfillmentTypesSupported).toEqual(["curbside"]);
+    expect(detail.rules.allowedFulfillmentTypes).toEqual(["curbside"]);
+    expect(order.status).toBe("submitted_to_pos");
+    expect(submittedPayload.orderType).toBe(4);
   });
 
   it("keeps the pickup fallback when Deliverect menuType is absent or unknown", async () => {
@@ -2583,6 +2721,41 @@ describe("PlatformService", () => {
     );
   });
 
+  it("auto-submits auto-accepted live Deliverect orders to the Channel API", async () => {
+    const service = createServiceWithEnv({
+      deliverectBaseUrl: "https://deliverect.staging.test",
+      deliverectAccessToken: "staging-token",
+      deliverectScope: "mealops",
+      posRetryBaseDelayMs: 1,
+    });
+    const setup = await provisionDeliverectMenuRestaurant(service, "auto_submit");
+    const item = setup.menu.items[0];
+    const group = setup.menu.modifierGroups[0];
+    const modifier = setup.menu.modifiers[0];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ channelOrderId: "deliverect_auto_order_1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const order = await service.submitAgentOrder(
+      deliverectOrderIntent(
+        setup.provisioned.restaurant.id,
+        "deliverect-auto-submit",
+        item.id,
+        [{ modifier_group_id: group.id, modifier_id: modifier.id, quantity: 1 }],
+        { menu_version_id: setup.menu.version!.id },
+      ),
+    );
+    const detail = await service.getOrder(setup.provisioned.restaurant.id, order.id);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://deliverect.staging.test/mealops/order/channel_link_auto_submit");
+    expect(order.status).toBe("submitted_to_pos");
+    expect(detail.order.status).toBe("submitted_to_pos");
+    expect(detail.submissions).toHaveLength(1);
+    expect(detail.submissions[0]).toEqual(
+      expect.objectContaining({ status: "submitted", externalOrderId: "deliverect_auto_order_1" }),
+    );
+  });
+
   it("does not duplicate Deliverect create-order calls for repeated POS submissions", async () => {
     const service = createServiceWithEnv({
       deliverectBaseUrl: "https://deliverect.staging.test",
@@ -2637,8 +2810,8 @@ describe("PlatformService", () => {
         { menu_version_id: setup.menu.version!.id },
       ),
     );
-    const submission = await service.submitOrderToPOS(setup.provisioned.restaurant.id, order.id);
     const detail = await service.getOrder(setup.provisioned.restaurant.id, order.id);
+    const submission = detail.submissions[0];
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(submission).toEqual(
@@ -2682,7 +2855,6 @@ describe("PlatformService", () => {
         { menu_version_id: setup.menu.version!.id },
       ),
     );
-    await service.submitOrderToPOS(setup.provisioned.restaurant.id, order.id);
     vi.unstubAllGlobals();
     const { server, baseUrl } = await startServer(service);
     openServers.push(server);

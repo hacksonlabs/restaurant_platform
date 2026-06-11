@@ -20,7 +20,7 @@ export const canonicalOrderIntentSchema = z.object({
     phone: z.string().optional(),
     teamName: z.string().optional(),
   }),
-  fulfillment_type: z.enum(["pickup", "delivery", "catering"]),
+  fulfillment_type: z.enum(["pickup", "delivery", "catering", "eat_in", "curbside"]),
   requested_fulfillment_time: z.string().datetime(),
   fulfillment_address: z
     .object({
@@ -84,7 +84,7 @@ export const patchRestaurantSchema = z.object({
   contactEmail: z.string().email().optional(),
   contactPhone: z.string().min(1).optional(),
   fulfillmentTypesSupported: z
-    .array(z.enum(["pickup", "delivery", "catering"]))
+    .array(z.enum(["pickup", "delivery", "catering", "eat_in", "curbside"]))
     .optional(),
 });
 
@@ -96,7 +96,7 @@ export const patchOrderingRulesSchema = z.object({
   autoAcceptEnabled: z.boolean().optional(),
   managerApprovalThresholdCents: z.number().int().nonnegative().optional(),
   allowedFulfillmentTypes: z
-    .array(z.enum(["pickup", "delivery", "catering"]))
+    .array(z.enum(["pickup", "delivery", "catering", "eat_in", "curbside"]))
     .optional(),
   substitutionPolicy: z
     .enum(["strict", "allow_equivalent", "require_approval"])

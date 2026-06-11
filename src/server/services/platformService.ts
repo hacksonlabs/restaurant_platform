@@ -242,7 +242,7 @@ function timingSafeStringEqual(left: string, right: string) {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-const PROVIDER_FULFILLMENT_TYPE_VALUES = new Set(["pickup", "delivery", "catering"]);
+const PROVIDER_FULFILLMENT_TYPE_VALUES = new Set(["pickup", "delivery", "catering", "eat_in", "curbside"]);
 const DELIVERECT_CHANNEL_DEFAULT_FULFILLMENT_TYPES: FulfillmentType[] = ["pickup"];
 const DELIVERECT_MENU_TYPE_LABELS: Record<number, string> = {
   0: "delivery_and_pickup",
@@ -260,7 +260,11 @@ function normalizeProviderFulfillmentType(value: unknown): FulfillmentType | nul
   const normalized = String(value).trim().toLowerCase();
   if (normalized === "1") return "pickup";
   if (normalized === "2") return "delivery";
+  if (normalized === "3") return "eat_in";
+  if (normalized === "4") return "curbside";
   if (normalized === "takeaway" || normalized === "takeout" || normalized === "collection") return "pickup";
+  if (normalized === "eat-in" || normalized === "eatin" || normalized === "dine_in" || normalized === "dine-in" || normalized === "dinein") return "eat_in";
+  if (normalized === "curb-side" || normalized === "curb_side") return "curbside";
   return PROVIDER_FULFILLMENT_TYPE_VALUES.has(normalized) ? (normalized as FulfillmentType) : null;
 }
 
@@ -327,7 +331,11 @@ function normalizeDeliverectMenuType(value: unknown): number | null {
 }
 
 function mapDeliverectMenuTypeToFulfillmentTypes(menuType: number): FulfillmentType[] {
-  if (menuType === 0 || menuType === 2) return ["pickup"];
+  if (menuType === 0) return ["pickup", "delivery"];
+  if (menuType === 1) return ["delivery"];
+  if (menuType === 2) return ["pickup"];
+  if (menuType === 3) return ["eat_in"];
+  if (menuType === 4) return ["curbside"];
   return [];
 }
 
@@ -1667,6 +1675,7 @@ export class PlatformService {
         channelLinkId,
         menuVersionId: publishedVersion.id,
       });
+      await this.applyDeliverectMenuTypeFulfillment(providerLocation, restaurantId, menuTypeFulfillment);
       const connection = await this.getPOSConnection(restaurantId);
       await this.repository.updatePOSConnection(connection.id, {
         lastSyncedAt: importedAt,
@@ -2502,6 +2511,44 @@ export class PlatformService {
       existingCount: results.filter((entry) => !entry.created).length,
       results,
     };
+  }
+
+  private async applyDeliverectMenuTypeFulfillment(
+    providerLocation: ProviderLocation,
+    restaurantId: string,
+    menuTypeFulfillment: { signalPresent: boolean; fulfillmentTypes: FulfillmentType[] },
+  ) {
+    if (!menuTypeFulfillment.signalPresent || menuTypeFulfillment.fulfillmentTypes.length === 0) return;
+    // Explicit fulfillment config from registration/provider payload outranks the menuType signal.
+    if (readFulfillmentTypesFromProviderPayload(providerLocation).length > 0) return;
+    const [restaurant, rules] = await Promise.all([
+      this.repository.getRestaurant(restaurantId),
+      this.repository.getRules(restaurantId),
+    ]);
+    if (!restaurant || !rules) return;
+    const fulfillmentTypes = menuTypeFulfillment.fulfillmentTypes;
+    const sameTypes = (left: FulfillmentType[], right: FulfillmentType[]) =>
+      left.length === right.length && right.every((value) => left.includes(value));
+    const updates: Array<Promise<unknown>> = [];
+    if (!sameTypes(restaurant.fulfillmentTypesSupported, fulfillmentTypes)) {
+      updates.push(
+        this.repository.updateRestaurant(restaurantId, {
+          fulfillmentTypesSupported: fulfillmentTypes,
+          updatedAt: new Date().toISOString(),
+        }),
+      );
+    }
+    if (!sameTypes(rules.allowedFulfillmentTypes, fulfillmentTypes)) {
+      updates.push(this.repository.updateRules(restaurantId, { allowedFulfillmentTypes: fulfillmentTypes }));
+    }
+    if (updates.length > 0) {
+      await Promise.all(updates);
+      log("info", "deliverect_menu_type_fulfillment_applied", {
+        restaurantId,
+        providerLocationId: providerLocation.id,
+        fulfillmentTypes,
+      });
+    }
   }
 
   private async applyProviderLocationSettings(providerLocation: ProviderLocation) {
@@ -3529,7 +3576,10 @@ export class PlatformService {
           !this.quoteAllowedValidationCodes.has(issue.code),
       );
       if (blockingIssues.length > 0) {
-        throw new Error("Order is not valid for quoting.");
+        const issueSummary = blockingIssues
+          .map((issue) => `${issue.code}: ${issue.message}`)
+          .join("; ");
+        throw new Error(`Order is not valid for quoting. ${issueSummary}`);
       }
       const quote = await this.withRetry(
         "quote",
@@ -3671,6 +3721,39 @@ export class PlatformService {
         idempotencyKey,
         status: order.status,
       });
+      if (!approvalRequired && connection?.mode === "live") {
+        try {
+          await this.submitOrderToPOS(parsed.restaurant_id, orderId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await Promise.all([
+            this.repository.appendStatusEvent({
+              orderId,
+              status: "approved",
+              message: `Order was auto-approved, but POS submission needs attention: ${message}`,
+            }),
+            this.repository.appendAuditLog({
+              restaurantId: parsed.restaurant_id,
+              actorType: "system",
+              actorId: "pos_submit_after_auto_approval",
+              action: "order.pos_submission_attention_needed",
+              targetType: "agent_order",
+              targetId: orderId,
+              summary: `Order was auto-approved, but POS submission needs attention: ${message}`,
+            }),
+          ]);
+          log("warn", "pos_submission_attention_needed", {
+            restaurantId: parsed.restaurant_id,
+            orderId,
+            correlationId: parsed.external_order_reference,
+            error: message,
+          });
+        }
+        const refreshed = await this.repository.getOrderById(orderId);
+        if (refreshed) {
+          return refreshed;
+        }
+      }
       return order;
     });
   }

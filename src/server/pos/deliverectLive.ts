@@ -518,6 +518,8 @@ export class DeliverectAdapterLive implements POSAdapter {
   private channelOrderType(order: CanonicalOrderIntent) {
     if (order.fulfillment_type === "pickup") return 1;
     if (order.fulfillment_type === "delivery") return 2;
+    if (order.fulfillment_type === "eat_in") return 3;
+    if (order.fulfillment_type === "curbside") return 4;
     throw deliverectError(`Deliverect Channel API does not support fulfillment type ${order.fulfillment_type}.`);
   }
 

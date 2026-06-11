@@ -8,7 +8,7 @@ export type POSConnectionStatus =
   | "disabled";
 export type AgentPermissionStatus = "pending" | "allowed" | "blocked" | "revoked";
 export type DefaultApprovalMode = "auto" | "manual_review" | "threshold_review";
-export type FulfillmentType = "pickup" | "delivery" | "catering";
+export type FulfillmentType = "pickup" | "delivery" | "catering" | "eat_in" | "curbside";
 export type SubstitutionPolicy = "strict" | "allow_equivalent" | "require_approval";
 export type PaymentPolicy = "required_before_submit" | "invoice_manual" | "stored_payment";
 export type AgentOrderStatus =

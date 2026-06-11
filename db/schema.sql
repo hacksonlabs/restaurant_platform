@@ -353,7 +353,7 @@ create table if not exists agent_orders (
   customer_name text not null,
   customer_email text,
   team_name text,
-  fulfillment_type text not null check (fulfillment_type in ('pickup', 'delivery', 'catering')),
+  fulfillment_type text not null check (fulfillment_type in ('pickup', 'delivery', 'catering', 'eat_in', 'curbside')),
   requested_fulfillment_time timestamptz not null,
   headcount integer not null,
   status text not null check (status in ('draft', 'received', 'validating', 'validation_failed', 'needs_approval', 'approved', 'quoting', 'quoted', 'quote_failed', 'submitting_to_pos', 'submitted_to_pos', 'accepted', 'rejected', 'preparing', 'ready', 'completed', 'failed', 'cancelled')),
@@ -365,6 +365,10 @@ create table if not exists agent_orders (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table agent_orders drop constraint if exists agent_orders_fulfillment_type_check;
+alter table agent_orders add constraint agent_orders_fulfillment_type_check
+  check (fulfillment_type in ('pickup', 'delivery', 'catering', 'eat_in', 'curbside'));
 
 create table if not exists agent_order_items (
   id text primary key,

@@ -127,7 +127,7 @@ function templateRestaurantIdFromMetadata(metadata: Record<string, unknown> | un
   return typeof templateRestaurantId === "string" && templateRestaurantId ? templateRestaurantId : null;
 }
 
-const FULFILLMENT_TYPE_VALUES = new Set(["pickup", "delivery", "catering"]);
+const FULFILLMENT_TYPE_VALUES = new Set(["pickup", "delivery", "catering", "eat_in", "curbside"]);
 const DELIVERECT_CHANNEL_DEFAULT_FULFILLMENT_TYPES: FulfillmentType[] = ["pickup"];
 
 function normalizeProviderFulfillmentType(value: unknown): FulfillmentType | null {
