@@ -115,11 +115,10 @@ function productModifierGroups(product: unknown) {
 }
 
 function groupMaxSelections(group: unknown) {
+  // Deliverect Channel semantics: max 0 (or absent) means no group-level limit.
+  // multiMax caps how many times a single modifier can repeat, not the group total.
   const max = readNumber(group, "maxSelections", "max_selections", "max");
-  const multiMax = readNumber(group, "multiMax", "multi_max");
-  if (max === 0 && multiMax != null && multiMax > 0) return Math.max(0, Math.round(multiMax));
-  if (max != null) return Math.max(0, Math.round(max));
-  if (multiMax != null) return Math.max(0, Math.round(multiMax));
+  if (max != null && max > 0) return Math.round(max);
   return null;
 }
 
@@ -235,7 +234,7 @@ export function normalizeDeliverectMenu(
             id: groupId,
             restaurantId,
             name: readString(group, "name", "modifierGroupName") ?? "Options",
-            selectionType: (maxSelections ?? 1) === 1 ? "single" : "multi",
+            selectionType: maxSelections === 1 ? "single" : "multi",
             required: Boolean(isObject(group) && (group.required || Number(group.minSelections ?? group.min ?? 0) > 0)),
             minSelections: Math.max(0, Math.round(readNumber(group, "minSelections", "min") ?? 0)),
             maxSelections,

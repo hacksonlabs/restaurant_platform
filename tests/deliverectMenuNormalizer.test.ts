@@ -193,7 +193,7 @@ describe("normalizeDeliverectMenu", () => {
     );
   });
 
-  it("uses Deliverect Channel multiMax when max is zero for multi-select groups", () => {
+  it("treats Deliverect Channel max zero as an unlimited multi-select group", () => {
     const result = normalizeDeliverectMenu("rest_deliverect_test", [
       {
         channelLinkId: "channel_link_123",
@@ -245,7 +245,7 @@ describe("normalizeDeliverectMenu", () => {
         name: "Rice Selection",
         selectionType: "multi",
         minSelections: 0,
-        maxSelections: 99,
+        maxSelections: null,
       }),
     ]);
     expect(result.modifiers).toEqual([
