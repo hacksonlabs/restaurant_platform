@@ -297,4 +297,41 @@ describe("Phantom MCP tools", () => {
     expect(result.restaurantId).toBe("rest_lb_steakhouse");
     expect(result.status).toMatch(/needs_approval|approved|accepted/);
   });
+
+  it("returns only schema-declared fields from submit_order, even with empty split metadata", async () => {
+    const context = await createContext();
+    const payload = orderPayload("mcp-submit-schema-1");
+    payload.order.metadata = {
+      source_platform: "mealops",
+      split_group_id: "",
+      split_group_index: null,
+      split_group_size: null,
+    } as Record<string, unknown>;
+
+    const result = await submitOrderTool(context, payload);
+
+    const allowedKeys = new Set([
+      "id",
+      "restaurantId",
+      "agentId",
+      "externalOrderReference",
+      "customerName",
+      "customerEmail",
+      "teamName",
+      "fulfillmentType",
+      "requestedFulfillmentTime",
+      "headcount",
+      "status",
+      "approvalRequired",
+      "totalEstimateCents",
+      "createdAt",
+      "updatedAt",
+      "notes",
+      "packagingInstructions",
+      "dietaryConstraints",
+      "orderIntent",
+    ]);
+    const extraKeys = Object.keys(result).filter((key) => !allowedKeys.has(key));
+    expect(extraKeys).toEqual([]);
+  });
 });

@@ -2019,12 +2019,18 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       ...order,
       agentName: agent?.name ?? order.agentName,
       splitGroupId:
-        typeof metadata.split_group_id === "string" ? metadata.split_group_id : order.splitGroupId,
+        typeof metadata.split_group_id === "string" && metadata.split_group_id.trim() !== ""
+          ? metadata.split_group_id
+          : order.splitGroupId,
       splitGroupIndex:
+        metadata.split_group_index != null &&
+        metadata.split_group_index !== "" &&
         Number.isFinite(Number(metadata.split_group_index))
           ? Math.round(Number(metadata.split_group_index))
           : order.splitGroupIndex,
       splitGroupSize:
+        metadata.split_group_size != null &&
+        metadata.split_group_size !== "" &&
         Number.isFinite(Number(metadata.split_group_size))
           ? Math.round(Number(metadata.split_group_size))
           : order.splitGroupSize,

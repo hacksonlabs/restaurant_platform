@@ -303,7 +303,31 @@ export async function submitOrderTool(context: PhantomMcpContext, input: OrderTo
   context.service.assertAgentScope(context.agentKey, "orders:submit");
   await context.service.validateAgentAccess(input.restaurant_id, context.agentKey.agentId);
   const normalized = normalizeOrderForAgent(input, context.agentKey.agentId);
-  return await context.service.submitAgentOrder(normalized);
+  const order = await context.service.submitAgentOrder(normalized);
+  // Repository reads decorate orders with dashboard-only fields (agentName,
+  // splitGroup*) that the MCP output schema rejects as additional properties,
+  // so return only the declared contract.
+  return {
+    id: order.id,
+    restaurantId: order.restaurantId,
+    agentId: order.agentId,
+    externalOrderReference: order.externalOrderReference,
+    customerName: order.customerName,
+    customerEmail: order.customerEmail,
+    teamName: order.teamName,
+    fulfillmentType: order.fulfillmentType,
+    requestedFulfillmentTime: order.requestedFulfillmentTime,
+    headcount: order.headcount,
+    status: order.status,
+    approvalRequired: order.approvalRequired,
+    totalEstimateCents: order.totalEstimateCents,
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt,
+    notes: order.notes,
+    packagingInstructions: order.packagingInstructions,
+    dietaryConstraints: order.dietaryConstraints,
+    orderIntent: order.orderIntent,
+  };
 }
 
 export async function getOrderStatusTool(context: PhantomMcpContext, input: GetOrderStatusInput) {

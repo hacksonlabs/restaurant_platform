@@ -473,6 +473,19 @@ function mapRules(row: any): OrderingRule {
   };
 }
 
+// Agents send empty split metadata ("" / null) for non-split orders; treat
+// those as absent. Number(null) is 0, so a plain Number.isFinite check would
+// fabricate splitGroupIndex/Size of 0.
+function parseSplitMetadataCount(value: unknown) {
+  if (value == null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed) : undefined;
+}
+
+function parseSplitMetadataId(value: unknown) {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
 function mapOrder(row: any): AgentOrderRecord {
   const metadata =
     row.order_intent && typeof row.order_intent === "object" && row.order_intent.metadata && typeof row.order_intent.metadata === "object"
@@ -498,11 +511,9 @@ function mapOrder(row: any): AgentOrderRecord {
     packagingInstructions: row.packaging_instructions ?? undefined,
     dietaryConstraints: row.dietary_constraints ?? [],
     orderIntent: row.order_intent,
-    splitGroupId: typeof metadata.split_group_id === "string" ? metadata.split_group_id : undefined,
-    splitGroupIndex:
-      Number.isFinite(Number(metadata.split_group_index)) ? Math.round(Number(metadata.split_group_index)) : undefined,
-    splitGroupSize:
-      Number.isFinite(Number(metadata.split_group_size)) ? Math.round(Number(metadata.split_group_size)) : undefined,
+    splitGroupId: parseSplitMetadataId(metadata.split_group_id),
+    splitGroupIndex: parseSplitMetadataCount(metadata.split_group_index),
+    splitGroupSize: parseSplitMetadataCount(metadata.split_group_size),
   };
 }
 
