@@ -59,6 +59,11 @@ export interface AppEnv {
   deliverectChannelLinkId: string;
   deliverectWebhookSecret: string;
   deliverectRequestTimeoutMs: number;
+  deliverectDispatchWebhookToken: string;
+  deliverectDispatchFlatPriceCents: number;
+  deliverectDispatchTaxRateBasisPoints: number;
+  deliverectDispatchSimulate: boolean;
+  deliverectDispatchSimulateStepMs: number;
   posRetryBaseDelayMs: number;
   demoPhantomApiKey: string;
   restaurantAuthEmail: string;
@@ -110,6 +115,11 @@ export function getEnv(): AppEnv {
     deliverectChannelLinkId: text(process.env.DELIVERECT_CHANNEL_LINK_ID),
     deliverectWebhookSecret: text(process.env.DELIVERECT_WEBHOOK_SECRET),
     deliverectRequestTimeoutMs: int(process.env.DELIVERECT_REQUEST_TIMEOUT_MS, 10_000),
+    deliverectDispatchWebhookToken: text(process.env.DELIVERECT_DISPATCH_WEBHOOK_TOKEN),
+    deliverectDispatchFlatPriceCents: int(process.env.DELIVERECT_DISPATCH_FLAT_PRICE_CENTS, 750),
+    deliverectDispatchTaxRateBasisPoints: int(process.env.DELIVERECT_DISPATCH_TAX_RATE_BASIS_POINTS, 0),
+    deliverectDispatchSimulate: bool(process.env.DELIVERECT_DISPATCH_SIMULATE, true),
+    deliverectDispatchSimulateStepMs: int(process.env.DELIVERECT_DISPATCH_SIMULATE_STEP_MS, 20_000),
     posRetryBaseDelayMs: int(process.env.POS_RETRY_BASE_DELAY_MS, 75),
     demoPhantomApiKey: text(process.env.DEMO_PHANTOM_API_KEY, "coachimhungry_demo_live_local_key"),
     restaurantAuthEmail: text(process.env.RESTAURANT_AUTH_EMAIL, "dev@rest.com"),

@@ -30,6 +30,8 @@ import {
   restaurantAuthRoutes,
 } from "../auth/restaurantSession";
 import { rateLimit } from "../middleware/rateLimit";
+import { getEnv } from "../config/env";
+import { DeliverectDispatchPartnerService } from "../services/deliverectDispatchPartnerService";
 import type { PlatformService } from "../services/platformService";
 
 function asyncHandler(fn: Parameters<Router["get"]>[1]) {
@@ -116,6 +118,7 @@ export function createApiRouter(service: PlatformService) {
   const router = Router();
   const restaurantAuth = restaurantAuthRoutes(service);
   const platformAdminAuth = platformAdminAuthRoutes(service);
+  const dispatchPartner = new DeliverectDispatchPartnerService(getEnv());
 
   router.get("/health", (_request, response) => {
     response.json({ ok: true, service: "phantom" });
@@ -254,6 +257,13 @@ export function createApiRouter(service: PlatformService) {
           limit: parseOptionalNumber(request.query.limit),
         }),
       );
+    }),
+  );
+
+  router.get(
+    "/admin/debug/deliverect/dispatch-jobs",
+    asyncHandler(async (_request, response) => {
+      response.json({ jobs: dispatchPartner.listJobs() });
     }),
   );
 
@@ -908,6 +918,37 @@ export function createApiRouter(service: PlatformService) {
     asyncHandler(async (request, response) => {
       verifyDeliverectWebhook(service, request);
       response.json(await service.ingestDeliverectChannelEvent("payment_update", request.body ?? {}));
+    }),
+  );
+
+  router.get(
+    "/webhooks/deliverect/dispatch",
+    asyncHandler(async (request, response) => {
+      response.json(dispatchPartner.buildWebhookUrls(publicWebhookBaseUrl(request)));
+    }),
+  );
+
+  router.post(
+    "/webhooks/deliverect/dispatch/validate_job",
+    asyncHandler(async (request, response) => {
+      dispatchPartner.verifyAuthorization(request.headers);
+      response.json(dispatchPartner.validateJob(request.body ?? {}));
+    }),
+  );
+
+  router.post(
+    "/webhooks/deliverect/dispatch/create_job",
+    asyncHandler(async (request, response) => {
+      dispatchPartner.verifyAuthorization(request.headers);
+      response.json(dispatchPartner.createJob(request.body ?? {}));
+    }),
+  );
+
+  router.post(
+    "/webhooks/deliverect/dispatch/cancel_job",
+    asyncHandler(async (request, response) => {
+      dispatchPartner.verifyAuthorization(request.headers);
+      response.json(dispatchPartner.cancelJob(request.body ?? {}));
     }),
   );
 

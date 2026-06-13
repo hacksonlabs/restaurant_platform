@@ -40,6 +40,30 @@ POST https://staging-phantom.up.railway.app/api/webhooks/deliverect/channel/paym
 
 `GET https://staging-phantom.up.railway.app/api/webhooks/deliverect/channel` returns the callback URL map Phantom sends during Channel registration.
 
+## Dispatch Partner Webhook URLs (sandbox courier)
+
+Phantom can also act as a "Generic" Dispatch partner so the full Dispatch loop (validate availability -> create job -> courier status updates) is testable in the sandbox without a commercial delivery provider. Configure these in the Deliverect customer account under Dispatch > Configuration > Add partner > Generic:
+
+```text
+Validate URL:
+POST https://staging-phantom.up.railway.app/api/webhooks/deliverect/dispatch/validate_job
+
+Create URL:
+POST https://staging-phantom.up.railway.app/api/webhooks/deliverect/dispatch/create_job
+
+Cancel URL:
+POST https://staging-phantom.up.railway.app/api/webhooks/deliverect/dispatch/cancel_job
+```
+
+`GET https://staging-phantom.up.railway.app/api/webhooks/deliverect/dispatch` returns this URL map for copy-paste. Prerequisites in Deliverect: the location must have a valid address and the channel must be set to "Use dispatch" (Locations > Edit).
+
+Behavior:
+- Validate always answers `canDeliver: true` with ETAs (pickup +10 min, dropoff +25 min), per-order `deliveryId`s, and a flat price from `DELIVERECT_DISPATCH_FLAT_PRICE_CENTS` (default 750) with `DELIVERECT_DISPATCH_TAX_RATE_BASIS_POINTS` (default 0).
+- Create accepts the job, returns a mock courier ("Phantom Courier", car), and when `DELIVERECT_DISPATCH_SIMULATE` is true (default) walks the courier through statuses 83 -> 85 -> 87 -> 89 -> 90 by POSTing to Deliverect `/fulfillment/generic/events` every `DELIVERECT_DISPATCH_SIMULATE_STEP_MS` (default 20000). Outbound calls authenticate with the existing Deliverect OAuth client credentials (or `DELIVERECT_ACCESS_TOKEN`).
+- Cancel responds `{ "status": "confirmed", "reason": "", "price": 0 }` and stops any running simulation.
+- If `DELIVERECT_DISPATCH_WEBHOOK_TOKEN` is set, inbound dispatch webhooks must carry `Authorization: Bearer <token>`; when unset, verification is skipped (matches the channel-webhook posture while sandbox signing is unconfirmed).
+- Jobs are held in memory (reset on deploy/restart) and inspectable at `GET /api/admin/debug/deliverect/dispatch-jobs` behind the Phantom Admin session.
+
 ## Webhook Responses
 
 - Channel registration returns HTTP 200 with Deliverect callback URLs: `statusUpdateURL`, `menuUpdateURL`, `snoozeUnsnoozeURL`, `busyModeURL`, `updatePrepTimeURL`, `courierUpdateURL`, and `paymentUpdateURL`.
@@ -116,6 +140,12 @@ DELIVERECT_CLIENT_SECRET=<optional staging OAuth client secret>
 DELIVERECT_AUDIENCE=<optional Deliverect OAuth audience>
 DELIVERECT_GRANT_TYPE=token
 DELIVERECT_WEBHOOK_SECRET=<optional Deliverect webhook/signature secret>
+
+DELIVERECT_DISPATCH_WEBHOOK_TOKEN=<optional bearer token for inbound dispatch webhooks>
+DELIVERECT_DISPATCH_FLAT_PRICE_CENTS=750
+DELIVERECT_DISPATCH_TAX_RATE_BASIS_POINTS=0
+DELIVERECT_DISPATCH_SIMULATE=true
+DELIVERECT_DISPATCH_SIMULATE_STEP_MS=20000
 
 DELIVERECT_REQUEST_TIMEOUT_MS=10000
 POS_RETRY_BASE_DELAY_MS=75
